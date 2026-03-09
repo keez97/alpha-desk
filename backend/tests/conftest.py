@@ -1,0 +1,361 @@
+"""
+Shared test fixtures and configuration for AlphaDesk tests.
+Uses in-memory SQLite database for fast testing without external dependencies.
+"""
+
+import pytest
+from datetime import date, datetime, timezone, timedelta
+from decimal import Decimal
+from sqlmodel import SQLModel, create_engine, Session
+from sqlalchemy.pool import StaticPool
+from fastapi.testclient import TestClient
+
+from backend.main import app
+from backend.models.securities import Security, SecurityStatus, SecurityLifecycleEvent
+from backend.models.market_data import PriceHistory, FundamentalsSnapshot
+from backend.models.factors import FactorDefinition, CustomFactorScore
+from backend.models.backtests import (
+    Backtest,
+    BacktestConfiguration,
+    BacktestFactorAllocation,
+    BacktestResult,
+    BacktestStatistic,
+)
+
+
+@pytest.fixture(name="session")
+def session_fixture():
+    """
+    Create an in-memory SQLite database session for testing.
+    Automatically creates all tables and rolls back after each test.
+    """
+    # Create in-memory SQLite engine
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        echo=False,
+    )
+
+    # Create all tables
+    SQLModel.metadata.create_all(engine)
+
+    # Create session
+    session = Session(engine)
+
+    yield session
+
+    # Cleanup
+    session.close()
+
+
+@pytest.fixture(name="test_client")
+def test_client_fixture(session):
+    """
+    Create a FastAPI test client with test database session.
+    """
+
+    def get_session_override():
+        return session
+
+    app.dependency_overrides[
+        "backend.database.get_session"
+    ] = get_session_override
+
+    client = TestClient(app)
+    yield client
+
+    # Cleanup
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(name="sample_securities")
+def sample_securities_fixture(session: Session):
+    """
+    Create sample securities for testing.
+    Returns list of Security objects (Apple, Microsoft, Google, Tesla, Amazon).
+    """
+    securities = [
+        Security(
+            ticker="AAPL",
+            name="Apple Inc.",
+            sector="Information Technology",
+            industry="Semiconductors",
+            current_status=SecurityStatus.ACTIVE,
+        ),
+        Security(
+            ticker="MSFT",
+            name="Microsoft Corporation",
+            sector="Information Technology",
+            industry="Software",
+            current_status=SecurityStatus.ACTIVE,
+        ),
+        Security(
+            ticker="GOOGL",
+            name="Alphabet Inc.",
+            sector="Communication Services",
+            industry="Internet",
+            current_status=SecurityStatus.ACTIVE,
+        ),
+        Security(
+            ticker="TSLA",
+            name="Tesla Inc.",
+            sector="Consumer Discretionary",
+            industry="Automobiles",
+            current_status=SecurityStatus.ACTIVE,
+        ),
+        Security(
+            ticker="AMZN",
+            name="Amazon.com Inc.",
+            sector="Consumer Discretionary",
+            industry="Internet Retail",
+            current_status=SecurityStatus.ACTIVE,
+        ),
+    ]
+
+    for sec in securities:
+        session.add(sec)
+
+    session.commit()
+
+    return securities
+
+
+@pytest.fixture(name="sample_prices")
+def sample_prices_fixture(session: Session, sample_securities):
+    """
+    Create sample price history data for testing.
+    Creates 252 trading days (1 year) of daily prices for each security.
+    """
+    prices = []
+    base_date = date(2023, 1, 1)
+    tickers = [sec.ticker for sec in sample_securities]
+
+    # Generate prices for 252 trading days
+    for day_offset in range(252):
+        current_date = base_date + timedelta(days=day_offset)
+
+        # Skip weekends (simple approximation - just skip Saturdays and Sundays)
+        if current_date.weekday() >= 5:
+            continue
+
+        for ticker_idx, ticker in enumerate(tickers):
+            # Generate realistic price progression with small random walk
+            base_price = [150.0, 300.0, 2800.0, 200.0, 3300.0][ticker_idx]
+            # Add some noise to prices
+            daily_return = 0.0005 * (ticker_idx + 1)  # Different returns per stock
+            price = base_price * (1 + daily_return) ** day_offset
+
+            price_record = PriceHistory(
+                ticker=ticker,
+                date=current_date,
+                open=Decimal(str(price * 0.99)),
+                high=Decimal(str(price * 1.02)),
+                low=Decimal(str(price * 0.98)),
+                close=Decimal(str(price)),
+                adjusted_close=Decimal(str(price)),
+                volume=1000000,
+                ingestion_timestamp=datetime.combine(
+                    current_date, datetime.max.time(), tzinfo=timezone.utc
+                ),
+            )
+            prices.append(price_record)
+            session.add(price_record)
+
+    session.commit()
+
+    return prices
+
+
+@pytest.fixture(name="sample_fundamentals")
+def sample_fundamentals_fixture(session: Session, sample_securities):
+    """
+    Create sample fundamental data for testing.
+    Creates quarterly fundamental snapshots for each security.
+    """
+    fundamentals = []
+    base_date = date(2023, 1, 1)
+    tickers = [sec.ticker for sec in sample_securities]
+
+    # Create fundamentals for 4 quarters
+    for quarter_offset in range(4):
+        quarter_date = base_date + timedelta(days=quarter_offset * 90)
+
+        for ticker_idx, ticker in enumerate(tickers):
+            # Sample metrics
+            metrics = [
+                ("free_cash_flow", Decimal(str(10000000000 * (ticker_idx + 1)))),
+                ("market_cap", Decimal(str(2000000000000 * (ticker_idx + 1)))),
+                ("net_income", Decimal(str(5000000000 * (ticker_idx + 1)))),
+                ("total_debt", Decimal(str(1000000000 * (ticker_idx + 1)))),
+                ("stockholders_equity", Decimal(str(1500000000000 * (ticker_idx + 1)))),
+            ]
+
+            for metric_name, metric_value in metrics:
+                fundamental = FundamentalsSnapshot(
+                    ticker=ticker,
+                    metric_name=metric_name,
+                    metric_value=metric_value,
+                    source_document_date=quarter_date,
+                    fiscal_period_end=quarter_date,
+                    ingestion_timestamp=datetime.combine(
+                        quarter_date, datetime.max.time(), tzinfo=timezone.utc
+                    ),
+                )
+                fundamentals.append(fundamental)
+                session.add(fundamental)
+
+    session.commit()
+
+    return fundamentals
+
+
+@pytest.fixture(name="sample_factors")
+def sample_factors_fixture(session: Session):
+    """
+    Create sample factor definitions for testing.
+    """
+    factors = [
+        FactorDefinition(
+            name="FCF Yield",
+            description="Free Cash Flow Yield",
+            factor_type="custom",
+            calculation_formula="free_cash_flow / market_cap",
+            source="custom",
+            created_by="test_user",
+        ),
+        FactorDefinition(
+            name="Earnings Yield",
+            description="Earnings Yield (E/P)",
+            factor_type="custom",
+            calculation_formula="net_income / market_cap",
+            source="custom",
+            created_by="test_user",
+        ),
+        FactorDefinition(
+            name="Leverage",
+            description="Debt to Equity Ratio",
+            factor_type="custom",
+            calculation_formula="total_debt / stockholders_equity",
+            source="custom",
+            created_by="test_user",
+        ),
+    ]
+
+    for factor in factors:
+        session.add(factor)
+
+    session.commit()
+
+    return factors
+
+
+@pytest.fixture(name="sample_backtest")
+def sample_backtest_fixture(session: Session, sample_factors):
+    """
+    Create a sample backtest configuration for testing.
+    """
+    backtest = Backtest(
+        name="Test Backtest",
+        backtest_type="factor_combination",
+        status="DRAFT",
+    )
+    session.add(backtest)
+    session.flush()  # Get the ID without committing
+
+    # Create configuration
+    config = BacktestConfiguration(
+        backtest_id=backtest.id,
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 12, 31),
+        rebalance_frequency="monthly",
+        universe_selection="sp500",
+        commission_bps=Decimal("5.0"),
+        slippage_bps=Decimal("2.0"),
+        benchmark_ticker="SPY",
+        rolling_window_months=60,
+    )
+    session.add(config)
+
+    # Add factor allocations
+    allocations = [
+        BacktestFactorAllocation(
+            backtest_id=backtest.id,
+            factor_id=sample_factors[0].id,
+            weight=Decimal("0.5"),
+        ),
+        BacktestFactorAllocation(
+            backtest_id=backtest.id,
+            factor_id=sample_factors[1].id,
+            weight=Decimal("0.5"),
+        ),
+    ]
+
+    for allocation in allocations:
+        session.add(allocation)
+
+    session.commit()
+
+    return backtest
+
+
+@pytest.fixture(name="sample_backtest_results")
+def sample_backtest_results_fixture(session: Session, sample_backtest):
+    """
+    Create sample backtest results for testing statistics.
+    """
+    results = []
+    base_date = date(2023, 1, 1)
+
+    # Create daily results for 252 trading days
+    portfolio_value = Decimal("1000000")
+
+    for day_offset in range(252):
+        current_date = base_date + timedelta(days=day_offset)
+
+        # Skip weekends
+        if current_date.weekday() >= 5:
+            continue
+
+        # Generate a realistic daily return (mean ~0.05%, std ~1%)
+        daily_return = Decimal(str(0.0005 + 0.01 * (day_offset % 10) / 100))
+        portfolio_value = portfolio_value * (1 + daily_return)
+
+        result = BacktestResult(
+            backtest_id=sample_backtest.id,
+            date=current_date,
+            portfolio_value=portfolio_value,
+            daily_return=daily_return,
+            benchmark_return=Decimal(str(0.0003 + 0.005 * (day_offset % 10) / 100)),
+            turnover=Decimal("0.1") if day_offset % 21 == 0 else Decimal("0.0"),
+            holdings_count=20,
+        )
+        results.append(result)
+        session.add(result)
+
+    session.commit()
+
+    return results
+
+
+@pytest.fixture(name="sample_security_lifecycle")
+def sample_security_lifecycle_fixture(session: Session, sample_securities):
+    """
+    Create security lifecycle events for testing PiT queries.
+    """
+    events = []
+
+    # Add activation events for all securities
+    for sec in sample_securities:
+        event = SecurityLifecycleEvent(
+            ticker=sec.ticker,
+            event_type="IPO",
+            event_date=date(2015, 1, 1),
+            details={"reason": "Initial Public Offering"},
+        )
+        events.append(event)
+        session.add(event)
+
+    session.commit()
+
+    return events

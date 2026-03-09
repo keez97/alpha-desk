@@ -9,3 +9,5 @@ python-dotenv==1.0.1
 sqlmodel==0.0.19
 openai>=1.40.0
 apscheduler==3.10.4
+psycopg2-binary==2.9.9
+alembic==1.13.1

@@ -8,6 +8,7 @@ const navItems = [
   { label: 'Weekly Report', path: '/weekly-report' },
   { label: 'Portfolio', path: '/portfolio' },
   { label: 'RRG', path: '/rrg' },
+  { label: 'Backtester', path: '/backtester' },
 ];
 
 export function TopNav() {

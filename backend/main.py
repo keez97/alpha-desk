@@ -10,7 +10,10 @@ from backend.routers import (
     weekly_report,
     portfolio,
     rrg,
-    settings
+    settings,
+    backtester,
+    factors,
+    data_ingestion
 )
 
 app = FastAPI(
@@ -19,12 +22,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware
+# CORS middleware - restrict to local development origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -37,6 +40,9 @@ app.include_router(weekly_report.router)
 app.include_router(portfolio.router)
 app.include_router(rrg.router)
 app.include_router(settings.router)
+app.include_router(backtester.router)
+app.include_router(factors.router)
+app.include_router(data_ingestion.router)
 
 
 @app.on_event("startup")

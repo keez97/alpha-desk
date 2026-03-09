@@ -587,6 +587,100 @@ export async function fetchRRG(benchmark: string = 'SPY', weeks: number = 20): P
   };
 }
 
+// ── Backtester ────────────────────────────────────────────
+export interface Factor {
+  id: number;
+  name: string;
+  description: string;
+  category: string;
+  customizable: boolean;
+}
+
+export interface CreateBacktestRequest {
+  name: string;
+  start_date: string;
+  end_date: string;
+  rebalance_frequency: 'Monthly' | 'Quarterly' | 'Annual';
+  transaction_costs: {
+    commission_bps: number;
+    slippage_bps: number;
+  };
+  universe_selection: string;
+  factor_allocations: Record<string, number>;
+}
+
+export interface BacktestStatus {
+  id: number;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress_percent: number;
+  current_rebalance_date?: string;
+  error_message?: string;
+}
+
+export interface BacktestResult {
+  statistics: {
+    total_return: number;
+    annualized_return: number;
+    annualized_volatility: number;
+    sharpe_ratio: number;
+    sortino_ratio: number;
+    calmar_ratio: number;
+    max_drawdown: number;
+    information_ratio: number;
+    hit_rate: number;
+    best_day: number;
+    worst_day: number;
+    avg_turnover: number;
+  };
+  equity_curve: Array<{ date: string; strategy: number; benchmark: number; drawdown: number }>;
+  factor_exposures: Array<{ date: string; [key: string]: number | string }>;
+  correlation_matrix: number[][];
+  alpha_decay: {
+    pre_publication_return: number;
+    post_publication_return: number;
+    decay_percent: number;
+  };
+}
+
+export interface Backtest {
+  id: number;
+  name: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  created_at: string;
+  updated_at: string;
+  results?: BacktestResult;
+}
+
+export const createBacktest = (data: CreateBacktestRequest) =>
+  api.post('/backtests', data).then((r) => r.data);
+
+export const runBacktest = (id: number) =>
+  api.post(`/backtests/${id}/run`).then((r) => r.data);
+
+export const getBacktestStatus = (id: number) =>
+  api.get(`/backtests/${id}/status`).then((r) => r.data);
+
+export const getBacktestResults = (id: number) =>
+  api.get(`/backtests/${id}/results`).then((r) => r.data);
+
+export const exportBacktest = (id: number) =>
+  api.get(`/backtests/${id}/export`).then((r) => r.data);
+
+export const listBacktests = () =>
+  api.get('/backtests').then((r) => r.data);
+
+export const deleteBacktest = (id: number) =>
+  api.delete(`/backtests/${id}`).then((r) => r.data);
+
+export const getFactors = () =>
+  api.get('/factors').then((r) => r.data);
+
+export const createFactor = (data: any) =>
+  api.post('/factors', data).then((r) => r.data);
+
+export const getFactorScores = (id: number) =>
+  api.get(`/factors/${id}/scores`).then((r) => r.data);
+
 export default api;
 
 // ── Model Settings ─────────────────────────────────────────

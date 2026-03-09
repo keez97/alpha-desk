@@ -6,6 +6,7 @@ import { Screener } from './pages/Screener';
 import { WeeklyReport } from './pages/WeeklyReport';
 import { Portfolio } from './pages/Portfolio';
 import { RRG } from './pages/RRG';
+import { Backtester } from './pages/Backtester';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,6 +28,7 @@ function App() {
             <Route path="/weekly-report" element={<WeeklyReport />} />
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/rrg" element={<RRG />} />
+            <Route path="/backtester" element={<Backtester />} />
           </Route>
         </Routes>
       </BrowserRouter>

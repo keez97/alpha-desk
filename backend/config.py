@@ -42,6 +42,6 @@ def get_openrouter_model_id() -> str:
     return AVAILABLE_MODELS.get(_current_model, AVAILABLE_MODELS["claude-sonnet-4"])
 
 
-FDS_API_KEY = os.getenv("FDS_API_KEY", "7db85f55-5abb-4ee0-8253-fb5e0317e134")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./alphadesk.db")
+FDS_API_KEY = os.getenv("FDS_API_KEY", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/alphadesk")
 CACHE_TTL_HOURS = int(os.getenv("CACHE_TTL_HOURS", "4"))
