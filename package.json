@@ -1,0 +1,16 @@
+{
+  "name": "alpha-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AlphaDesk — Investment Dashboard",
+  "scripts": {
+    "dev": "concurrently --names \"backend,frontend\" --prefix-colors \"yellow,cyan\" \"cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000\" \"cd frontend && npm run dev\"",
+    "backend": "cd backend && uvicorn main:app --reload --host 0.0.0.0 --port 8000",
+    "frontend": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "install:all": "cd frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
