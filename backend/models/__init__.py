@@ -23,6 +23,17 @@ from backend.models.backtests import (
     ScreenerFactorScore,
 )
 
+# Event Scanner models
+from backend.models.events import (
+    Event,
+    EventClassificationRule,
+    AlphaDecayWindow,
+    EventFactorBridge,
+    EventSourceMapping,
+    EventAlertConfiguration,
+    EventCorrelationAnalysis,
+)
+
 __all__ = [
     # Existing models
     "Watchlist",
@@ -52,4 +63,12 @@ __all__ = [
     "FactorCorrelation",
     "AlphaDecayAnalysis",
     "ScreenerFactorScore",
+    # Event Scanner
+    "Event",
+    "EventClassificationRule",
+    "AlphaDecayWindow",
+    "EventFactorBridge",
+    "EventSourceMapping",
+    "EventAlertConfiguration",
+    "EventCorrelationAnalysis",
 ]

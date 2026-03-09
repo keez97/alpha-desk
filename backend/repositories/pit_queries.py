@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from backend.models.securities import Security, SecurityStatus, SecurityLifecycleEvent
 from backend.models.market_data import PriceHistory, FundamentalsSnapshot
 from backend.models.factors import CustomFactorScore
+from backend.models.events import Event
 
 
 def get_prices_pit(
@@ -276,3 +277,32 @@ def get_prices_pit_batch(
         prices_by_ticker[price.ticker].append(price)
 
     return prices_by_ticker
+
+
+def get_events_pit(
+    session: Session,
+    ticker: str,
+    as_of_date: date,
+) -> List[Event]:
+    """
+    Get events as they were known on a specific date (Point-in-Time safe).
+
+    Returns only events where detected_at <= as_of_date, ensuring backtests
+    use only events that would have been detected at that point in time.
+
+    Args:
+        session: SQLModel session
+        ticker: Security ticker
+        as_of_date: The date to treat as "now" - only returns events detected by this date
+
+    Returns:
+        List of Event records, ordered by detected_at DESC
+    """
+    query = select(Event).where(
+        Event.ticker == ticker,
+        Event.detected_at <= datetime.combine(
+            as_of_date, datetime.max.time(), tzinfo=timezone.utc
+        ),
+    ).order_by(Event.detected_at.desc())
+
+    return session.exec(query).all()

@@ -1,81 +1,82 @@
-# Requirements: Factor Backtester (AlphaDesk V2 Phase 1)
+# Requirements: Event Scanner (AlphaDesk V2 Phase 2)
 
 ## Problem Statement
 
-AlphaDesk currently provides a stock screener with regime-adaptive grading, but users have no way to validate whether the factors driving those grades (value, momentum, quality, etc.) actually generate alpha historically. Without backtesting, users must trust signals on faith. The Factor Backtester solves this by providing a research-grade platform to both validate existing screener signals AND design custom multi-factor strategies with proper bias controls — functioning as a mini FactSet for individual and small-team investors.
+Investors miss alpha-generating corporate events because they lack systematic event detection and classification. Events like SEC filings, earnings surprises, M&A announcements, insider transactions, and dividend changes create predictable short-term alpha windows (research shows alpha concentrates in the first month post-event, decaying ~50% thereafter). AlphaDesk's Factor Backtester provides factor-level research, but events — which are the discrete catalysts that drive factor returns — are invisible to users.
 
-Primary user: self-directed investor or small fund analyst who wants institutional-quality factor research without Bloomberg/FactSet pricing.
+The Event Scanner solves this by providing a Complex Event Processing (CEP) system that automatically detects, classifies, and scores corporate events from free data sources, measures their historical alpha decay windows, and feeds event signals into the existing Factor Backtester as backtestable factors.
+
+Primary user: self-directed investor or small fund analyst who wants real-time awareness of market-moving events with quantified alpha expectations.
 
 ## Acceptance Criteria
 
-- [ ] Users can select from pre-built Fama-French 5-factor library (MKT-RF, SMB, HML, RMW, CMA)
-- [ ] Users can define custom factors from fundamental data (e.g., FCF yield, earnings yield)
-- [ ] Users can set factor weights manually (sliders summing to 100%) or use equal-weight
-- [ ] Walk-forward backtesting protocol: at each rebalance date, only data available up to that date is used
-- [ ] Point-in-Time (PiT) enforcement at the database level — no look-ahead bias
-- [ ] Survivorship-bias-free universe: includes delisted/acquired/bankrupt securities with full history
-- [ ] Configurable transaction cost modeling (slippage, commissions)
-- [ ] Configurable rebalance frequencies: monthly, quarterly, custom
-- [ ] Equity curve chart: strategy vs benchmark cumulative returns with drawdown overlay
-- [ ] Full statistical output: Sharpe, Sortino, Calmar, Max Drawdown, Information Ratio, Hit Rate, Turnover
-- [ ] Rolling factor exposure chart showing time-varying betas to FF5 factors
-- [ ] Pre/post-publication performance split with ~50% decay warning (per Dec 2025 alpha decay paper)
-- [ ] Factor correlation matrix for multi-factor model construction
-- [ ] Results exportable (JSON at minimum)
-- [ ] Factor scores integrated as sortable/filterable columns in the existing Stock Screener
-- [ ] Shared PiT data infrastructure designed to support future Event Scanner, Earnings Predictor, and Sentiment features
+- [ ] Three-layer CEP architecture: Event Producers → Processing Engine → Event Consumers
+- [ ] Event detection from SEC EDGAR RSS feeds (8-K, 10-K, 10-Q, SC 13D/G, Form 4)
+- [ ] Event detection from yfinance calendar (earnings dates, ex-dividend dates)
+- [ ] Event classification taxonomy: earnings, M&A, insider_trade, dividend_change, SEC_filing, management_change, guidance_revision, share_repurchase
+- [ ] Event severity scoring (1-5 scale based on historical impact magnitude)
+- [ ] Alpha decay tracking per event type: measure abnormal returns in windows [0, +1d], [0, +5d], [0, +21d], [0, +63d]
+- [ ] Event timeline visualization: chronological feed showing events for watchlist/universe
+- [ ] Event detail view: event metadata, historical alpha window chart, related securities
+- [ ] Event-based factor generation: event signals become backtestable factors in Factor Backtester
+- [ ] Screener integration: "Recent Events" column with severity badges
+- [ ] PiT enforcement: events timestamped at detection time, not retroactively backdated
+- [ ] Configurable alerts: user sets event type + severity threshold filters
+- [ ] Event correlation analysis: which event types cluster together (e.g., insider buying before M&A)
+- [ ] Historical event database: store all detected events with full metadata for backtesting
+- [ ] Batch and near-real-time modes: scheduled polling (every 15 min) + manual refresh
 
 ## Scope
 
 ### In Scope
 
-- Fama-French 5-factor model implementation (standard double-sort methodology)
-- Custom factor definition engine (any numeric function of fundamentals)
-- Walk-forward backtesting with rolling-window factor regressions (60-month default)
-- Quantile portfolio construction (quintile or decile, long-only or long-short)
-- Transaction cost modeling (configurable slippage, default 10bps)
-- Institutional-grade statistical output (12+ metrics)
-- PostgreSQL migration for the data layer
-- PiT database enforcement (ingestion_timestamp on all rows)
-- Survivorship-bias-free universe tracking
-- Kenneth French Data Library integration for factor returns
-- Frontend: new /backtester page with sidebar config + results area
-- Screener integration: factor scores as new columns
-- Shared data infrastructure for Phases 2-4
+- SEC EDGAR RSS feed parsing (8-K, 10-K, 10-Q, insider filings, 13D/G)
+- yfinance earnings calendar and dividend calendar integration
+- Event classification engine (rule-based + keyword matching)
+- Event severity scoring based on historical price impact analysis
+- Alpha decay window measurement (abnormal returns post-event)
+- CEP three-layer architecture (producers, processing engine, consumers)
+- New /events page with timeline feed and event detail panels
+- Integration with Factor Backtester (events as backtestable factors)
+- Integration with Screener (event badges on stock rows)
+- PiT-safe event storage using existing PostgreSQL infrastructure
+- Background polling service (configurable interval, default 15 min)
 
 ### Out of Scope
 
-- Live/paper trading or broker integration
-- Automated order execution
-- Real-time streaming data (batch processing only)
-- Options or fixed income backtesting (equities only)
-- Multi-asset factor models
+- Paid data APIs (Polygon, Benzinga, Bloomberg)
+- Natural language processing of filing text (that's Phase 4: News Sentiment)
+- Real-time WebSocket streaming (batch polling only)
+- Options-based event trading strategies
+- Cross-asset event analysis (equities only)
+- Automated trading or order generation
 
 ## Technical Constraints
 
-- **Database upgrade**: Migrate from SQLite to PostgreSQL for concurrent writes, better query performance, and PiT data volume
+- **Existing infrastructure**: PostgreSQL with PiT enforcement, SQLModel ORM, Alembic migrations (from Phase 1)
 - **Existing stack**: FastAPI (Python) backend, React 18 + TypeScript + Vite frontend, TanStack React Query
-- **Data source**: yfinance (already integrated) for price history; Kenneth French Data Library (free CSV) for factor returns; SEC EDGAR for fundamentals snapshots
-- **Styling**: Pure black Tailwind CSS theme (just completed UI overhaul); text-xs/text-[10px] compact institutional aesthetic
-- **AI integration**: OpenRouter (multi-model) already wired; stock grader already uses regime-adaptive weights
+- **Shared data layer**: Must use existing securities, price_history, and fundamentals_snapshot tables from Phase 1
+- **Data sources**: SEC EDGAR RSS (free, no API key), yfinance (already integrated, free)
+- **Styling**: Pure black Tailwind CSS theme, text-xs/text-[10px] compact institutional aesthetic
 - **API conventions**: RESTful, JSON responses, /api/ prefix, FastAPI router pattern
-- **Frontend patterns**: Recharts for line charts, Canvas for RRG-style charts, neutral-800 borders, compact p-4 layouts
+- **Background tasks**: FastAPI BackgroundTasks (from Phase 1 pattern)
+- **SEC EDGAR**: RSS feeds at https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=8-K&dateb=&owner=include&count=40&search_text=&action=getcompany — rate limit: 10 requests/sec with User-Agent header
 
 ## Technology Stack
 
-- **Frontend**: React 18 + TypeScript + Vite, Tailwind CSS v4, TanStack React Query, Recharts + Canvas
-- **Backend**: FastAPI (Python 3.14), SQLModel ORM, Pydantic schemas
-- **Database**: PostgreSQL (upgrading from SQLite) with Alembic migrations
-- **Data sources**: yfinance, Kenneth French Data Library, SEC EDGAR
+- **Frontend**: React 18 + TypeScript + Vite, Tailwind CSS v4, TanStack React Query, Recharts
+- **Backend**: FastAPI (Python), SQLModel ORM, Pydantic schemas, Alembic migrations
+- **Database**: PostgreSQL (shared with Phase 1)
+- **Data sources**: SEC EDGAR RSS, yfinance earnings/dividend calendars
 - **Infrastructure**: localhost development, git via GitHub (keez97/alpha-desk)
 
 ## Dependencies
 
-- **Affects existing Screener**: Factor scores become new sortable columns in screener results
-- **Affects existing Morning Brief**: Top factor signals could surface in morning brief panels
-- **Foundation for Phase 2 (Event Scanner)**: Shared PiT data infrastructure, event signals become backtestable factors
-- **Foundation for Phase 3 (Earnings Predictor)**: Shared analyst estimate storage with PiT enforcement
-- **Foundation for Phase 4 (News Sentiment)**: Shared temporal data infrastructure
+- **Depends on Phase 1**: Uses existing securities table, PiT infrastructure, PostgreSQL setup, price_history for alpha decay calculation
+- **Affects Factor Backtester**: Event signals become new backtestable factors
+- **Affects Screener**: Event badges appear on screener results
+- **Foundation for Phase 3 (Earnings Predictor)**: Earnings event detection feeds into earnings surprise tracking
+- **Foundation for Phase 4 (News Sentiment)**: Event timestamps provide anchoring for sentiment analysis windows
 
 ## Configuration
 
@@ -85,10 +86,8 @@ Primary user: self-directed investor or small fund analyst who wants institution
 
 ## Key Academic References
 
-- Fama & French (1993, 2015): Three-factor and five-factor models
-- Look-Ahead-Bench (arXiv, Jan 2026): LLM look-ahead bias in financial workflows
-- Not All Factors Crowd Equally (arXiv, Dec 2025): Post-publication alpha decay (~50%)
-- FactSet PiT White Paper: 15-25% Sharpe inflation without PiT data
-- Quantified Strategies: 4x return inflation from excluding delistings
-- CFA Institute Practitioner's Guide to Factor Models (1994)
-- Ledoit & Wolf (2004): Improved covariance estimation
+- Alpha decay research (Dec 2025): ~50% post-publication alpha decay; alpha concentrates in first month
+- Complex Event Processing literature: three-layer producer/engine/consumer architecture
+- Post-Earnings Announcement Drift (Bernard & Thomas 1989): 60+ day drift after earnings surprises
+- Insider trading predictive power: Form 4 filings predict 3-6 month returns
+- SEC filing impact studies: 8-K filings create 1-5 day alpha windows depending on content

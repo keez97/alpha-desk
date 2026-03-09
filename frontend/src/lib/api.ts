@@ -715,3 +715,65 @@ export async function switchModel(modelKey: string): Promise<ModelsResponse> {
     available: [],
   };
 }
+
+// ── Event Scanner ──────────────────────────────────────────
+export interface EventItem {
+  id: number;
+  ticker: string;
+  event_type: string;
+  severity_score: number;
+  headline: string;
+  event_date: string;
+  detected_at: string;
+  source: string;
+}
+
+export interface AlphaDecayWindow {
+  window_type: string;
+  abnormal_return: number;
+  benchmark_return: number;
+  confidence: number;
+}
+
+export interface EventDetail extends EventItem {
+  description: string;
+  metadata: any;
+  alpha_decay_windows: AlphaDecayWindow[];
+}
+
+export interface PollingStatus {
+  last_run: string | null;
+  events_found: number;
+  status: string;
+}
+
+export interface EventsListResponse {
+  items: EventItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export const listEvents = (params?: any) =>
+  api.get('/events', { params }).then((r) => r.data as EventsListResponse);
+
+export const getEvent = (id: number) =>
+  api.get(`/events/${id}`).then((r) => r.data as EventDetail);
+
+export const getAlphaDecay = (id: number) =>
+  api.get(`/events/${id}/alpha-decay`).then((r) => r.data as AlphaDecayWindow[]);
+
+export const triggerScan = () =>
+  api.post('/events/scan').then((r) => r.data);
+
+export const getPollingStatus = () =>
+  api.get('/events/polling-status').then((r) => r.data as PollingStatus);
+
+export const getEventTimeline = (params?: any) =>
+  api.get('/events/timeline', { params }).then((r) => r.data as EventItem[]);
+
+export const getScreenerBadges = (tickers: string[]) =>
+  api.get('/events/screener-badges', { params: { tickers: tickers.join(',') } }).then((r) => r.data);
+
+export const deleteEvent = (id: number) =>
+  api.delete(`/events/${id}`).then((r) => r.data);

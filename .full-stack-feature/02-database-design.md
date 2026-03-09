@@ -1,3297 +1,1436 @@
-# AlphaDesk V2 Phase 1: Factor Backtester Database Design
+# Event Scanner Database Design (Phase 2)
 
-## Executive Summary
+## Overview
 
-This document defines the complete PostgreSQL schema for AlphaDesk Factor Backtester, a research-grade platform for validating and discovering multi-factor investment strategies. The design enforces **Point-in-Time (PiT) data integrity**, **survivorship-bias prevention**, and **walk-forward backtesting protocols** at the database layer, making it impossible to accidentally introduce look-ahead bias or survivorship inflation.
+The Event Scanner Phase 2 extends AlphaDesk's PostgreSQL database with a Complex Event Processing (CEP) system. This document specifies the new tables, relationships, indexing strategy, and SQLModel definitions required to detect, classify, score, and analyze corporate events for alpha prediction.
 
-**Key architectural principles:**
-- All time-series data (prices, fundamentals) include `ingestion_timestamp` for PiT enforcement
-- Security lifecycle tracking (active/delisted/acquired/bankrupt) prevents survivorship bias
-- Immutable historical factor definitions support alpha decay tracking
-- Partitioning by date for time-series tables enables efficient range queries
-- Modular design allows Phase 2-4 features (Event Scanner, Earnings Predictor, Sentiment) to reuse core infrastructure
+The design maintains full integration with existing Phase 1 tables (security, price_history, factor_definition, backtest, etc.) while introducing event-specific storage and processing capabilities.
 
 ---
 
-## 1. Entity Relationship Diagram & Design Overview
-
-### Core Domain Entities
+## 1. Entity Relationship Diagram
 
 ```
-SECURITIES
-├── ticker (PK)
-├── company_name
-├── sector
-├── industry
-└── cusip
-
-SECURITY_LIFECYCLE_EVENTS
-├── id (PK)
-├── ticker (FK)
-├── event_type (active/delisted/acquired/bankrupt)
-├── event_date
-└── effective_date
-
-PRICE_HISTORY (partitioned by date)
-├── id (PK)
-├── ticker (FK)
-├── date
-├── open, high, low, close, volume
-├── ingestion_timestamp (PiT marker)
-└── data_source
-
-FUNDAMENTALS_SNAPSHOT (partitioned by date)
-├── id (PK)
-├── ticker (FK)
-├── fiscal_period_end
-├── metric_name (revenue, net_income, fcf, etc.)
-├── metric_value
-├── ingestion_timestamp (PiT marker)
-└── source_document_date
-
-FACTOR_DEFINITIONS
-├── id (PK)
-├── factor_name (e.g., "momentum_12m")
-├── factor_type (fama_french | custom)
-├── is_published
-├── publication_date
-└── description
-
-FAMA_FRENCH_FACTORS (daily/monthly)
-├── id (PK)
-├── factor_id (FK)
-├── date
-├── return_value
-└── ingestion_timestamp
-
-CUSTOM_FACTORS (computed per security)
-├── id (PK)
-├── factor_id (FK)
-├── ticker (FK)
-├── calculation_date
-├── factor_value
-├── ingestion_timestamp (derived from underlying data)
-
-BACKTESTS
-├── id (PK)
-├── user_id (FK)
-├── name
-├── backtest_type (factor_combo | custom)
-├── status (draft | running | completed | failed)
-├── created_at
-└── metadata (JSON)
-
-BACKTEST_CONFIGURATIONS
-├── id (PK)
-├── backtest_id (FK)
-├── start_date
-├── end_date
-├── rebalance_frequency
-├── universe_selection
-├── transaction_costs (commission, slippage)
-
-BACKTEST_FACTOR_ALLOCATIONS
-├── id (PK)
-├── backtest_id (FK)
-├── factor_id (FK)
-├── weight (0.0 - 1.0)
-
-BACKTEST_RESULTS (daily)
-├── id (PK)
-├── backtest_id (FK)
-├── date
-├── portfolio_value
-├── daily_return
-├── benchmark_return
-├── turnover
-└── factor_exposures (JSON: {factor_id: beta})
-
-BACKTEST_STATISTICS
-├── id (PK)
-├── backtest_id (FK)
-├── metric_name (sharpe, sortino, calmar, etc.)
-├── metric_value
-├── period_start
-├── period_end
-
-FACTOR_CORRELATION_MATRIX
-├── id (PK)
-├── backtest_id (FK)
-├── factor_1_id (FK)
-├── factor_2_id (FK)
-├── correlation_value
-├── as_of_date
-
-SCREENER_FACTOR_SCORES (daily)
-├── id (PK)
-├── ticker (FK)
-├── score_date
-├── factor_id (FK)
-├── factor_score (0-100)
-├── ingestion_timestamp
-
-ALPHA_DECAY_ANALYSIS
-├── id (PK)
-├── factor_id (FK)
-├── backtest_id (FK)
-├── pre_publication_return
-├── post_publication_return
-├── decay_percentage
-├── months_post_publication
-```
-
-### Relationship Cardinality Summary
-
-| Relationship | Cardinality | Notes |
-|---|---|---|
-| SECURITIES ↔ PRICE_HISTORY | 1:N | One security has many price points over time |
-| SECURITIES ↔ FUNDAMENTALS_SNAPSHOT | 1:N | One security has many fundamental snapshots |
-| SECURITIES ↔ SECURITY_LIFECYCLE_EVENTS | 1:N | Track status transitions (IPO, delisting, etc.) |
-| FACTOR_DEFINITIONS ↔ FAMA_FRENCH_FACTORS | 1:N | One FF factor has daily/monthly returns |
-| FACTOR_DEFINITIONS ↔ CUSTOM_FACTORS | 1:N | One custom factor def has many ticker-specific scores |
-| SECURITIES ↔ CUSTOM_FACTORS | 1:N | One security has scores across many factors |
-| BACKTESTS ↔ BACKTEST_CONFIGURATIONS | 1:1 | One backtest has one configuration |
-| BACKTESTS ↔ BACKTEST_FACTOR_ALLOCATIONS | 1:N | One backtest uses multiple factors with weights |
-| BACKTESTS ↔ BACKTEST_RESULTS | 1:N | One backtest generates daily results |
-| BACKTESTS ↔ BACKTEST_STATISTICS | 1:N | One backtest generates multiple statistics |
-| BACKTESTS ↔ FACTOR_CORRELATION_MATRIX | 1:N | One backtest correlates N factors |
-| SECURITIES ↔ SCREENER_FACTOR_SCORES | 1:N | One security has daily factor scores |
-| FACTOR_DEFINITIONS ↔ ALPHA_DECAY_ANALYSIS | 1:N | Track decay per factor per backtest |
-
----
-
-## 2. SQLModel Schema Definitions (Production-Ready)
-
-### 2.1 Core Security & Lifecycle Tables
-
-```python
-# backend/models/securities.py
-from datetime import datetime
-from typing import Optional, List
-from sqlmodel import SQLModel, Field, Relationship, Column, String, DateTime
-from enum import Enum
-
-
-class SecurityStatus(str, Enum):
-    """Security lifecycle states"""
-    ACTIVE = "active"
-    DELISTED = "delisted"
-    ACQUIRED = "acquired"
-    BANKRUPT = "bankrupt"
-    PENDING = "pending"
-
-
-class Security(SQLModel, table=True):
-    """
-    Core security master data.
-
-    Invariants:
-    - ticker is globally unique and case-insensitive (stored as uppercase)
-    - created_at is immutable
-    - All securities start with status=PENDING until IPO is confirmed
-    """
-    __tablename__ = "securities"
-
-    ticker: str = Field(
-        primary_key=True,
-        index=True,
-        sa_column=Column(String(10), unique=True),
-        description="Unique stock ticker (uppercase)"
-    )
-    company_name: str = Field(
-        min_length=1,
-        max_length=500,
-        description="Legal company name"
-    )
-    sector: Optional[str] = Field(
-        default=None,
-        max_length=100,
-        index=True,
-        description="GICS sector classification"
-    )
-    industry: Optional[str] = Field(
-        default=None,
-        max_length=200,
-        index=True,
-        description="GICS industry classification"
-    )
-    cusip: Optional[str] = Field(
-        default=None,
-        unique=True,
-        max_length=9,
-        description="CUSIP identifier for matching across data sources"
-    )
-    isin: Optional[str] = Field(
-        default=None,
-        unique=True,
-        max_length=12,
-        description="ISIN identifier"
-    )
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        nullable=False,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-    updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), onupdate=datetime.utcnow)
-    )
-
-    # Relationships
-    price_history: List["PriceHistory"] = Relationship(
-        back_populates="security",
-        cascade_delete=True
-    )
-    fundamentals: List["FundamentalsSnapshot"] = Relationship(
-        back_populates="security",
-        cascade_delete=True
-    )
-    lifecycle_events: List["SecurityLifecycleEvent"] = Relationship(
-        back_populates="security",
-        cascade_delete=True
-    )
-    custom_factor_scores: List["CustomFactorScore"] = Relationship(
-        back_populates="security",
-        cascade_delete=True
-    )
-    screener_scores: List["ScreenerFactorScore"] = Relationship(
-        back_populates="security",
-        cascade_delete=True
-    )
-
-
-class SecurityLifecycleEvent(SQLModel, table=True):
-    """
-    Track security status transitions for survivorship-bias prevention.
-
-    Examples:
-    - event_type=IPO, event_date=2020-01-15, effective_date=2020-01-15
-    - event_type=DELISTED, event_date=2023-06-30, effective_date=2023-07-01
-    - event_type=ACQUIRED, event_date=2022-03-15, effective_date=2022-03-20
-
-    Walk-forward backtests exclude delisted/acquired securities
-    from portfolio construction AFTER effective_date.
-
-    Invariants:
-    - event_date <= effective_date (effective_date usually T+1 to T+3 after event)
-    - No duplicate (ticker, event_type, event_date) rows
-    """
-    __tablename__ = "security_lifecycle_events"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(
-        foreign_key="securities.ticker",
-        index=True,
-        description="Foreign key to securities"
-    )
-    event_type: SecurityStatus = Field(
-        index=True,
-        description="Type of lifecycle event"
-    )
-    event_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Date event occurred (announcement/filing)"
-    )
-    effective_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Date security excluded from forward trading (delisting effective, merger closing, etc.)"
-    )
-    details: Optional[str] = Field(
-        default=None,
-        max_length=2000,
-        description="Additional context (acquirer name, bankruptcy chapter, etc.)"
-    )
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    security: Security = Relationship(back_populates="lifecycle_events")
-
-    __table_args__ = (
-        # Composite unique constraint: no duplicate events per security
-        UniqueConstraint("ticker", "event_type", "event_date", name="uq_lifecycle_event_per_ticker_date"),
-    )
-```
-
-### 2.2 Price & Market Data with PiT Enforcement
-
-```python
-# backend/models/market_data.py
-from datetime import datetime, date
-from typing import Optional, List
-from decimal import Decimal
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime, Numeric, BIGINT
-import enum
-
-
-class PriceHistory(SQLModel, table=True):
-    """
-    Daily OHLCV price data with Point-in-Time enforcement.
-
-    **Critical for PiT enforcement**: ingestion_timestamp marks when this
-    row was inserted into the database. For backtesting, queries MUST filter:
-        WHERE ingestion_timestamp <= backtest_as_of_date
-
-    This ensures a backtest running on date 2023-01-15 cannot see
-    data ingested on 2023-01-16.
-
-    Partitioned by date (monthly or quarterly) for query performance.
-
-    Invariants:
-    - One row per (ticker, date) combination
-    - close > 0, volume >= 0
-    - high >= max(open, close), low <= min(open, close)
-    - ingestion_timestamp >= date (midnight UTC)
-    """
-    __tablename__ = "price_history"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(
-        foreign_key="securities.ticker",
-        index=True,
-        description="Foreign key to securities"
-    )
-    date: date = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Trading date (date component only for partitioning)"
-    )
-    open: Decimal = Field(
-        gt=0,
-        max_digits=12,
-        decimal_places=4,
-        description="Opening price"
-    )
-    high: Decimal = Field(
-        gt=0,
-        max_digits=12,
-        decimal_places=4,
-        description="High price"
-    )
-    low: Decimal = Field(
-        gt=0,
-        max_digits=12,
-        decimal_places=4,
-        description="Low price"
-    )
-    close: Decimal = Field(
-        gt=0,
-        max_digits=12,
-        decimal_places=4,
-        description="Closing price (adjusted for splits/dividends)"
-    )
-    volume: int = Field(
-        ge=0,
-        sa_column=Column(BIGINT),
-        description="Trading volume in shares"
-    )
-    adjusted_close: Optional[Decimal] = Field(
-        default=None,
-        gt=0,
-        max_digits=12,
-        decimal_places=4,
-        description="Adjusted close (if different from close)"
-    )
-
-    # Point-in-Time marker (CRITICAL)
-    ingestion_timestamp: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow),
-        description="Timestamp when this row was inserted (PiT enforcement). "
-                    "Backtests filter WHERE ingestion_timestamp <= as_of_date"
-    )
-    data_source: str = Field(
-        default="yfinance",
-        max_length=50,
-        description="Source of price data (yfinance, polygon.io, etc.)"
-    )
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    security: Security = Relationship(back_populates="price_history")
-
-    __table_args__ = (
-        # Composite unique: one row per (ticker, date)
-        UniqueConstraint("ticker", "date", name="uq_price_per_ticker_date"),
-        # Composite index for efficient PiT range queries
-        Index("idx_price_pit_range", "ticker", "date", "ingestion_timestamp"),
-    )
-
-
-class FundamentalsSnapshot(SQLModel, table=True):
-    """
-    Fundamental metrics with Point-in-Time enforcement and reporting-date semantics.
-
-    **Data model**:
-    - fiscal_period_end: the accounting period end date (e.g., "2023-03-31" for Q1)
-    - source_document_date: the filing/disclosure date (e.g., "2023-05-15" for 10-Q)
-    - ingestion_timestamp: when we loaded this into the database
-
-    **PiT enforcement**: For a backtest as-of 2023-05-01, we should only see
-    fundamentals with source_document_date <= 2023-05-01. This is stricter
-    than fiscal_period_end, preventing knowledge of Q2 results in Q1.
-
-    **Partitioned by fiscal_period_end** (quarterly or annual) for performance.
-
-    Supports arbitrary metric_name (revenue, net_income, fcf, book_value, etc.)
-    enabling custom factor definitions.
-
-    Invariants:
-    - fiscal_period_end <= source_document_date
-    - metric_value is decimal-safe for financial calculations
-    """
-    __tablename__ = "fundamentals_snapshot"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(
-        foreign_key="securities.ticker",
-        index=True,
-        description="Foreign key to securities"
-    )
-    fiscal_period_end: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Accounting period end (Q1/Q2/Q3/Q4/FY)"
-    )
-    metric_name: str = Field(
-        index=True,
-        max_length=100,
-        description="Fundamental metric (revenue, net_income, fcf, total_assets, etc.)"
-    )
-    metric_value: Optional[Decimal] = Field(
-        default=None,
-        max_digits=20,
-        decimal_places=2,
-        description="Metric value (can be None if not reported)"
-    )
-
-    # Point-in-Time marker (CRITICAL for disclosure lag)
-    source_document_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Filing/disclosure date (10-K, 10-Q, 8-K, etc.). "
-                    "PiT backtests filter WHERE source_document_date <= as_of_date"
-    )
-    ingestion_timestamp: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow),
-        description="Timestamp when we loaded this row"
-    )
-
-    # Metadata
-    document_type: Optional[str] = Field(
-        default=None,
-        max_length=20,
-        description="SEC document type (10-K, 10-Q, 8-K, etc.)"
-    )
-    data_source: str = Field(
-        default="sec_edgar",
-        max_length=50,
-        description="Source of fundamental data"
-    )
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    security: Security = Relationship(back_populates="fundamentals")
-
-    __table_args__ = (
-        # Composite unique: one metric per (ticker, fiscal_period, metric_name)
-        UniqueConstraint(
-            "ticker", "fiscal_period_end", "metric_name",
-            name="uq_fundamentals_per_period_metric"
-        ),
-        # Composite index for PiT disclosure-lag queries
-        Index(
-            "idx_fundamentals_pit_range",
-            "ticker", "fiscal_period_end", "source_document_date", "ingestion_timestamp"
-        ),
-    )
-```
-
-### 2.3 Factor Definitions & Factor Returns
-
-```python
-# backend/models/factors.py
-from datetime import datetime, date
-from typing import Optional, List, Dict, Any
-from decimal import Decimal
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime, JSON, Text
-from enum import Enum
-
-
-class FactorType(str, Enum):
-    """Category of factor"""
-    FAMA_FRENCH = "fama_french"
-    CUSTOM = "custom"
-    TECHNICAL = "technical"
-
-
-class FactorFrequency(str, Enum):
-    """Factor data frequency"""
-    DAILY = "daily"
-    MONTHLY = "monthly"
-    QUARTERLY = "quarterly"
-
-
-class FactorDefinition(SQLModel, table=True):
-    """
-    Master definition for factors (Fama-French or custom).
-
-    Immutable factor definitions prevent retroactive changes to factor
-    construction that would invalidate historical backtests.
-
-    For Fama-French factors (FF5):
-    - factor_name in (MKT-RF, SMB, HML, RMW, CMA)
-    - is_published = True
-    - publication_date = Kenneth French's release date
-
-    For custom factors:
-    - factor_name = user-defined (e.g., "fcf_yield_v2")
-    - is_published tracks if factor has been documented/validated
-    - publication_date = date factor definition was finalized
-    - calculation_formula stores the computation (as JSON or text)
-
-    Alpha decay analysis compares pre/post publication_date returns.
-
-    Invariants:
-    - factor_name is globally unique
-    - publication_date is immutable once set
-    """
-    __tablename__ = "factor_definitions"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    factor_name: str = Field(
-        unique=True,
-        max_length=100,
-        index=True,
-        description="Unique factor identifier (e.g., 'MKT-RF', 'fcf_yield', 'momentum_12m')"
-    )
-    factor_type: FactorType = Field(
-        index=True,
-        description="Category: Fama-French, custom fundamental, technical, etc."
-    )
-    description: str = Field(
-        max_length=2000,
-        description="Human-readable description of factor construction"
-    )
-    frequency: Optional[FactorFrequency] = Field(
-        default=None,
-        description="Data frequency (daily, monthly, quarterly)"
-    )
-
-    # Publication tracking (for alpha decay)
-    is_published: bool = Field(
-        default=False,
-        index=True,
-        description="True if factor is published/public. "
-                    "Alpha decay analysis compares pre/post publication performance."
-    )
-    publication_date: Optional[datetime] = Field(
-        default=None,
-        index=True,
-        sa_column=Column(DateTime(timezone=True)),
-        description="Date factor was published. "
-                    "For FF5: Kenneth French's publication date. "
-                    "For custom: date user finalized and validated factor."
-    )
-
-    # Construction metadata
-    calculation_formula: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text),
-        description="Formula or calculation steps (JSON or plain text)"
-    )
-    data_requirements: Optional[Dict[str, Any]] = Field(
-        default=None,
-        sa_column=Column(JSON),
-        description="Required fields for calculation "
-                    "(e.g., {\"quarterly_metrics\": [\"revenue\", \"fcf\"], \"price_fields\": [\"close\"]})"
-    )
-
-    # Audit
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-    updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), onupdate=datetime.utcnow)
-    )
-
-    # Relationships
-    fama_french_returns: List["FamaFrenchFactor"] = Relationship(
-        back_populates="factor_definition",
-        cascade_delete=True
-    )
-    custom_scores: List["CustomFactorScore"] = Relationship(
-        back_populates="factor_definition",
-        cascade_delete=True
-    )
-    backtest_allocations: List["BacktestFactorAllocation"] = Relationship(
-        back_populates="factor_definition",
-        cascade_delete=True
-    )
-    alpha_decay: List["AlphaDecayAnalysis"] = Relationship(
-        back_populates="factor_definition",
-        cascade_delete=True
-    )
-
-
-class FamaFrenchFactor(SQLModel, table=True):
-    """
-    Fama-French 5-factor returns (MKT-RF, SMB, HML, RMW, CMA).
-
-    Data sourced from Kenneth French Data Library (monthly and daily).
-
-    Example row:
-    - factor_id = ID of "MKT-RF" FactorDefinition
-    - date = 2023-01-31 (month end)
-    - return_value = 0.0325 (3.25% return that month)
-    - ingestion_timestamp = 2023-02-01 (when Kenneth French released)
-
-    Daily frequency available for portfolio construction.
-    Monthly frequency standard for academic research.
-
-    Invariants:
-    - One row per (factor_id, date) combination
-    - return_value in reasonable range (-1.0 to +1.0 for monthly, -0.15 to +0.15 for daily)
-    """
-    __tablename__ = "fama_french_factors"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    factor_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition"
-    )
-    date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Date of factor return (month-end or day)"
-    )
-    return_value: Decimal = Field(
-        max_digits=10,
-        decimal_places=6,
-        description="Factor return (as decimal, e.g., 0.0325 for 3.25%)"
-    )
-
-    # PiT marker (Kenneth French releases are stable, but we track ingestion for consistency)
-    ingestion_timestamp: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow),
-        description="When we loaded this factor return"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    factor_definition: FactorDefinition = Relationship(back_populates="fama_french_returns")
-
-    __table_args__ = (
-        # Composite unique: one return per (factor, date)
-        UniqueConstraint("factor_id", "date", name="uq_ff_factor_date"),
-        # Index for efficient time-series queries
-        Index("idx_ff_factor_time_series", "factor_id", "date"),
-    )
-
-
-class CustomFactorScore(SQLModel, table=True):
-    """
-    Custom factor scores computed per security per date.
-
-    Example: "fcf_yield" factor score for AAPL on 2023-03-31 = 0.045 (4.5%)
-
-    Scores can be:
-    - Computed from fundamentals snapshots (e.g., FCF / market cap)
-    - Retrieved from external sources (technical indicators, alternative data)
-    - User-supplied time-series
-
-    **PiT enforcement**:
-    - ingestion_timestamp is the timestamp of computation
-    - For a factor based on Q1 2023 fundamentals, ingestion_timestamp >= source_document_date
-    - Walk-forward backtests filter WHERE ingestion_timestamp <= as_of_date
-
-    **Recomputation**: If factor calculation method changes, create a new FactorDefinition
-    (e.g., "fcf_yield_v1" vs "fcf_yield_v2") to preserve historical integrity.
-
-    Invariants:
-    - One row per (factor_id, ticker, date) combination
-    - factor_value in domain-appropriate range (e.g., 0-100 for scores, unbounded for yields)
-    """
-    __tablename__ = "custom_factor_scores"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    factor_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition"
-    )
-    ticker: str = Field(
-        foreign_key="securities.ticker",
-        index=True,
-        description="Foreign key to Securities"
-    )
-    calculation_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Date factor score is calculated for (e.g., fiscal period end, trading date)"
-    )
-    factor_value: Optional[Decimal] = Field(
-        default=None,
-        max_digits=15,
-        decimal_places=4,
-        description="Computed factor score (e.g., 0.045 for 4.5% yield, 75 for percentile score)"
-    )
-    factor_percentile: Optional[Decimal] = Field(
-        default=None,
-        ge=0,
-        le=100,
-        max_digits=5,
-        decimal_places=2,
-        description="Percentile rank of factor score (0-100) across universe on calculation_date"
-    )
-
-    # PiT marker (CRITICAL for walk-forward backtests)
-    ingestion_timestamp: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow),
-        description="Timestamp when score was computed/ingested. "
-                    "Backtests filter WHERE ingestion_timestamp <= as_of_date"
-    )
-
-    # Metadata
-    computation_method: Optional[str] = Field(
-        default=None,
-        max_length=100,
-        description="How score was computed (formula, data source, algorithm)"
-    )
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    factor_definition: FactorDefinition = Relationship(back_populates="custom_scores")
-    security: Security = Relationship(back_populates="custom_factor_scores")
-
-    __table_args__ = (
-        # Composite unique: one score per (factor, ticker, date)
-        UniqueConstraint(
-            "factor_id", "ticker", "calculation_date",
-            name="uq_custom_score_factor_ticker_date"
-        ),
-        # Index for screener factor score lookups
-        Index("idx_custom_score_universe", "factor_id", "calculation_date"),
-        # Index for PiT time-series queries
-        Index(
-            "idx_custom_score_pit",
-            "factor_id", "ticker", "calculation_date", "ingestion_timestamp"
-        ),
-    )
-```
-
-### 2.4 Backtesting Infrastructure
-
-```python
-# backend/models/backtesting.py
-from datetime import datetime, date
-from typing import Optional, List, Dict, Any
-from decimal import Decimal
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime, JSON, Text, Numeric
-from enum import Enum
-
-
-class BacktestType(str, Enum):
-    """Type of backtest"""
-    FACTOR_COMBO = "factor_combo"
-    CUSTOM = "custom"
-    SECTOR_ROTATION = "sector_rotation"
-    EQUAL_WEIGHT = "equal_weight"
-
-
-class BacktestStatus(str, Enum):
-    """Backtest execution status"""
-    DRAFT = "draft"
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PAUSED = "paused"
-
-
-class RebalanceFrequency(str, Enum):
-    """Portfolio rebalancing frequency"""
-    DAILY = "daily"
-    WEEKLY = "weekly"
-    MONTHLY = "monthly"
-    QUARTERLY = "quarterly"
-    ANNUAL = "annual"
-    CUSTOM = "custom"
-
-
-class Backtest(SQLModel, table=True):
-    """
-    Master backtest job record.
-
-    A backtest defines:
-    - Time period (start_date, end_date)
-    - Universe selection criteria
-    - Factor allocations (weights summing to 100%)
-    - Transaction cost assumptions
-    - Rebalancing schedule
-
-    Status tracks execution lifecycle:
-    - DRAFT: User still configuring
-    - QUEUED: Waiting for compute worker
-    - RUNNING: Active execution
-    - COMPLETED: Successfully finished, results available
-    - FAILED: Error during execution
-    - PAUSED: User paused mid-run
-
-    Results are materialized in BacktestResults (daily) and BacktestStatistics.
-
-    Invariants:
-    - name is user-facing display name (not necessarily unique)
-    - start_date < end_date
-    - Only one configuration per backtest (1:1 relationship)
-    """
-    __tablename__ = "backtests"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: Optional[str] = Field(
-        default=None,
-        index=True,
-        max_length=100,
-        description="User ID (from auth system). Optional for demo/anonymous backtests."
-    )
-    name: str = Field(
-        max_length=500,
-        description="User-facing backtest name (e.g., 'FF5 Equal-Weight 2015-2023')"
-    )
-    description: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text),
-        description="User notes about backtest hypothesis"
-    )
-    backtest_type: BacktestType = Field(
-        index=True,
-        description="Backtest category"
-    )
-
-    # Status tracking
-    status: BacktestStatus = Field(
-        default=BacktestStatus.DRAFT,
-        index=True,
-        description="Current execution status"
-    )
-    status_message: Optional[str] = Field(
-        default=None,
-        max_length=1000,
-        description="Error message if status=FAILED"
-    )
-
-    # Execution tracking
-    started_at: Optional[datetime] = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True)),
-        description="When backtest computation started"
-    )
-    completed_at: Optional[datetime] = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True)),
-        description="When backtest computation completed"
-    )
-    compute_duration_seconds: Optional[int] = Field(
-        default=None,
-        description="Wall-clock time to complete backtest (seconds)"
-    )
-
-    # Metadata (JSON for extensibility)
-    metadata: Optional[Dict[str, Any]] = Field(
-        default=None,
-        sa_column=Column(JSON),
-        description="Flexible metadata (benchmarks, tags, version info, etc.)"
-    )
-
-    # Audit
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        index=True
-    )
-    updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), onupdate=datetime.utcnow)
-    )
-
-    # Relationships
-    configuration: "BacktestConfiguration" = Relationship(
-        back_populates="backtest",
-        cascade_delete=True,
-        sa_relationship_kwargs={"uselist": False, "lazy": "joined"}
-    )
-    factor_allocations: List["BacktestFactorAllocation"] = Relationship(
-        back_populates="backtest",
-        cascade_delete=True
-    )
-    daily_results: List["BacktestResult"] = Relationship(
-        back_populates="backtest",
-        cascade_delete=True
-    )
-    statistics: List["BacktestStatistic"] = Relationship(
-        back_populates="backtest",
-        cascade_delete=True
-    )
-    correlation_matrix: List["FactorCorrelationMatrix"] = Relationship(
-        back_populates="backtest",
-        cascade_delete=True
-    )
-    alpha_decay_analysis: List["AlphaDecayAnalysis"] = Relationship(
-        back_populates="backtest",
-        cascade_delete=True
-    )
-
-
-class BacktestConfiguration(SQLModel, table=True):
-    """
-    Configuration parameters for a backtest (1:1 with Backtest).
-
-    Separates static parameters from execution state/results.
-
-    Invariants:
-    - start_date < end_date
-    - initial_cash > 0
-    - Exactly one configuration per backtest
-    """
-    __tablename__ = "backtest_configurations"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    backtest_id: int = Field(
-        foreign_key="backtests.id",
-        unique=True,
-        description="One-to-one relationship with Backtest"
-    )
-
-    # Time period
-    start_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Backtest start date (first portfolio construction date)"
-    )
-    end_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Backtest end date (last portfolio construction date)"
-    )
-
-    # Portfolio parameters
-    initial_cash: Decimal = Field(
-        default=Decimal("1000000"),
-        gt=0,
-        max_digits=16,
-        decimal_places=2,
-        description="Starting capital (USD)"
-    )
-    rebalance_frequency: RebalanceFrequency = Field(
-        default=RebalanceFrequency.MONTHLY,
-        description="How often to rebalance portfolio"
-    )
-
-    # Universe selection
-    universe_selection_type: str = Field(
-        default="sp500",
-        max_length=100,
-        description="Universe definition (sp500, sp1500, custom_list, sector, etc.)"
-    )
-    universe_filters: Optional[Dict[str, Any]] = Field(
-        default=None,
-        sa_column=Column(JSON),
-        description="Filters applied to universe (min_price, min_volume, max_market_cap, etc.)"
-    )
-
-    # Transaction costs
-    commission_per_trade: Decimal = Field(
-        default=Decimal("0.0005"),  # 5 bps
-        ge=0,
-        max_digits=6,
-        decimal_places=4,
-        description="Commission as % of trade value (e.g., 0.0005 = 5 bps)"
-    )
-    slippage_percent: Decimal = Field(
-        default=Decimal("0.001"),  # 10 bps
-        ge=0,
-        max_digits=6,
-        decimal_places=4,
-        description="Slippage as % of trade value (e.g., 0.001 = 10 bps)"
-    )
-    market_impact_enabled: bool = Field(
-        default=False,
-        description="Whether to model market impact"
-    )
-
-    # Position constraints
-    max_position_size: Decimal = Field(
-        default=Decimal("0.05"),  # 5% per holding
-        ge=0,
-        le=1,
-        max_digits=4,
-        decimal_places=4,
-        description="Max position size (e.g., 0.05 = 5%)"
-    )
-    min_position_size: Decimal = Field(
-        default=Decimal("0.001"),  # 0.1% minimum
-        ge=0,
-        le=1,
-        max_digits=4,
-        decimal_places=4,
-        description="Min position size (e.g., 0.001 = 0.1%)"
-    )
-
-    # Sector/factor constraints
-    sector_rotation_enabled: bool = Field(
-        default=False,
-        description="Whether backtest rotates by sector"
-    )
-    target_stocks_per_portfolio: int = Field(
-        default=20,
-        ge=1,
-        description="Target number of holdings"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    backtest: Backtest = Relationship(back_populates="configuration")
-
-
-class BacktestFactorAllocation(SQLModel, table=True):
-    """
-    Factor weight allocation in a backtest.
-
-    Example:
-    - backtest_id = 42
-    - factor_id = ID of "MKT-RF" FactorDefinition
-    - weight = 0.40 (40%)
-
-    Weights across all factors for a backtest should sum to 1.0.
-    Composite factor scores computed as weighted sum.
-
-    Invariants:
-    - weight >= 0
-    - Sum of weights per backtest ≈ 1.0 (within floating-point tolerance)
-    - No duplicate (backtest_id, factor_id) pairs
-    """
-    __tablename__ = "backtest_factor_allocations"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    backtest_id: int = Field(
-        foreign_key="backtests.id",
-        index=True,
-        description="Foreign key to Backtest"
-    )
-    factor_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition"
-    )
-    weight: Decimal = Field(
-        ge=0,
-        le=1,
-        max_digits=5,
-        decimal_places=4,
-        description="Factor weight (0.0 to 1.0, should sum to ~1.0 per backtest)"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    backtest: Backtest = Relationship(back_populates="factor_allocations")
-    factor_definition: FactorDefinition = Relationship(
-        back_populates="backtest_allocations"
-    )
-
-    __table_args__ = (
-        # Composite unique: one allocation per (backtest, factor)
-        UniqueConstraint(
-            "backtest_id", "factor_id",
-            name="uq_backtest_factor_allocation"
-        ),
-    )
-```
-
-### 2.5 Backtest Results & Statistics
-
-```python
-# backend/models/backtest_results.py
-from datetime import datetime, date
-from typing import Optional, List, Dict, Any
-from decimal import Decimal
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime, JSON, Numeric
-from enum import Enum
-
-
-class BacktestResult(SQLModel, table=True):
-    """
-    Daily backtest results (one row per backtest per day).
-
-    Materialized to support fast charting and drill-down.
-
-    **Key metrics**:
-    - portfolio_value: cumulative wealth (reflects strategy returns)
-    - daily_return: return on that day
-    - benchmark_return: reference index return (e.g., SPY)
-    - turnover: % of portfolio traded that day
-    - factor_exposures: JSON dict of {factor_id: beta_estimate}
-
-    **Walk-forward compliance**:
-    - All underlying data (price, fundamentals, factor scores)
-      ingestion_timestamp <= this date
-    - Portfolio excludes securities delisted before this date
-
-    Invariants:
-    - One row per (backtest_id, date) combination
-    - portfolio_value > 0
-    - daily_return typically in [-0.5, 0.5] range
-    """
-    __tablename__ = "backtest_results"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    backtest_id: int = Field(
-        foreign_key="backtests.id",
-        index=True,
-        description="Foreign key to Backtest"
-    )
-    date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Result date (trading date)"
-    )
-
-    # Portfolio performance
-    portfolio_value: Decimal = Field(
-        gt=0,
-        max_digits=16,
-        decimal_places=2,
-        sa_column=Column(Numeric(16, 2)),
-        description="Portfolio NAV at end of day (cumulative wealth)"
-    )
-    daily_return: Decimal = Field(
-        max_digits=8,
-        decimal_places=6,
-        sa_column=Column(Numeric(8, 6)),
-        description="Daily return (as decimal, e.g., 0.0125 = 1.25%)"
-    )
-    cumulative_return: Decimal = Field(
-        max_digits=10,
-        decimal_places=6,
-        sa_column=Column(Numeric(10, 6)),
-        description="Cumulative return from start (e.g., 0.450 = 45.0%)"
-    )
-
-    # Benchmark comparison
-    benchmark_return: Optional[Decimal] = Field(
-        default=None,
-        max_digits=8,
-        decimal_places=6,
-        sa_column=Column(Numeric(8, 6)),
-        description="Daily benchmark return for comparison (e.g., SPY)"
-    )
-    benchmark_cumulative_return: Optional[Decimal] = Field(
-        default=None,
-        max_digits=10,
-        decimal_places=6,
-        sa_column=Column(Numeric(10, 6)),
-        description="Cumulative benchmark return"
-    )
-    excess_return: Optional[Decimal] = Field(
-        default=None,
-        max_digits=8,
-        decimal_places=6,
-        sa_column=Column(Numeric(8, 6)),
-        description="Daily alpha (strategy_return - benchmark_return)"
-    )
-
-    # Trading activity
-    turnover: Decimal = Field(
-        default=Decimal("0"),
-        ge=0,
-        le=2,
-        max_digits=5,
-        decimal_places=4,
-        description="Portfolio turnover on this date (0.0 to 2.0, typically < 0.5)"
-    )
-    transaction_costs: Optional[Decimal] = Field(
-        default=None,
-        ge=0,
-        max_digits=10,
-        decimal_places=2,
-        description="Total dollar transaction costs on this date"
-    )
-
-    # Factor exposure (for rolling regression analysis)
-    factor_exposures: Optional[Dict[str, Any]] = Field(
-        default=None,
-        sa_column=Column(JSON),
-        description="Factor beta estimates {factor_name: beta_value}. "
-                    "Computed via rolling regression (60-month window)"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    backtest: Backtest = Relationship(back_populates="daily_results")
-
-    __table_args__ = (
-        # Composite unique: one result per (backtest, date)
-        UniqueConstraint("backtest_id", "date", name="uq_backtest_result_date"),
-        # Index for efficient time-series queries
-        Index("idx_backtest_result_time_series", "backtest_id", "date"),
-    )
-
-
-class BacktestStatistic(SQLModel, table=True):
-    """
-    Computed statistics for a backtest (Sharpe, Sortino, Calmar, etc.).
-
-    Statistics are computed for the full period and optional sub-periods
-    (pre/post publication, by year, by market regime, etc.).
-
-    Example rows:
-    - metric_name="sharpe_ratio", metric_value=1.45, period_start=2015-01-01, period_end=2023-12-31
-    - metric_name="max_drawdown", metric_value=-0.385, period_start=2015-01-01, period_end=2023-12-31
-    - metric_name="hit_rate", metric_value=0.625, period_start=2015-01-01, period_end=2023-12-31
-    - metric_name="information_ratio", metric_value=0.82, period_start=2015-01-01, period_end=2023-12-31
-
-    Invariants:
-    - One row per (backtest_id, metric_name, period_start, period_end) combination
-    - metric_value domain-specific (e.g., sharpe typically -2 to +3, max_drawdown typically -0.8 to 0)
-    """
-    __tablename__ = "backtest_statistics"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    backtest_id: int = Field(
-        foreign_key="backtests.id",
-        index=True,
-        description="Foreign key to Backtest"
-    )
-    metric_name: str = Field(
-        index=True,
-        max_length=100,
-        description="Metric identifier (sharpe_ratio, sortino_ratio, calmar_ratio, "
-                    "max_drawdown, annual_return, volatility, information_ratio, "
-                    "hit_rate, total_return, etc.)"
-    )
-    metric_value: Decimal = Field(
-        max_digits=10,
-        decimal_places=6,
-        description="Calculated metric value"
-    )
-
-    # Period specification
-    period_start: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Start of period over which statistic is calculated"
-    )
-    period_end: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="End of period"
-    )
-
-    # Sub-period context
-    period_type: str = Field(
-        default="full",
-        max_length=50,
-        description="Type of period (full, annual, monthly, pre_publication, post_publication, calendar_year, etc.)"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    backtest: Backtest = Relationship(back_populates="statistics")
-
-    __table_args__ = (
-        # Composite unique: one metric per (backtest, metric_name, period_start, period_end)
-        UniqueConstraint(
-            "backtest_id", "metric_name", "period_start", "period_end",
-            name="uq_backtest_statistic"
-        ),
-        # Index for filtering by metric type
-        Index("idx_backtest_stat_metric", "backtest_id", "metric_name"),
-    )
-```
-
-### 2.6 Factor Correlation & Alpha Decay Analysis
-
-```python
-# backend/models/analysis.py
-from datetime import datetime
-from typing import Optional, List
-from decimal import Decimal
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime, Numeric
-from enum import Enum
-
-
-class FactorCorrelationMatrix(SQLModel, table=True):
-    """
-    Pairwise correlations between factors in a backtest.
-
-    Computed during backtest (rolling 60-month window correlation).
-
-    Example:
-    - backtest_id = 42
-    - factor_1_id = ID of "MKT-RF"
-    - factor_2_id = ID of "SMB"
-    - correlation_value = 0.12
-    - as_of_date = 2023-12-31
-
-    Invariants:
-    - Correlation in [-1.0, 1.0]
-    - For factor_1_id < factor_2_id (avoid redundant rows)
-    - One matrix per (backtest_id, as_of_date) — one point-in-time snapshot
-    """
-    __tablename__ = "factor_correlation_matrix"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    backtest_id: int = Field(
-        foreign_key="backtests.id",
-        index=True,
-        description="Foreign key to Backtest"
-    )
-    factor_1_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition (factor_1_id < factor_2_id)"
-    )
-    factor_2_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition (factor_1_id < factor_2_id)"
-    )
-    correlation_value: Decimal = Field(
-        ge=-1,
-        le=1,
-        max_digits=5,
-        decimal_places=4,
-        description="Correlation coefficient [-1.0, 1.0]"
-    )
-
-    # Time reference
-    as_of_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Date of correlation snapshot (end of rolling window)"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    backtest: Backtest = Relationship(back_populates="correlation_matrix")
-
-    __table_args__ = (
-        # Composite unique: one correlation per (backtest, factor_1, factor_2, date)
-        UniqueConstraint(
-            "backtest_id", "factor_1_id", "factor_2_id", "as_of_date",
-            name="uq_factor_correlation"
-        ),
-        # Index for correlation matrix lookups
-        Index(
-            "idx_correlation_backtest_date",
-            "backtest_id", "as_of_date"
-        ),
-    )
-
-
-class AlphaDecayAnalysis(SQLModel, table=True):
-    """
-    Pre/post publication factor alpha decay analysis.
-
-    Per Blitz et al. (Dec 2025), published factors experience ~50% return decay.
-    This table tracks that decay for each factor in each backtest.
-
-    Example:
-    - factor_id = ID of "MKT-RF"
-    - backtest_id = 42
-    - pre_publication_return = 0.15 (15% annual pre-publication)
-    - post_publication_return = 0.075 (7.5% annual post-publication)
-    - decay_percentage = 0.50 (50% decay)
-    - months_post_publication = 24 (2 years post-publication)
-
-    Useful for:
-    - Assessing factor robustness
-    - Detecting alpha decay in custom factors
-    - Comparing pre/post publication backtest segments
-
-    Invariants:
-    - One row per (factor_id, backtest_id) combination
-    - decay_percentage in [0, 1]
-    - months_post_publication >= 0
-    """
-    __tablename__ = "alpha_decay_analysis"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    factor_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition"
-    )
-    backtest_id: int = Field(
-        foreign_key="backtests.id",
-        index=True,
-        description="Foreign key to Backtest"
-    )
-
-    # Performance metrics
-    pre_publication_return: Optional[Decimal] = Field(
-        default=None,
-        max_digits=10,
-        decimal_places=6,
-        description="Annual return before publication (as decimal, e.g., 0.15 = 15%)"
-    )
-    post_publication_return: Optional[Decimal] = Field(
-        default=None,
-        max_digits=10,
-        decimal_places=6,
-        description="Annual return after publication"
-    )
-
-    # Decay metrics
-    decay_percentage: Optional[Decimal] = Field(
-        default=None,
-        ge=0,
-        le=1,
-        max_digits=5,
-        decimal_places=4,
-        description="Return decay post-publication as fraction (e.g., 0.50 = 50% decay)"
-    )
-    months_post_publication: int = Field(
-        default=0,
-        ge=0,
-        description="Months of post-publication data in backtest"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    factor_definition: FactorDefinition = Relationship(
-        back_populates="alpha_decay"
-    )
-    backtest: Backtest = Relationship(back_populates="alpha_decay_analysis")
-
-    __table_args__ = (
-        # Composite unique: one decay analysis per (factor, backtest)
-        UniqueConstraint(
-            "factor_id", "backtest_id",
-            name="uq_alpha_decay_factor_backtest"
-        ),
-    )
-```
-
-### 2.7 Screener Integration
-
-```python
-# backend/models/screener.py
-from datetime import datetime
-from typing import Optional, List
-from decimal import Decimal
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime
-from enum import Enum
-
-
-class ScreenerFactorScore(SQLModel, table=True):
-    """
-    Factor scores computed for stock screener display.
-
-    Materialized from CustomFactorScore for fast screener queries.
-    One row per (ticker, score_date, factor_id).
-
-    Enables users to:
-    - Sort/filter stock lists by factor scores
-    - See live factor grades in screener columns
-    - Integrate backtested factors into stock picking
-
-    **PiT enforcement**:
-    - ingestion_timestamp enforces walk-forward protocol
-    - Screener queries filter WHERE ingestion_timestamp <= today
-    - Prevents seeing "tomorrow's data" in today's screener
-
-    Invariants:
-    - One row per (ticker, score_date, factor_id)
-    - factor_score in [0, 100] (percentile)
-    - ingestion_timestamp >= score_date
-    """
-    __tablename__ = "screener_factor_scores"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(
-        foreign_key="securities.ticker",
-        index=True,
-        description="Foreign key to Securities"
-    )
-    score_date: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Date of score (e.g., quarter-end for fundamental factors)"
-    )
-    factor_id: int = Field(
-        foreign_key="factor_definitions.id",
-        index=True,
-        description="Foreign key to FactorDefinition"
-    )
-
-    # Score value
-    factor_score: Decimal = Field(
-        ge=0,
-        le=100,
-        max_digits=5,
-        decimal_places=2,
-        description="Factor score as percentile (0-100)"
-    )
-    factor_grade: Optional[str] = Field(
-        default=None,
-        max_length=1,
-        description="Letter grade (A, B, C, D, F) derived from score"
-    )
-
-    # PiT enforcement
-    ingestion_timestamp: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow),
-        description="When score was computed/ingested. "
-                    "Screener filters WHERE ingestion_timestamp <= as_of_date"
-    )
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False)
-    )
-
-    # Relationships
-    security: Security = Relationship(back_populates="screener_scores")
-
-    __table_args__ = (
-        # Composite unique: one score per (ticker, score_date, factor_id)
-        UniqueConstraint(
-            "ticker", "score_date", "factor_id",
-            name="uq_screener_score"
-        ),
-        # Index for screener lookups (what are today's top-scored stocks?)
-        Index("idx_screener_score_universe", "factor_id", "score_date"),
-        # Index for PiT queries
-        Index(
-            "idx_screener_score_pit",
-            "ticker", "factor_id", "score_date", "ingestion_timestamp"
-        ),
-    )
+┌─────────────────────────────────────────────────────────────────────┐
+│                       PHASE 1: EXISTING TABLES                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  security (ticker PK)                                               │
+│  price_history (ticker FK → security)                              │
+│  factor_definition (id PK)                                         │
+│  backtest (id PK)                                                  │
+│  backtest_result (backtest_id FK, date)                            │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+            ┌─────────────────────────────────────────────────────┐
+            │        PHASE 2: EVENT SCANNER TABLES (NEW)          │
+            ├─────────────────────────────────────────────────────┤
+            │                                                     │
+            │  event                                              │
+            │  ├─ event_id (PK)                                   │
+            │  ├─ ticker (FK → security)                          │
+            │  ├─ event_type (earnings, M&A, insider_trade, ...) │
+            │  ├─ event_classification (detected_classification)  │
+            │  ├─ severity_score (1-5)                            │
+            │  ├─ detected_at (PiT: detection timestamp)          │
+            │  ├─ event_date (when event occurred)                │
+            │  └─ source (SEC_EDGAR, YFINANCE)                    │
+            │                                                     │
+            │  event_classification_rule                          │
+            │  ├─ rule_id (PK)                                    │
+            │  ├─ classification (event_type)                     │
+            │  ├─ pattern_type (keyword, filing_form, calendar)   │
+            │  ├─ pattern_value (JSON for keywords/patterns)      │
+            │  └─ confidence (0-100)                              │
+            │                                                     │
+            │  alpha_decay_window                                 │
+            │  ├─ window_id (PK)                                  │
+            │  ├─ event_id (FK → event)                           │
+            │  ├─ window_type ([0,+1d], [0,+5d], [0,+21d], ...) │
+            │  ├─ abnormal_return (measured return%)              │
+            │  ├─ measured_at (PiT: measurement timestamp)        │
+            │  └─ confidence (statistical significance)           │
+            │                                                     │
+            │  event_factor_bridge                                │
+            │  ├─ bridge_id (PK)                                  │
+            │  ├─ event_id (FK → event)                           │
+            │  ├─ factor_id (FK → factor_definition)              │
+            │  ├─ signal_value (event signal strength, -1 to +1)  │
+            │  ├─ created_at (when bridge was created)            │
+            │  └─ valid_until (when signal expires)               │
+            │                                                     │
+            │  event_source_mapping                               │
+            │  ├─ mapping_id (PK)                                 │
+            │  ├─ event_id (FK → event)                           │
+            │  ├─ source_type (SEC_EDGAR_8K, YFINANCE_EARNINGS...) │
+            │  ├─ source_url (link to filing or calendar)         │
+            │  ├─ source_id (form accession number, etc.)         │
+            │  └─ extracted_data (JSON: metadata)                 │
+            │                                                     │
+            │  event_alert_configuration                          │
+            │  ├─ config_id (PK)                                  │
+            │  ├─ user_id or portfolio_id (scope)                 │
+            │  ├─ event_type_filter (specific types or all)       │
+            │  ├─ severity_threshold (min 1-5)                    │
+            │  ├─ enabled (boolean)                               │
+            │  └─ updated_at                                      │
+            │                                                     │
+            │  event_correlation_analysis                         │
+            │  ├─ analysis_id (PK)                                │
+            │  ├─ event_type_1 (e.g., insider_trade)             │
+            │  ├─ event_type_2 (e.g., M&A)                        │
+            │  ├─ co_occurrence_count (# of coincident events)    │
+            │  ├─ time_window_days (days within which occurred)   │
+            │  ├─ correlation_strength (0-1)                      │
+            │  └─ analyzed_period_end (PiT date)                  │
+            │                                                     │
+            └─────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Point-in-Time (PiT) Enforcement & Query Patterns
+## 2. New Table Definitions
 
-### 3.1 PiT Philosophy & Implementation
+### 2.1 event
 
-**Core Principle**: Every historical data row includes `ingestion_timestamp`, marking when that row was inserted into the database. Walk-forward backtests ALWAYS filter:
+**Purpose**: Core event storage. Every corporate event detected from SEC EDGAR or yfinance creates one record.
+
+**PiT Strategy**:
+- `detected_at` (timestamp): When the event was first detected by the system (immutable, set at insertion)
+- `event_date` (date): When the corporate event actually occurred (what happened in the market)
+- All queries filter by `detected_at` to ensure point-in-time consistency when backtesting
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| event_id | BIGSERIAL | PK, NOT NULL | Unique identifier for this event |
+| ticker | VARCHAR(10) | FK→security.ticker, NOT NULL | Security being affected |
+| event_type | VARCHAR(50) | NOT NULL, CHECK IN (earnings, M&A, insider_trade, dividend_change, SEC_filing, management_change, guidance_revision, share_repurchase) | Event classification taxonomy |
+| event_classification_id | INTEGER | FK→event_classification_rule.rule_id, NOT NULL | Rule used to classify this event |
+| severity_score | SMALLINT | NOT NULL, CHECK BETWEEN 1 AND 5 | Severity impact (1=minimal, 5=severe) |
+| detected_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | When system detected the event (PiT reference) |
+| event_date | DATE | NOT NULL | When the event occurred in reality |
+| source | VARCHAR(50) | NOT NULL, CHECK IN (SEC_EDGAR, YFINANCE, MANUAL) | Data source of event |
+| headline | VARCHAR(255) | NOT NULL | Short description of event |
+| description | TEXT | NULL | Detailed description or extracted text |
+| metadata | JSONB | NULL | Source-specific metadata (accession number, filing form, etc.) |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Record creation time |
+| updated_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Last update time |
+
+**Indexes**:
+- `idx_event_ticker` (ticker)
+- `idx_event_type` (event_type)
+- `idx_event_detected_at` (detected_at DESC) — PiT enforcement
+- `idx_event_event_date` (event_date DESC)
+- `idx_event_severity` (severity_score DESC)
+- `idx_event_ticker_detected` (ticker, detected_at DESC) — Common query pattern
+- `idx_event_ticker_date_type` (ticker, event_date, event_type) — Timeline queries
+- `idx_event_source` (source)
+
+**Unique Constraint**:
+- `uq_event_ticker_type_date_source` (ticker, event_type, event_date, source) — Prevent duplicate events from same source on same day
+
+---
+
+### 2.2 event_classification_rule
+
+**Purpose**: Define rules for classifying raw detected events. Maps keywords, SEC filing forms, calendar events to event types.
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| rule_id | SERIAL | PK, NOT NULL | Rule identifier |
+| classification | VARCHAR(50) | NOT NULL, CHECK IN (earnings, M&A, insider_trade, ...) | Event type this rule produces |
+| pattern_type | VARCHAR(50) | NOT NULL, CHECK IN (keyword, filing_form, calendar_event, net_trading_volume) | Pattern matching strategy |
+| pattern_value | JSONB | NOT NULL | Pattern data: keywords array, form list, calendar event type, thresholds |
+| confidence_score | SMALLINT | DEFAULT 80, CHECK BETWEEN 0 AND 100 | Confidence (0-100) that pattern indicates event |
+| enabled | BOOLEAN | DEFAULT TRUE | Enable/disable rule without deletion |
+| description | TEXT | NULL | Rule documentation |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Rule creation date |
+| updated_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Last update |
+
+**Indexes**:
+- `idx_classification_rule_enabled` (enabled) — Only query active rules
+- `idx_classification_rule_type` (classification, enabled)
+- `idx_classification_rule_pattern` (pattern_type)
+
+**Example Records**:
+```json
+{
+  "rule_id": 1,
+  "classification": "earnings",
+  "pattern_type": "calendar_event",
+  "pattern_value": {"event_type": "earnings_date"},
+  "confidence_score": 95
+}
+
+{
+  "rule_id": 2,
+  "classification": "insider_trade",
+  "pattern_type": "filing_form",
+  "pattern_value": {"forms": ["4", "5"]},
+  "confidence_score": 100
+}
+
+{
+  "rule_id": 3,
+  "classification": "M&A",
+  "pattern_type": "keyword",
+  "pattern_value": {"keywords": ["acquisition", "merger", "acquired by", "acquired", "to acquire"]},
+  "confidence_score": 75
+}
+```
+
+---
+
+### 2.3 alpha_decay_window
+
+**Purpose**: Stores measured abnormal returns in predefined windows post-event. Enables alpha decay analysis and decay charts on event detail views.
+
+**PiT Strategy**:
+- `measured_at` (timestamp): When the alpha decay window was calculated/updated
+- Links to `event.detected_at` for temporal consistency
+- Data in this table accumulated as time passes (e.g., [0,+1d] window closes after 1 day post-event, then [0,+5d] closes after 5 days, etc.)
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| window_id | BIGSERIAL | PK, NOT NULL | Unique identifier |
+| event_id | BIGINT | FK→event.event_id, NOT NULL | Parent event |
+| window_type | VARCHAR(20) | NOT NULL, CHECK IN ([0,+1d], [0,+5d], [0,+21d], [0,+63d]) | Time window post-event |
+| abnormal_return | NUMERIC(12, 6) | NOT NULL | Measured abnormal return (%) during window |
+| benchmark_return | NUMERIC(12, 6) | NULL | Benchmark return during window (optional) |
+| volatility | NUMERIC(12, 6) | NULL | Stock volatility during window |
+| volume_spike | NUMERIC(10, 4) | NULL | Volume as multiple of average (e.g., 2.5 = 250% of normal) |
+| trading_volume | BIGINT | NULL | Total shares traded during window |
+| confidence_score | SMALLINT | DEFAULT 50, CHECK BETWEEN 0 AND 100 | Statistical significance (0-100) |
+| data_points | INTEGER | DEFAULT 0 | Number of price points in window (for validation) |
+| measured_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | When measurement was taken (PiT) |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Record insertion |
+| updated_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Last update (if recalculated) |
+
+**Indexes**:
+- `idx_alpha_decay_event` (event_id)
+- `idx_alpha_decay_window_type` (window_type)
+- `idx_alpha_decay_measured_at` (measured_at DESC) — PiT queries
+- `idx_alpha_decay_event_window` (event_id, window_type) — Unique window per event
+- `idx_alpha_decay_confidence` (confidence_score DESC) — High-confidence windows
+
+**Unique Constraint**:
+- `uq_alpha_decay_event_window` (event_id, window_type) — One measurement per window per event
+
+---
+
+### 2.4 event_factor_bridge
+
+**Purpose**: Bridge between detected events and the Factor Backtester. When an event is detected and classified, it becomes a backtestable factor signal.
+
+**PiT Strategy**:
+- `created_at`: When the bridge was created (event detected → factor signal generated)
+- `valid_until`: When the signal expires (e.g., post-event alpha decay window closes)
+- Queries filter by valid_until >= analysis_date to ensure temporal consistency
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| bridge_id | BIGSERIAL | PK, NOT NULL | Unique identifier |
+| event_id | BIGINT | FK→event.event_id, NOT NULL | Parent event |
+| factor_id | INTEGER | FK→factor_definition.id, NOT NULL | Generated factor |
+| signal_value | NUMERIC(8, 6) | NOT NULL, CHECK BETWEEN -1 AND 1 | Signal strength: -1 (strong short) to +1 (strong long) |
+| signal_confidence | SMALLINT | DEFAULT 50, CHECK BETWEEN 0 AND 100 | Confidence in signal (0-100) |
+| signal_expiry_window | VARCHAR(20) | DEFAULT [0,+21d] | Which alpha window this signal is valid for |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | When bridge created |
+| valid_until | TIMESTAMP WITH TIME ZONE | NOT NULL | When signal expires (event_date + window duration) |
+| updated_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Last update |
+
+**Indexes**:
+- `idx_bridge_event` (event_id)
+- `idx_bridge_factor` (factor_id)
+- `idx_bridge_valid_until` (valid_until DESC) — Active signal queries
+- `idx_bridge_factor_valid` (factor_id, valid_until DESC) — Factor backtest queries
+- `idx_bridge_created_at` (created_at DESC)
+
+**Unique Constraint**:
+- `uq_bridge_event_factor` (event_id, factor_id) — One bridge per event-factor pair
+
+**Signal Value Logic**:
+- earnings + surprise_magnitude > 5%: signal_value = +0.8
+- insider_trade + high_volume: signal_value = +0.6
+- M&A + strategic_fit: signal_value = +0.7
+- guidance_revision + downward: signal_value = -0.7
+
+---
+
+### 2.5 event_source_mapping
+
+**Purpose**: Link events back to original data sources (SEC EDGAR accession numbers, yfinance URLs, etc.). Enables source tracing and deduplication.
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| mapping_id | BIGSERIAL | PK, NOT NULL | Unique identifier |
+| event_id | BIGINT | FK→event.event_id, NOT NULL | Parent event |
+| source_type | VARCHAR(50) | NOT NULL, CHECK IN (SEC_EDGAR_8K, SEC_EDGAR_10K, SEC_EDGAR_10Q, SEC_EDGAR_SC13D, SEC_EDGAR_SC13G, SEC_EDGAR_FORM4, YFINANCE_EARNINGS, YFINANCE_DIVIDEND) | Specific source type |
+| source_url | VARCHAR(500) | NOT NULL | URL to original source |
+| source_id | VARCHAR(100) | NULL | Unique ID from source (e.g., accession number) |
+| extracted_data | JSONB | NULL | Parsed/extracted metadata from source |
+| raw_content_hash | VARCHAR(64) | NULL | SHA-256 hash of raw content for deduplication |
+| ingested_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | When data was pulled from source |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Record creation |
+
+**Indexes**:
+- `idx_source_mapping_event` (event_id)
+- `idx_source_mapping_type` (source_type)
+- `idx_source_mapping_source_id` (source_id) — Deduplication
+- `idx_source_mapping_hash` (raw_content_hash) — Deduplication
+- `idx_source_mapping_ingested` (ingested_at DESC)
+
+**Unique Constraint**:
+- `uq_source_mapping_event_type` (event_id, source_type) — One mapping per source type per event
+
+**Example extracted_data JSON**:
+```json
+{
+  "accession_number": "0001193125-26-001234",
+  "filing_date": "2026-03-10",
+  "form_type": "8-K",
+  "cik": "0000320193",
+  "company_name": "Apple Inc.",
+  "item_numbers": ["8.01"],
+  "event_date": "2026-03-10"
+}
+```
+
+---
+
+### 2.6 event_alert_configuration
+
+**Purpose**: User/portfolio alert preferences. Enables filtering events by type and severity.
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| config_id | SERIAL | PK, NOT NULL | Configuration identifier |
+| user_id | VARCHAR(100) | NOT NULL (or NULL if portfolio_id set) | User owning this config |
+| portfolio_id | INTEGER | NULL (or NOT NULL if user_id set) | Portfolio owning this config |
+| scope | VARCHAR(50) | DEFAULT global, CHECK IN (global, portfolio, ticker) | Scope of alerts |
+| scope_value | VARCHAR(100) | NULL | Ticker or portfolio name if scope is portfolio/ticker |
+| event_type_filter | TEXT | DEFAULT all, CHECK IN (all, earnings, M&A, insider_trade, dividend_change, SEC_filing, management_change, guidance_revision, share_repurchase) | Comma-separated event types to monitor |
+| min_severity_threshold | SMALLINT | DEFAULT 1, CHECK BETWEEN 1 AND 5 | Minimum severity (1-5) to alert |
+| alert_enabled | BOOLEAN | DEFAULT TRUE | Enable/disable alerts |
+| notification_method | VARCHAR(50) | DEFAULT in_app, CHECK IN (in_app, email, webhook) | How to notify user |
+| webhook_url | VARCHAR(500) | NULL | If notification_method = webhook |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Configuration creation |
+| updated_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Last configuration update |
+
+**Indexes**:
+- `idx_alert_config_user` (user_id)
+- `idx_alert_config_portfolio` (portfolio_id)
+- `idx_alert_config_enabled` (alert_enabled)
+- `idx_alert_config_scope` (scope, scope_value)
+
+---
+
+### 2.7 event_correlation_analysis
+
+**Purpose**: Track event co-occurrence patterns. E.g., insider buying often precedes M&A.
+
+**PiT Strategy**:
+- `analyzed_period_end` (date): Data point for historical trend analysis
+- New records appended periodically (e.g., weekly) with updated correlations
+
+**Columns**:
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| analysis_id | BIGSERIAL | PK, NOT NULL | Unique identifier |
+| event_type_1 | VARCHAR(50) | NOT NULL, CHECK IN (earnings, M&A, insider_trade, ...) | First event type |
+| event_type_2 | VARCHAR(50) | NOT NULL, CHECK IN (earnings, M&A, insider_trade, ...) | Second event type |
+| time_window_days | SMALLINT | DEFAULT 30, CHECK BETWEEN 1 AND 365 | Days within which events co-occurred |
+| co_occurrence_count | INTEGER | DEFAULT 0 | Number of instances where both events occurred within window |
+| total_event_type_1_count | INTEGER | DEFAULT 0 | Total occurrences of event_type_1 in period |
+| total_event_type_2_count | INTEGER | DEFAULT 0 | Total occurrences of event_type_2 in period |
+| correlation_strength | NUMERIC(6, 4) | DEFAULT 0.0, CHECK BETWEEN 0 AND 1 | Pearson correlation (0-1) |
+| chi_square_statistic | NUMERIC(12, 4) | NULL | Chi-square test value (statistical significance) |
+| p_value | NUMERIC(8, 6) | NULL | P-value for significance test |
+| analyzed_period_start | DATE | NOT NULL | Period analysis began |
+| analyzed_period_end | DATE | NOT NULL | Period analysis ended |
+| created_at | TIMESTAMP WITH TIME ZONE | NOT NULL, DEFAULT NOW() | Analysis creation |
+
+**Indexes**:
+- `idx_correlation_event_types` (event_type_1, event_type_2)
+- `idx_correlation_period` (analyzed_period_end DESC)
+- `idx_correlation_strength` (correlation_strength DESC)
+
+**Unique Constraint**:
+- `uq_correlation_types_window` (event_type_1, event_type_2, time_window_days, analyzed_period_end) — One analysis per type pair per window per period
+
+---
+
+## 3. SQLModel Schema Definitions
+
+```python
+# backend/models/events.py
+
+from sqlmodel import SQLModel, Field, Relationship
+from typing import Optional, List
+from datetime import datetime, date, timedelta
+from enum import Enum
+import json
+from decimal import Decimal
+import sqlalchemy as sa
+
+# Enums for validation
+
+class EventTypeEnum(str, Enum):
+    EARNINGS = "earnings"
+    M_A = "M&A"
+    INSIDER_TRADE = "insider_trade"
+    DIVIDEND_CHANGE = "dividend_change"
+    SEC_FILING = "SEC_filing"
+    MANAGEMENT_CHANGE = "management_change"
+    GUIDANCE_REVISION = "guidance_revision"
+    SHARE_REPURCHASE = "share_repurchase"
+
+class EventSourceEnum(str, Enum):
+    SEC_EDGAR = "SEC_EDGAR"
+    YFINANCE = "YFINANCE"
+    MANUAL = "MANUAL"
+
+class PatternTypeEnum(str, Enum):
+    KEYWORD = "keyword"
+    FILING_FORM = "filing_form"
+    CALENDAR_EVENT = "calendar_event"
+    NET_TRADING_VOLUME = "net_trading_volume"
+
+class AlphaWindowTypeEnum(str, Enum):
+    WINDOW_1D = "[0,+1d]"
+    WINDOW_5D = "[0,+5d]"
+    WINDOW_21D = "[0,+21d]"
+    WINDOW_63D = "[0,+63d]"
+
+class SourceTypeEnum(str, Enum):
+    SEC_EDGAR_8K = "SEC_EDGAR_8K"
+    SEC_EDGAR_10K = "SEC_EDGAR_10K"
+    SEC_EDGAR_10Q = "SEC_EDGAR_10Q"
+    SEC_EDGAR_SC13D = "SEC_EDGAR_SC13D"
+    SEC_EDGAR_SC13G = "SEC_EDGAR_SC13G"
+    SEC_EDGAR_FORM4 = "SEC_EDGAR_FORM4"
+    YFINANCE_EARNINGS = "YFINANCE_EARNINGS"
+    YFINANCE_DIVIDEND = "YFINANCE_DIVIDEND"
+
+class AlertScopeEnum(str, Enum):
+    GLOBAL = "global"
+    PORTFOLIO = "portfolio"
+    TICKER = "ticker"
+
+class NotificationMethodEnum(str, Enum):
+    IN_APP = "in_app"
+    EMAIL = "email"
+    WEBHOOK = "webhook"
+
+# Core Models
+
+class EventClassificationRule(SQLModel, table=True):
+    """Classification rules for event detection."""
+    __tablename__ = "event_classification_rule"
+
+    rule_id: Optional[int] = Field(default=None, primary_key=True)
+    classification: EventTypeEnum = Field(index=True)
+    pattern_type: PatternTypeEnum = Field(index=True)
+    pattern_value: dict = Field(sa_column=sa.Column(sa.JSON))
+    confidence_score: int = Field(default=80, ge=0, le=100)
+    enabled: bool = Field(default=True, index=True)
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Event(SQLModel, table=True):
+    """Detected corporate event."""
+    __tablename__ = "event"
+
+    event_id: Optional[int] = Field(default=None, primary_key=True)
+    ticker: str = Field(foreign_key="security.ticker", index=True)
+    event_type: EventTypeEnum = Field(index=True)
+    event_classification_id: int = Field(foreign_key="event_classification_rule.rule_id")
+    severity_score: int = Field(ge=1, le=5, index=True)
+    detected_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    event_date: date = Field(index=True)
+    source: EventSourceEnum = Field(index=True)
+    headline: str = Field(max_length=255)
+    description: Optional[str] = None
+    metadata: Optional[dict] = Field(default=None, sa_column=sa.Column(sa.JSON))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    classification_rule: EventClassificationRule = Relationship()
+    alpha_decay_windows: List["AlphaDecayWindow"] = Relationship(back_populates="event")
+    factor_bridges: List["EventFactorBridge"] = Relationship(back_populates="event")
+    source_mappings: List["EventSourceMapping"] = Relationship(back_populates="event")
+
+class AlphaDecayWindow(SQLModel, table=True):
+    """Alpha decay measurements for event post-impact period."""
+    __tablename__ = "alpha_decay_window"
+
+    window_id: Optional[int] = Field(default=None, primary_key=True)
+    event_id: int = Field(foreign_key="event.event_id", index=True)
+    window_type: AlphaWindowTypeEnum = Field(index=True)
+    abnormal_return: Decimal = Field(decimal_places=6, precision=12)
+    benchmark_return: Optional[Decimal] = Field(default=None, decimal_places=6, precision=12)
+    volatility: Optional[Decimal] = Field(default=None, decimal_places=6, precision=12)
+    volume_spike: Optional[Decimal] = Field(default=None, decimal_places=4, precision=10)
+    trading_volume: Optional[int] = None
+    confidence_score: int = Field(default=50, ge=0, le=100, index=True)
+    data_points: int = Field(default=0)
+    measured_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    event: Event = Relationship(back_populates="alpha_decay_windows")
+
+class EventFactorBridge(SQLModel, table=True):
+    """Bridge between events and backtestable factors."""
+    __tablename__ = "event_factor_bridge"
+
+    bridge_id: Optional[int] = Field(default=None, primary_key=True)
+    event_id: int = Field(foreign_key="event.event_id", index=True)
+    factor_id: int = Field(foreign_key="factor_definition.id", index=True)
+    signal_value: Decimal = Field(decimal_places=6, precision=8, ge=-1, le=1)
+    signal_confidence: int = Field(default=50, ge=0, le=100)
+    signal_expiry_window: AlphaWindowTypeEnum = Field(default="[0,+21d]")
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    valid_until: datetime = Field(index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    event: Event = Relationship(back_populates="factor_bridges")
+
+class EventSourceMapping(SQLModel, table=True):
+    """Maps events to original source URLs and metadata."""
+    __tablename__ = "event_source_mapping"
+
+    mapping_id: Optional[int] = Field(default=None, primary_key=True)
+    event_id: int = Field(foreign_key="event.event_id", index=True)
+    source_type: SourceTypeEnum = Field(index=True)
+    source_url: str = Field(max_length=500)
+    source_id: Optional[str] = Field(default=None, max_length=100, index=True)
+    extracted_data: Optional[dict] = Field(default=None, sa_column=sa.Column(sa.JSON))
+    raw_content_hash: Optional[str] = Field(default=None, max_length=64, index=True)
+    ingested_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    event: Event = Relationship(back_populates="source_mappings")
+
+class EventAlertConfiguration(SQLModel, table=True):
+    """User alert preferences for events."""
+    __tablename__ = "event_alert_configuration"
+
+    config_id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[str] = Field(default=None, index=True)
+    portfolio_id: Optional[int] = Field(default=None, index=True)
+    scope: AlertScopeEnum = Field(default=AlertScopeEnum.GLOBAL)
+    scope_value: Optional[str] = Field(default=None, max_length=100)
+    event_type_filter: str = Field(default="all")
+    min_severity_threshold: int = Field(default=1, ge=1, le=5)
+    alert_enabled: bool = Field(default=True, index=True)
+    notification_method: NotificationMethodEnum = Field(default=NotificationMethodEnum.IN_APP)
+    webhook_url: Optional[str] = Field(default=None, max_length=500)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+class EventCorrelationAnalysis(SQLModel, table=True):
+    """Event co-occurrence patterns."""
+    __tablename__ = "event_correlation_analysis"
+
+    analysis_id: Optional[int] = Field(default=None, primary_key=True)
+    event_type_1: EventTypeEnum = Field(index=True)
+    event_type_2: EventTypeEnum = Field(index=True)
+    time_window_days: int = Field(default=30, ge=1, le=365)
+    co_occurrence_count: int = Field(default=0)
+    total_event_type_1_count: int = Field(default=0)
+    total_event_type_2_count: int = Field(default=0)
+    correlation_strength: Decimal = Field(
+        default=Decimal(0),
+        decimal_places=4,
+        precision=6,
+        ge=0,
+        le=1
+    )
+    chi_square_statistic: Optional[Decimal] = Field(
+        default=None,
+        decimal_places=4,
+        precision=12
+    )
+    p_value: Optional[Decimal] = Field(default=None, decimal_places=6, precision=8)
+    analyzed_period_start: date
+    analyzed_period_end: date = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+```
+
+---
+
+## 4. Event Classification and Severity Storage Strategy
+
+### 4.1 Classification Engine
+
+The `event_classification_rule` table stores pattern-matching rules. When raw data is ingested:
+
+1. **SEC EDGAR RSS parsing**:
+   - Pattern type: `filing_form`
+   - Extracts form type (8-K, 10-K, etc.)
+   - Matches against rules: 8-K → `SEC_filing`, Form 4 → `insider_trade`, etc.
+
+2. **SEC filing item matching**:
+   - 8-K item 1.01 (material agreement) → `M&A`
+   - 8-K item 2.05 (costs associated with exit/disposal) → Potential `guidance_revision`
+   - 8-K item 5.02 (costs associated with exit/disposal) → `management_change`
+
+3. **yfinance calendar integration**:
+   - Pattern type: `calendar_event`
+   - Earnings date → `earnings`
+   - Ex-dividend date → `dividend_change`
+
+4. **Keyword matching** (for NLP-enhanced detection later):
+   - Pattern type: `keyword`
+   - Keywords like ["acquisition", "merger", "acquired"] → `M&A`
+   - Confidence scores reflect pattern reliability
+
+5. **Volume anomalies** (Form 4 filing volume):
+   - Pattern type: `net_trading_volume`
+   - High insider buying volume in short period → `insider_trade` with high severity
+
+### 4.2 Severity Scoring
+
+Severity (1-5) determined by historical impact magnitude:
+
+```python
+def calculate_severity(event_type: str, magnitude: float) -> int:
+    """
+    magnitude = abnormal return over window [0, +5d]
+    """
+    if event_type == "earnings":
+        # EPS surprise magnitude
+        if magnitude > 10: return 5
+        elif magnitude > 5: return 4
+        elif magnitude > 2: return 3
+        elif magnitude > 0.5: return 2
+        else: return 1
+
+    elif event_type == "M&A":
+        # Deal impact (implied premium)
+        if magnitude > 15: return 5
+        elif magnitude > 8: return 4
+        elif magnitude > 4: return 3
+        elif magnitude > 2: return 2
+        else: return 1
+
+    elif event_type == "insider_trade":
+        # Trading volume relative to market cap
+        if magnitude > 20: return 5
+        elif magnitude > 10: return 4
+        elif magnitude > 5: return 3
+        elif magnitude > 1: return 2
+        else: return 1
+
+    # ... similar for other types
+```
+
+Severity stored with event; can be refined retroactively as new price data arrives.
+
+---
+
+## 5. Alpha Decay Window Storage and Calculation
+
+### 5.1 Window Design
+
+Four predefined windows measure abnormal returns post-event:
+
+```
+event_date = 2026-01-15 (announced)
+trading_days_offset: [0, +1d], [0, +5d], [0, +21d], [0, +63d]
+
+price_date range for [0,+1d]: 2026-01-15 to 2026-01-16
+price_date range for [0,+5d]: 2026-01-15 to 2026-01-22 (5 trading days)
+price_date range for [0,+21d]: 2026-01-15 to 2026-02-09 (21 trading days)
+price_date range for [0,+63d]: 2026-01-15 to 2026-03-31 (63 trading days)
+```
+
+### 5.2 Calculation Query Pattern
 
 ```sql
-WHERE ingestion_timestamp <= backtest_as_of_date
+-- Calculate alpha decay for event on 2026-01-15 for 5-day window
+WITH event_details AS (
+    SELECT event_id, ticker, event_date, detected_at
+    FROM event
+    WHERE event_id = $1
+),
+prices_before AS (
+    SELECT
+        ticker,
+        AVG(adjusted_close) as baseline_price,
+        STDDEV_POP(daily_return) as baseline_volatility
+    FROM price_history
+    WHERE ticker = $2
+        AND date < (SELECT event_date FROM event_details)
+        AND date >= (SELECT event_date FROM event_details) - INTERVAL '252 days'
+        AND ingestion_timestamp <= (SELECT detected_at FROM event_details)
+),
+prices_during_window AS (
+    SELECT
+        ticker,
+        date,
+        adjusted_close,
+        (adjusted_close - LAG(adjusted_close) OVER (ORDER BY date)) /
+            LAG(adjusted_close) OVER (ORDER BY date) as daily_return,
+        SUM(volume) OVER (ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            as cumulative_volume
+    FROM price_history
+    WHERE ticker = $2
+        AND date >= (SELECT event_date FROM event_details)
+        AND date <= (SELECT event_date FROM event_details) + INTERVAL '5 days'
+        AND ingestion_timestamp <= (SELECT detected_at FROM event_details) + INTERVAL '10 days'
+),
+abnormal_returns AS (
+    SELECT
+        (adjusted_close - (SELECT baseline_price FROM prices_before)) /
+            (SELECT baseline_price FROM prices_before) * 100 as return_pct,
+        (daily_return - (SELECT baseline_volatility FROM prices_before)) as excess_return
+    FROM prices_during_window
+),
+window_summary AS (
+    SELECT
+        SUM(excess_return) / COUNT(*) as abnormal_return,
+        STDDEV_POP(excess_return) as volatility,
+        (SELECT cumulative_volume FROM prices_during_window ORDER BY date DESC LIMIT 1)
+            as trading_volume
+    FROM abnormal_returns
+)
+INSERT INTO alpha_decay_window
+    (event_id, window_type, abnormal_return, volatility, trading_volume, measured_at)
+SELECT
+    $1,
+    '[0,+5d]'::varchar,
+    abnormal_return,
+    volatility,
+    trading_volume,
+    NOW()
+FROM window_summary;
 ```
 
-This ensures a backtest running as-of 2023-01-15 cannot see any data ingested on 2023-01-16 or later.
+### 5.3 PiT Enforcement for Alpha Decay
 
-### 3.2 PiT Data Access Patterns
+- When calculating alpha decay at analysis_date, only use price_history records where `ingestion_timestamp <= analysis_date`
+- Store `measured_at` in alpha_decay_window to track when calculation occurred
+- Supports retroactive updates: if price data was corrected, recalculate and update alpha_decay_window.updated_at
 
-#### Pattern 1: Price History PiT Query
+---
+
+## 6. Event-to-Factor Bridge: Making Events Backtestable
+
+### 6.1 Bridge Table Purpose
+
+The `event_factor_bridge` table converts events into factor signals for the Factor Backtester. When an event is detected:
+
+```
+Event: Earnings surprise +8%
+→ Classify as: earnings event_type
+→ Calculate severity: 4/5 (8% surprise)
+→ Create Factor: "earnings_event_earnings_surprise_Q126" (or reuse existing)
+→ Create Bridge: event_id=123 → factor_id=456, signal_value=+0.8 (bullish)
+→ Set valid_until: event_date + 21 days (alpha decay window)
+```
+
+### 6.2 Factor Generation from Events
+
+**Automatic factor creation** (if not already exists):
 
 ```python
-# Get prices as-of a specific date (no look-ahead bias)
-def get_price_history_at_date(
-    session: Session,
-    ticker: str,
-    as_of_date: datetime
-) -> Optional[PriceHistory]:
+def create_event_signal_factor(event_type: EventTypeEnum, magnitude: float) -> int:
     """
-    Fetch price for a security as-of a specific date,
-    respecting PiT constraint.
-
-    Args:
-        session: SQLAlchemy session
-        ticker: Security ticker
-        as_of_date: Date to fetch price for
-
-    Returns:
-        PriceHistory record ingested by as_of_date, or None if not available
+    Creates or retrieves a factor for event signal.
+    Returns factor_id.
     """
-    return session.query(PriceHistory).filter(
-        PriceHistory.ticker == ticker,
-        PriceHistory.date == as_of_date,
-        # CRITICAL: Only see data that existed by this date
-        PriceHistory.ingestion_timestamp <= as_of_date
+    factor_name = f"event_{event_type.value}_signal"
+
+    # Check if factor exists
+    factor = db.query(FactorDefinition).filter_by(
+        factor_name=factor_name,
+        factor_type="event"
     ).first()
+
+    if factor:
+        return factor.id
+
+    # Create new factor
+    new_factor = FactorDefinition(
+        factor_name=factor_name,
+        factor_type="event",
+        description=f"Signal-based factor from {event_type} events",
+        frequency="daily",
+        is_published=True,
+        publication_date=date.today()
+    )
+    db.add(new_factor)
+    db.commit()
+    return new_factor.id
 ```
 
-#### Pattern 2: Fundamentals Snapshot with Disclosure Lag
+### 6.3 Signal Value Calculation
+
+Signal value (-1 to +1) represents predicted directional impact:
 
 ```python
-# Get fundamentals respecting reporting lag and PiT constraint
-def get_latest_fundamentals_at_date(
-    session: Session,
-    ticker: str,
-    metric_name: str,
-    as_of_date: datetime
-) -> Optional[FundamentalsSnapshot]:
+def calculate_signal_value(
+    event_type: EventTypeEnum,
+    severity: int,
+    direction: str  # "positive", "negative", "neutral"
+) -> float:
     """
-    Fetch latest fundamental snapshot available as-of a date.
-
-    Respects both:
-    - source_document_date <= as_of_date (disclosure date constraint)
-    - ingestion_timestamp <= as_of_date (database insertion constraint)
-
-    Args:
-        session: SQLAlchemy session
-        ticker: Security ticker
-        metric_name: Fundamental metric
-        as_of_date: Current date (e.g., backtest evaluation date)
-
-    Returns:
-        Most recent fundamental snapshot, or None if not disclosed yet
+    Maps event characteristics to signal_value [-1, +1].
+    -1: strong short signal
+    +1: strong long signal
+    0: neutral
     """
-    return session.query(FundamentalsSnapshot)\
-        .filter(
-            FundamentalsSnapshot.ticker == ticker,
-            FundamentalsSnapshot.metric_name == metric_name,
-            # Document must have been disclosed by now
-            FundamentalsSnapshot.source_document_date <= as_of_date,
-            # And must have been ingested into DB by now
-            FundamentalsSnapshot.ingestion_timestamp <= as_of_date
-        )\
-        .order_by(FundamentalsSnapshot.fiscal_period_end.desc())\
-        .first()
-```
+    base_signal = {
+        EventTypeEnum.EARNINGS: 0.0,  # Depends on surprise direction
+        EventTypeEnum.M_A: 0.5,  # Generally positive for acquirer short-term
+        EventTypeEnum.INSIDER_TRADE: 0.6,  # High predictive power
+        EventTypeEnum.DIVIDEND_CHANGE: 0.3,  # Weak signal
+        EventTypeEnum.SEC_FILING: 0.2,  # Weak signal alone
+        EventTypeEnum.MANAGEMENT_CHANGE: 0.4,  # Moderate
+        EventTypeEnum.GUIDANCE_REVISION: -0.5,  # Usually negative
+        EventTypeEnum.SHARE_REPURCHASE: 0.4,  # Moderate positive
+    }
 
-#### Pattern 3: Custom Factor Scores (PiT)
+    severity_multiplier = severity / 5.0  # 0.2 to 1.0
 
-```python
-# Get custom factor scores respecting PiT
-def get_factor_scores_for_rebalance(
-    session: Session,
-    factor_id: int,
-    universe_tickers: List[str],
-    rebalance_date: datetime
-) -> List[CustomFactorScore]:
-    """
-    Fetch factor scores for portfolio rebalance.
-
-    Only returns scores ingested by rebalance_date (PiT constraint).
-
-    Args:
-        session: SQLAlchemy session
-        factor_id: FactorDefinition ID
-        universe_tickers: List of tickers to score
-        rebalance_date: Rebalance date (no look-ahead)
-
-    Returns:
-        List of CustomFactorScore rows for universe
-    """
-    return session.query(CustomFactorScore)\
-        .filter(
-            CustomFactorScore.factor_id == factor_id,
-            CustomFactorScore.ticker.in_(universe_tickers),
-            # Only scores computed/ingested by rebalance date
-            CustomFactorScore.ingestion_timestamp <= rebalance_date
-        )\
-        .order_by(CustomFactorScore.calculation_date.desc())\
-        .all()
-```
-
-#### Pattern 4: Active Universe (Excluding Delisted Securities)
-
-```python
-# Get active securities at a date (no survivorship bias)
-def get_active_securities_at_date(
-    session: Session,
-    as_of_date: datetime,
-    sector: Optional[str] = None
-) -> List[str]:
-    """
-    Fetch list of active securities as-of a date.
-
-    Excludes delisted, acquired, bankrupt securities effective before as_of_date.
-
-    Args:
-        session: SQLAlchemy session
-        as_of_date: Date to evaluate security status
-        sector: Optional sector filter
-
-    Returns:
-        List of active ticker symbols
-    """
-    # Get all delisted securities by as_of_date
-    delisted_query = session.query(SecurityLifecycleEvent.ticker)\
-        .filter(
-            SecurityLifecycleEvent.event_type.in_(
-                [SecurityStatus.DELISTED, SecurityStatus.ACQUIRED, SecurityStatus.BANKRUPT]
-            ),
-            SecurityLifecycleEvent.effective_date <= as_of_date
-        )\
-        .distinct()
-
-    delisted_tickers = [row[0] for row in delisted_query.all()]
-
-    # Return all securities NOT delisted
-    query = session.query(Security.ticker)\
-        .filter(Security.ticker.notin_(delisted_tickers))
-
-    if sector:
-        query = query.filter(Security.sector == sector)
-
-    return [row[0] for row in query.all()]
-```
-
-#### Pattern 5: Fama-French Factor Returns (No PiT Needed, But Consistent)
-
-```python
-# Fetch FF factor returns for a period (Kenneth French data is stable)
-def get_ff_factor_returns(
-    session: Session,
-    factor_name: str,
-    start_date: datetime,
-    end_date: datetime
-) -> List[FamaFrenchFactor]:
-    """
-    Fetch Fama-French factor returns for a date range.
-
-    FF data is published monthly by Kenneth French, then fixed.
-    We still track ingestion_timestamp for consistency but don't need
-    to enforce PiT strictly (Kenneth French doesn't revise historical data).
-
-    Args:
-        session: SQLAlchemy session
-        factor_name: Factor name (MKT-RF, SMB, HML, RMW, CMA)
-        start_date: Start date (inclusive)
-        end_date: End date (inclusive)
-
-    Returns:
-        List of FamaFrenchFactor rows
-    """
-    factor_def = session.query(FactorDefinition)\
-        .filter(FactorDefinition.factor_name == factor_name)\
-        .first()
-
-    if not factor_def:
-        return []
-
-    return session.query(FamaFrenchFactor)\
-        .filter(
-            FamaFrenchFactor.factor_id == factor_def.id,
-            FamaFrenchFactor.date >= start_date,
-            FamaFrenchFactor.date <= end_date
-        )\
-        .order_by(FamaFrenchFactor.date)\
-        .all()
-```
-
-### 3.3 PiT Index Strategy
-
-To support efficient PiT queries, use composite indexes:
-
-```sql
--- Price history: optimized for PiT range queries
-CREATE INDEX idx_price_pit_range
-ON price_history (ticker, date, ingestion_timestamp);
-
--- Fundamentals: support both metric lookup and PiT queries
-CREATE INDEX idx_fundamentals_pit_range
-ON fundamentals_snapshot (ticker, metric_name, fiscal_period_end, source_document_date, ingestion_timestamp);
-
--- Custom factor scores: support screener and backtest lookups
-CREATE INDEX idx_custom_score_pit
-ON custom_factor_scores (factor_id, ticker, calculation_date, ingestion_timestamp);
-
--- FF factor returns: time-series lookup
-CREATE INDEX idx_ff_factor_time_series
-ON fama_french_factors (factor_id, date);
-```
-
----
-
-## 4. Survivorship Bias Prevention
-
-### 4.1 Security Lifecycle Event Tracking
-
-Every security deletion/acquisition/bankruptcy is recorded in `SecurityLifecycleEvent`:
-
-```python
-# Example: Track AAPL's historical status
-# 1. Created: IPO 1980-12-12 (event_type=IPO, effective_date=1980-12-12)
-# 2. Current: ACTIVE (no delisting event)
-
-# Example: Track a delisted security (e.g., KODAK)
-# 1. Created: IPO 1920 (event_type=IPO)
-# 2. Delisted: 2012-09-03
-#    (event_type=DELISTED, effective_date=2012-09-04)
-# Include full price history and fundamentals even after delisting
-```
-
-### 4.2 Walk-Forward Universe Construction
-
-During backtest portfolio construction, exclude securities with:
-
-```python
-def construct_portfolio_universe_at_date(
-    session: Session,
-    as_of_date: datetime,
-    sector: Optional[str] = None,
-    min_market_cap: Optional[Decimal] = None,
-    min_volume: Optional[int] = None
-) -> List[str]:
-    """
-    Construct investable universe at a specific date.
-
-    Excludes:
-    - Securities delisted/acquired/bankrupt before as_of_date
-    - Securities missing required price/fundamental data at as_of_date
-    - Securities not meeting volume/liquidity thresholds
-
-    Args:
-        session: SQLAlchemy session
-        as_of_date: Date to evaluate universe
-        sector: Optional sector filter
-        min_market_cap: Optional minimum market cap filter
-        min_volume: Optional minimum average volume filter
-
-    Returns:
-        List of tickers eligible for portfolio construction
-    """
-    # Step 1: Get active securities (no delistings)
-    active_tickers = get_active_securities_at_date(session, as_of_date, sector)
-
-    # Step 2: Filter for required price data
-    price_check = session.query(PriceHistory.ticker)\
-        .filter(
-            PriceHistory.ticker.in_(active_tickers),
-            PriceHistory.date == as_of_date,
-            PriceHistory.ingestion_timestamp <= as_of_date
-        )\
-        .distinct()\
-        .all()
-
-    tickers_with_prices = [row[0] for row in price_check]
-
-    # Step 3: Apply liquidity filters
-    if min_volume:
-        # Check 20-day average volume
-        cutoff_date = as_of_date - timedelta(days=20)
-        volume_check = session.query(PriceHistory.ticker)\
-            .filter(
-                PriceHistory.ticker.in_(tickers_with_prices),
-                PriceHistory.date >= cutoff_date,
-                PriceHistory.date <= as_of_date,
-                PriceHistory.ingestion_timestamp <= as_of_date
-            )\
-            .group_by(PriceHistory.ticker)\
-            .having(func.avg(PriceHistory.volume) >= min_volume)\
-            .all()
-
-        tickers_with_volumes = [row[0] for row in volume_check]
+    if direction == "positive":
+        return base_signal[event_type] * severity_multiplier
+    elif direction == "negative":
+        return -base_signal[event_type] * severity_multiplier
     else:
-        tickers_with_volumes = tickers_with_prices
-
-    return tickers_with_volumes
+        return 0.0
 ```
 
-### 4.3 Results Impact: Survivorship Bias Prevention
+### 6.4 Query: List Backtestable Events for Factor Backtester
 
-Research shows excluding delistings inflates backtest returns by 4-15% (Blitz et al., FactSet):
-
-- **Naive backtests** (excluding delistings): 12% CAGR
-- **Survivorship-bias-free** (including delistings): 8% CAGR
-
-By tracking `SecurityLifecycleEvent`, AlphaDesk enforces realistic returns.
+```sql
+-- Get all active event signals for backtesting as of date 2026-01-01
+SELECT
+    efb.bridge_id,
+    e.event_id,
+    e.ticker,
+    e.event_type,
+    efb.factor_id,
+    efb.signal_value,
+    efb.signal_confidence,
+    e.severity_score,
+    e.event_date,
+    e.detected_at,
+    efb.valid_until,
+    adw.abnormal_return as realized_alpha
+FROM event_factor_bridge efb
+JOIN event e ON efb.event_id = e.event_id
+LEFT JOIN alpha_decay_window adw
+    ON e.event_id = adw.event_id AND adw.window_type = '[0,+21d]'
+WHERE efb.valid_until >= '2026-01-01'::date
+    AND e.detected_at <= '2026-01-01'::timestamp
+ORDER BY e.detected_at DESC;
+```
 
 ---
 
-## 5. Indexing Strategy
+## 7. Indexing Strategy
 
-### 5.1 B-tree Indexes (Primary)
+### 7.1 Query Patterns and Indexes
 
+**Pattern 1: Event Timeline for Watchlist**
 ```sql
--- Securities
-CREATE UNIQUE INDEX idx_securities_ticker ON securities(ticker);
-CREATE INDEX idx_securities_sector ON securities(sector);
-CREATE INDEX idx_securities_industry ON securities(industry);
-
--- Security lifecycle (for efficient active-universe queries)
-CREATE INDEX idx_lifecycle_ticker_effective_date
-ON security_lifecycle_events(ticker, effective_date);
-
--- Price history (for PiT range queries)
-CREATE INDEX idx_price_pit_range
-ON price_history(ticker, date, ingestion_timestamp);
-CREATE INDEX idx_price_date
-ON price_history(date);
-
--- Fundamentals (for PiT disclosure-lag queries)
-CREATE INDEX idx_fundamentals_pit_range
-ON fundamentals_snapshot(ticker, metric_name, source_document_date, ingestion_timestamp);
-CREATE INDEX idx_fundamentals_fiscal_period
-ON fundamentals_snapshot(fiscal_period_end);
-
--- Factor definitions
-CREATE UNIQUE INDEX idx_factor_name ON factor_definitions(factor_name);
-CREATE INDEX idx_factor_type ON factor_definitions(factor_type);
-CREATE INDEX idx_factor_publication_date ON factor_definitions(publication_date);
-
--- Fama-French factors
-CREATE INDEX idx_ff_factor_time_series
-ON fama_french_factors(factor_id, date);
-
--- Custom factor scores (screener + backtest)
-CREATE INDEX idx_custom_score_pit
-ON custom_factor_scores(factor_id, ticker, calculation_date, ingestion_timestamp);
-CREATE INDEX idx_custom_score_universe
-ON custom_factor_scores(factor_id, calculation_date);
-
--- Backtests
-CREATE INDEX idx_backtest_user_created
-ON backtests(user_id, created_at);
-CREATE INDEX idx_backtest_status
-ON backtests(status);
-
--- Backtest results (charting)
-CREATE INDEX idx_backtest_result_time_series
-ON backtest_results(backtest_id, date);
-
--- Screener factor scores
-CREATE INDEX idx_screener_score_pit
-ON screener_factor_scores(ticker, factor_id, score_date, ingestion_timestamp);
-CREATE INDEX idx_screener_score_universe
-ON screener_factor_scores(factor_id, score_date);
+SELECT * FROM event
+WHERE ticker = 'AAPL'
+  AND detected_at <= '2026-01-01'
+ORDER BY detected_at DESC
+LIMIT 50;
 ```
+**Index**: `idx_event_ticker_detected` (ticker, detected_at DESC)
 
-### 5.2 Partial Indexes (Performance Optimization)
-
+**Pattern 2: Recent High-Severity Events**
 ```sql
--- Only index active backtests
-CREATE INDEX idx_active_backtests
-ON backtests(created_at)
-WHERE status IN ('draft', 'running', 'queued');
-
--- Only index future rebalances
-CREATE INDEX idx_future_results
-ON backtest_results(backtest_id, date)
-WHERE date > CURRENT_DATE;
+SELECT * FROM event
+WHERE severity_score >= 4
+  AND detected_at <= '2026-01-01'
+ORDER BY detected_at DESC;
 ```
+**Index**: `idx_event_severity` (severity_score DESC), `idx_event_detected_at` (detected_at DESC)
 
-### 5.3 Partitioning Strategy
-
-Partition large time-series tables by date for query performance:
-
+**Pattern 3: Alpha Decay Calculation**
 ```sql
--- Partition price_history by month
-CREATE TABLE price_history_2023_01 PARTITION OF price_history
-    FOR VALUES FROM ('2023-01-01') TO ('2023-02-01');
-
-CREATE TABLE price_history_2023_02 PARTITION OF price_history
-    FOR VALUES FROM ('2023-02-01') TO ('2023-03-01');
-
--- ... continue for all months
-
--- Partition fundamentals_snapshot by quarter
-CREATE TABLE fundamentals_snapshot_2023_q1 PARTITION OF fundamentals_snapshot
-    FOR VALUES FROM ('2023-01-01') TO ('2023-04-01');
-
-CREATE TABLE fundamentals_snapshot_2023_q2 PARTITION OF fundamentals_snapshot
-    FOR VALUES FROM ('2023-04-01') TO ('2023-07-01');
-
--- ... continue for all quarters
+SELECT * FROM alpha_decay_window
+WHERE event_id = $1
+  AND window_type = '[0,+5d]';
 ```
+**Index**: `idx_alpha_decay_event_window` (event_id, window_type)
 
-**Benefits:**
-- Partition elimination: queries on specific months only scan relevant partitions
-- Faster DELETEs: drop old partitions instead of DELETE queries
-- Better vacuum performance: each partition vacuums independently
+**Pattern 4: Active Factor Signals**
+```sql
+SELECT * FROM event_factor_bridge
+WHERE factor_id = $1
+  AND valid_until >= NOW()
+ORDER BY created_at DESC;
+```
+**Index**: `idx_bridge_factor_valid` (factor_id, valid_until DESC)
+
+**Pattern 5: PiT Event Queries**
+```sql
+SELECT * FROM event
+WHERE detected_at <= '2025-12-31'
+  AND event_date >= '2025-01-01'
+ORDER BY detected_at DESC;
+```
+**Index**: `idx_event_detected_at` (detected_at DESC), `idx_event_event_date` (event_date DESC)
+
+### 7.2 Complete Index Summary
+
+| Table | Index Name | Columns | Use Case |
+|-------|-----------|---------|----------|
+| event | idx_event_ticker | ticker | Filter by stock |
+| event | idx_event_type | event_type | Filter by event type |
+| event | idx_event_detected_at | detected_at DESC | PiT queries |
+| event | idx_event_event_date | event_date DESC | Timeline filtering |
+| event | idx_event_severity | severity_score DESC | High-impact events |
+| event | idx_event_ticker_detected | (ticker, detected_at DESC) | Watchlist timeline |
+| event | idx_event_ticker_date_type | (ticker, event_date, event_type) | Historical queries |
+| event | idx_event_source | source | Deduplication |
+| event_classification_rule | idx_classification_rule_enabled | enabled | Active rules only |
+| event_classification_rule | idx_classification_rule_type | (classification, enabled) | Rule lookup |
+| event_classification_rule | idx_classification_rule_pattern | pattern_type | Pattern matching |
+| alpha_decay_window | idx_alpha_decay_event | event_id | Per-event decay |
+| alpha_decay_window | idx_alpha_decay_window_type | window_type | Window filtering |
+| alpha_decay_window | idx_alpha_decay_measured_at | measured_at DESC | PiT consistency |
+| alpha_decay_window | idx_alpha_decay_event_window | (event_id, window_type) | Unique constraint |
+| alpha_decay_window | idx_alpha_decay_confidence | confidence_score DESC | High-confidence data |
+| event_factor_bridge | idx_bridge_event | event_id | Event-to-factor lookup |
+| event_factor_bridge | idx_bridge_factor | factor_id | Factor signals |
+| event_factor_bridge | idx_bridge_valid_until | valid_until DESC | Active signals |
+| event_factor_bridge | idx_bridge_factor_valid | (factor_id, valid_until DESC) | Backtester queries |
+| event_factor_bridge | idx_bridge_created_at | created_at DESC | Chronological |
+| event_source_mapping | idx_source_mapping_event | event_id | Event source trace |
+| event_source_mapping | idx_source_mapping_type | source_type | Source filtering |
+| event_source_mapping | idx_source_mapping_source_id | source_id | Deduplication |
+| event_source_mapping | idx_source_mapping_hash | raw_content_hash | Content deduplication |
+| event_source_mapping | idx_source_mapping_ingested | ingested_at DESC | Ingestion timeline |
+| event_alert_configuration | idx_alert_config_user | user_id | User preferences |
+| event_alert_configuration | idx_alert_config_portfolio | portfolio_id | Portfolio-scoped alerts |
+| event_alert_configuration | idx_alert_config_enabled | alert_enabled | Active alerts |
+| event_alert_configuration | idx_alert_config_scope | (scope, scope_value) | Scope filtering |
+| event_correlation_analysis | idx_correlation_event_types | (event_type_1, event_type_2) | Type pair lookup |
+| event_correlation_analysis | idx_correlation_period | analyzed_period_end DESC | Time series |
+| event_correlation_analysis | idx_correlation_strength | correlation_strength DESC | Strong correlations |
 
 ---
 
-## 6. Migration Strategy: SQLite → PostgreSQL
+## 8. Alembic Migration
 
-### 6.1 Alembic Migration Setup
-
-```bash
-# Initialize Alembic
-alembic init migrations
-
-# Create migration
-alembic revision --autogenerate -m "Create AlphaDesk V2 schema"
-
-# Migrate
-alembic upgrade head
-```
-
-### 6.2 Migration Script (Alembic)
+File: `/alembic/versions/002_add_event_scanner.py`
 
 ```python
-# migrations/versions/001_create_alphadesk_v2_schema.py
+"""
+Add Event Scanner tables for Phase 2.
+
+Revision ID: 002
+Revises: 001
+Create Date: 2026-03-10
+"""
+
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-def upgrade():
-    # Create securities table
+revision = '002'
+down_revision = '001'
+branch_labels = None
+depends_on = None
+
+def upgrade() -> None:
+    """Create Event Scanner tables."""
+
+    # event_classification_rule
     op.create_table(
-        'securities',
-        sa.Column('ticker', sa.String(10), nullable=False),
-        sa.Column('company_name', sa.String(500), nullable=False),
-        sa.Column('sector', sa.String(100), nullable=True),
-        sa.Column('industry', sa.String(200), nullable=True),
-        sa.Column('cusip', sa.String(9), nullable=True),
-        sa.Column('isin', sa.String(12), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(),
-                  onupdate=sa.func.now(), nullable=False),
-        sa.PrimaryKeyConstraint('ticker'),
-        sa.UniqueConstraint('cusip'),
-        sa.UniqueConstraint('isin')
+        'event_classification_rule',
+        sa.Column('rule_id', sa.Integer(), nullable=False),
+        sa.Column('classification', sa.String(50), nullable=False),
+        sa.Column('pattern_type', sa.String(50), nullable=False),
+        sa.Column('pattern_value', postgresql.JSON(), nullable=False),
+        sa.Column('confidence_score', sa.SmallInteger(), nullable=False, server_default='80'),
+        sa.Column('enabled', sa.Boolean(), nullable=False, server_default='true'),
+        sa.Column('description', sa.Text(), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.PrimaryKeyConstraint('rule_id'),
+        sa.CheckConstraint("classification IN ('earnings', 'M&A', 'insider_trade', 'dividend_change', 'SEC_filing', 'management_change', 'guidance_revision', 'share_repurchase')"),
+        sa.CheckConstraint("pattern_type IN ('keyword', 'filing_form', 'calendar_event', 'net_trading_volume')"),
+        sa.CheckConstraint('confidence_score >= 0 AND confidence_score <= 100'),
+        sa.Index('idx_classification_rule_enabled', 'enabled'),
+        sa.Index('idx_classification_rule_type', 'classification', 'enabled'),
+        sa.Index('idx_classification_rule_pattern', 'pattern_type'),
     )
-    op.create_index('idx_securities_sector', 'securities', ['sector'])
-    op.create_index('idx_securities_industry', 'securities', ['industry'])
 
-    # Create security_lifecycle_events
+    # event
     op.create_table(
-        'security_lifecycle_events',
-        sa.Column('id', sa.Integer(), nullable=False),
+        'event',
+        sa.Column('event_id', sa.BigInteger(), nullable=False),
         sa.Column('ticker', sa.String(10), nullable=False),
-        sa.Column('event_type', sa.Enum('ACTIVE', 'DELISTED', 'ACQUIRED', 'BANKRUPT', 'PENDING',
-                                        name='securitystatus'), nullable=False),
-        sa.Column('event_date', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('effective_date', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('details', sa.String(2000), nullable=True),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.ForeignKeyConstraint(['ticker'], ['securities.ticker']),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('ticker', 'event_type', 'event_date', name='uq_lifecycle_event_per_ticker_date')
+        sa.Column('event_type', sa.String(50), nullable=False),
+        sa.Column('event_classification_id', sa.Integer(), nullable=False),
+        sa.Column('severity_score', sa.SmallInteger(), nullable=False),
+        sa.Column('detected_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('event_date', sa.Date(), nullable=False),
+        sa.Column('source', sa.String(50), nullable=False),
+        sa.Column('headline', sa.String(255), nullable=False),
+        sa.Column('description', sa.Text(), nullable=True),
+        sa.Column('metadata', postgresql.JSON(), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.ForeignKeyConstraint(['ticker'], ['security.ticker'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['event_classification_id'], ['event_classification_rule.rule_id']),
+        sa.PrimaryKeyConstraint('event_id'),
+        sa.UniqueConstraint('ticker', 'event_type', 'event_date', 'source', name='uq_event_ticker_type_date_source'),
+        sa.CheckConstraint("event_type IN ('earnings', 'M&A', 'insider_trade', 'dividend_change', 'SEC_filing', 'management_change', 'guidance_revision', 'share_repurchase')"),
+        sa.CheckConstraint("severity_score >= 1 AND severity_score <= 5"),
+        sa.CheckConstraint("source IN ('SEC_EDGAR', 'YFINANCE', 'MANUAL')"),
+        sa.Index('idx_event_ticker', 'ticker'),
+        sa.Index('idx_event_type', 'event_type'),
+        sa.Index('idx_event_detected_at', 'detected_at'),
+        sa.Index('idx_event_event_date', 'event_date'),
+        sa.Index('idx_event_severity', 'severity_score'),
+        sa.Index('idx_event_ticker_detected', 'ticker', 'detected_at'),
+        sa.Index('idx_event_ticker_date_type', 'ticker', 'event_date', 'event_type'),
+        sa.Index('idx_event_source', 'source'),
     )
-    op.create_index('idx_lifecycle_ticker_effective_date',
-                    'security_lifecycle_events', ['ticker', 'effective_date'])
 
-    # Create price_history with RANGE partitioning
+    # alpha_decay_window
     op.create_table(
-        'price_history',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('ticker', sa.String(10), nullable=False),
-        sa.Column('date', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('open', sa.Numeric(12, 4), nullable=False),
-        sa.Column('high', sa.Numeric(12, 4), nullable=False),
-        sa.Column('low', sa.Numeric(12, 4), nullable=False),
-        sa.Column('close', sa.Numeric(12, 4), nullable=False),
-        sa.Column('volume', sa.BigInteger(), nullable=False),
-        sa.Column('adjusted_close', sa.Numeric(12, 4), nullable=True),
-        sa.Column('ingestion_timestamp', sa.DateTime(timezone=True),
-                  server_default=sa.func.now(), nullable=False),
-        sa.Column('data_source', sa.String(50), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.ForeignKeyConstraint(['ticker'], ['securities.ticker']),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('ticker', 'date', name='uq_price_per_ticker_date')
-    ) # Partition by month
+        'alpha_decay_window',
+        sa.Column('window_id', sa.BigInteger(), nullable=False),
+        sa.Column('event_id', sa.BigInteger(), nullable=False),
+        sa.Column('window_type', sa.String(20), nullable=False),
+        sa.Column('abnormal_return', sa.Numeric(precision=12, scale=6), nullable=False),
+        sa.Column('benchmark_return', sa.Numeric(precision=12, scale=6), nullable=True),
+        sa.Column('volatility', sa.Numeric(precision=12, scale=6), nullable=True),
+        sa.Column('volume_spike', sa.Numeric(precision=10, scale=4), nullable=True),
+        sa.Column('trading_volume', sa.BigInteger(), nullable=True),
+        sa.Column('confidence_score', sa.SmallInteger(), nullable=False, server_default='50'),
+        sa.Column('data_points', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('measured_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.ForeignKeyConstraint(['event_id'], ['event.event_id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('window_id'),
+        sa.UniqueConstraint('event_id', 'window_type', name='uq_alpha_decay_event_window'),
+        sa.CheckConstraint("window_type IN ('[0,+1d]', '[0,+5d]', '[0,+21d]', '[0,+63d]')"),
+        sa.CheckConstraint('confidence_score >= 0 AND confidence_score <= 100'),
+        sa.Index('idx_alpha_decay_event', 'event_id'),
+        sa.Index('idx_alpha_decay_window_type', 'window_type'),
+        sa.Index('idx_alpha_decay_measured_at', 'measured_at'),
+        sa.Index('idx_alpha_decay_event_window', 'event_id', 'window_type'),
+        sa.Index('idx_alpha_decay_confidence', 'confidence_score'),
+    )
 
-    op.create_index('idx_price_pit_range', 'price_history',
-                    ['ticker', 'date', 'ingestion_timestamp'])
-    op.create_index('idx_price_date', 'price_history', ['date'])
+    # event_factor_bridge
+    op.create_table(
+        'event_factor_bridge',
+        sa.Column('bridge_id', sa.BigInteger(), nullable=False),
+        sa.Column('event_id', sa.BigInteger(), nullable=False),
+        sa.Column('factor_id', sa.Integer(), nullable=False),
+        sa.Column('signal_value', sa.Numeric(precision=8, scale=6), nullable=False),
+        sa.Column('signal_confidence', sa.SmallInteger(), nullable=False, server_default='50'),
+        sa.Column('signal_expiry_window', sa.String(20), nullable=False, server_default='[0,+21d]'),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('valid_until', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.ForeignKeyConstraint(['event_id'], ['event.event_id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['factor_id'], ['factor_definition.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('bridge_id'),
+        sa.UniqueConstraint('event_id', 'factor_id', name='uq_bridge_event_factor'),
+        sa.CheckConstraint('signal_value >= -1 AND signal_value <= 1'),
+        sa.CheckConstraint('signal_confidence >= 0 AND signal_confidence <= 100'),
+        sa.Index('idx_bridge_event', 'event_id'),
+        sa.Index('idx_bridge_factor', 'factor_id'),
+        sa.Index('idx_bridge_valid_until', 'valid_until'),
+        sa.Index('idx_bridge_factor_valid', 'factor_id', 'valid_until'),
+        sa.Index('idx_bridge_created_at', 'created_at'),
+    )
 
-    # ... continue for other tables
+    # event_source_mapping
+    op.create_table(
+        'event_source_mapping',
+        sa.Column('mapping_id', sa.BigInteger(), nullable=False),
+        sa.Column('event_id', sa.BigInteger(), nullable=False),
+        sa.Column('source_type', sa.String(50), nullable=False),
+        sa.Column('source_url', sa.String(500), nullable=False),
+        sa.Column('source_id', sa.String(100), nullable=True),
+        sa.Column('extracted_data', postgresql.JSON(), nullable=True),
+        sa.Column('raw_content_hash', sa.String(64), nullable=True),
+        sa.Column('ingested_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.ForeignKeyConstraint(['event_id'], ['event.event_id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('mapping_id'),
+        sa.UniqueConstraint('event_id', 'source_type', name='uq_source_mapping_event_type'),
+        sa.CheckConstraint("source_type IN ('SEC_EDGAR_8K', 'SEC_EDGAR_10K', 'SEC_EDGAR_10Q', 'SEC_EDGAR_SC13D', 'SEC_EDGAR_SC13G', 'SEC_EDGAR_FORM4', 'YFINANCE_EARNINGS', 'YFINANCE_DIVIDEND')"),
+        sa.Index('idx_source_mapping_event', 'event_id'),
+        sa.Index('idx_source_mapping_type', 'source_type'),
+        sa.Index('idx_source_mapping_source_id', 'source_id'),
+        sa.Index('idx_source_mapping_hash', 'raw_content_hash'),
+        sa.Index('idx_source_mapping_ingested', 'ingested_at'),
+    )
 
-def downgrade():
-    # Drop in reverse order
-    op.drop_index('idx_price_date')
-    op.drop_index('idx_price_pit_range')
-    op.drop_table('price_history')
-    # ... continue
-```
+    # event_alert_configuration
+    op.create_table(
+        'event_alert_configuration',
+        sa.Column('config_id', sa.Integer(), nullable=False),
+        sa.Column('user_id', sa.String(100), nullable=True),
+        sa.Column('portfolio_id', sa.Integer(), nullable=True),
+        sa.Column('scope', sa.String(50), nullable=False, server_default='global'),
+        sa.Column('scope_value', sa.String(100), nullable=True),
+        sa.Column('event_type_filter', sa.Text(), nullable=False, server_default='all'),
+        sa.Column('min_severity_threshold', sa.SmallInteger(), nullable=False, server_default='1'),
+        sa.Column('alert_enabled', sa.Boolean(), nullable=False, server_default='true'),
+        sa.Column('notification_method', sa.String(50), nullable=False, server_default='in_app'),
+        sa.Column('webhook_url', sa.String(500), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.PrimaryKeyConstraint('config_id'),
+        sa.CheckConstraint("scope IN ('global', 'portfolio', 'ticker')"),
+        sa.CheckConstraint("notification_method IN ('in_app', 'email', 'webhook')"),
+        sa.CheckConstraint('min_severity_threshold >= 1 AND min_severity_threshold <= 5'),
+        sa.Index('idx_alert_config_user', 'user_id'),
+        sa.Index('idx_alert_config_portfolio', 'portfolio_id'),
+        sa.Index('idx_alert_config_enabled', 'alert_enabled'),
+        sa.Index('idx_alert_config_scope', 'scope', 'scope_value'),
+    )
 
-### 6.3 Data Migration from SQLite
+    # event_correlation_analysis
+    op.create_table(
+        'event_correlation_analysis',
+        sa.Column('analysis_id', sa.BigInteger(), nullable=False),
+        sa.Column('event_type_1', sa.String(50), nullable=False),
+        sa.Column('event_type_2', sa.String(50), nullable=False),
+        sa.Column('time_window_days', sa.SmallInteger(), nullable=False, server_default='30'),
+        sa.Column('co_occurrence_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('total_event_type_1_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('total_event_type_2_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('correlation_strength', sa.Numeric(precision=6, scale=4), nullable=False, server_default='0.0'),
+        sa.Column('chi_square_statistic', sa.Numeric(precision=12, scale=4), nullable=True),
+        sa.Column('p_value', sa.Numeric(precision=8, scale=6), nullable=True),
+        sa.Column('analyzed_period_start', sa.Date(), nullable=False),
+        sa.Column('analyzed_period_end', sa.Date(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.PrimaryKeyConstraint('analysis_id'),
+        sa.UniqueConstraint('event_type_1', 'event_type_2', 'time_window_days', 'analyzed_period_end', name='uq_correlation_types_window'),
+        sa.CheckConstraint("event_type_1 IN ('earnings', 'M&A', 'insider_trade', 'dividend_change', 'SEC_filing', 'management_change', 'guidance_revision', 'share_repurchase')"),
+        sa.CheckConstraint("event_type_2 IN ('earnings', 'M&A', 'insider_trade', 'dividend_change', 'SEC_filing', 'management_change', 'guidance_revision', 'share_repurchase')"),
+        sa.CheckConstraint('correlation_strength >= 0 AND correlation_strength <= 1'),
+        sa.Index('idx_correlation_event_types', 'event_type_1', 'event_type_2'),
+        sa.Index('idx_correlation_period', 'analyzed_period_end'),
+        sa.Index('idx_correlation_strength', 'correlation_strength'),
+    )
 
-```python
-# backend/scripts/migrate_sqlite_to_postgres.py
-"""
-Migrate data from SQLite to PostgreSQL.
-Handles PiT enforcement during migration.
-"""
-import sqlite3
-from sqlalchemy import create_engine
-from sqlmodel import Session
-from datetime import datetime
-
-def migrate_securities(sqlite_path: str, postgres_url: str):
-    """Migrate securities from SQLite to PostgreSQL"""
-
-    # Connect to both databases
-    sqlite_conn = sqlite3.connect(sqlite_path)
-    sqlite_conn.row_factory = sqlite3.Row
-    sqlite_cursor = sqlite_conn.cursor()
-
-    postgres_engine = create_engine(postgres_url)
-    postgres_session = Session(postgres_engine)
-
-    # Fetch all securities from SQLite
-    sqlite_cursor.execute("SELECT * FROM securities")
-    rows = sqlite_cursor.fetchall()
-
-    # Create Security objects and insert into PostgreSQL
-    from backend.models import Security
-
-    for row in rows:
-        security = Security(
-            ticker=row['ticker'],
-            company_name=row['company_name'],
-            sector=row['sector'],
-            industry=row['industry'],
-            cusip=row['cusip'],
-            isin=row['isin'],
-            created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else datetime.utcnow()
-        )
-        postgres_session.add(security)
-
-    postgres_session.commit()
-    postgres_session.close()
-    sqlite_conn.close()
-
-def migrate_price_history(sqlite_path: str, postgres_url: str):
-    """Migrate price history with PiT timestamps"""
-
-    sqlite_conn = sqlite3.connect(sqlite_path)
-    sqlite_conn.row_factory = sqlite3.Row
-    sqlite_cursor = sqlite_conn.cursor()
-
-    postgres_engine = create_engine(postgres_url)
-    postgres_session = Session(postgres_engine)
-
-    from backend.models import PriceHistory
-    from decimal import Decimal
-
-    # Fetch all price history
-    sqlite_cursor.execute("SELECT * FROM price_history ORDER BY ticker, date")
-    rows = sqlite_cursor.fetchall()
-
-    for row in rows:
-        # Assign ingestion_timestamp intelligently:
-        # Use day-of data as ingestion_timestamp (assumes next-day ingestion)
-        price_date = datetime.fromisoformat(row['date'])
-        ingestion_ts = price_date.replace(hour=16, minute=0, second=0)  # 4 PM market close
-
-        price = PriceHistory(
-            ticker=row['ticker'],
-            date=price_date,
-            open=Decimal(row['open']),
-            high=Decimal(row['high']),
-            low=Decimal(row['low']),
-            close=Decimal(row['close']),
-            volume=int(row['volume']),
-            adjusted_close=Decimal(row['adjusted_close']) if row['adjusted_close'] else None,
-            ingestion_timestamp=ingestion_ts,
-            data_source=row.get('data_source', 'yfinance')
-        )
-        postgres_session.add(price)
-
-    postgres_session.commit()
-    postgres_session.close()
-    sqlite_conn.close()
-
-# Run migration
-if __name__ == "__main__":
-    sqlite_path = "alphadesk.db"
-    postgres_url = "postgresql://user:password@localhost/alphadesk_v2"
-
-    print("Migrating Securities...")
-    migrate_securities(sqlite_path, postgres_url)
-
-    print("Migrating Price History...")
-    migrate_price_history(sqlite_path, postgres_url)
-
-    print("Migration complete!")
+def downgrade() -> None:
+    """Drop Event Scanner tables."""
+    op.drop_table('event_correlation_analysis')
+    op.drop_table('event_alert_configuration')
+    op.drop_table('event_source_mapping')
+    op.drop_table('event_factor_bridge')
+    op.drop_table('alpha_decay_window')
+    op.drop_table('event')
+    op.drop_table('event_classification_rule')
 ```
 
 ---
 
-## 7. Query Patterns for Backtesting Engine
+## 9. Query Patterns for Event Timeline, Alpha Decay, and Factor Generation
 
-### 7.1 Portfolio Construction (Daily/Monthly Rebalance)
+### 9.1 Event Timeline Query (Watchlist View)
 
-```python
-def construct_backtest_portfolio(
-    session: Session,
-    backtest_id: int,
-    rebalance_date: datetime
-) -> Dict[str, Decimal]:
-    """
-    Construct portfolio for backtest rebalance.
-
-    Returns:
-        Dict mapping ticker → position weight
-    """
-    # Fetch backtest config
-    backtest = session.query(Backtest).filter_by(id=backtest_id).first()
-    config = backtest.configuration
-
-    # Get factor allocations
-    allocations = session.query(BacktestFactorAllocation)\
-        .filter_by(backtest_id=backtest_id).all()
-
-    # Construct investable universe (no survivorship bias)
-    universe = construct_portfolio_universe_at_date(
-        session,
-        rebalance_date,
-        min_volume=config.universe_filters.get('min_volume', 1_000_000)
-    )
-
-    # Score each security across factors (using PiT data only)
-    composite_scores = {}
-    for ticker in universe:
-        composite_score = Decimal('0')
-
-        for allocation in allocations:
-            factor_score = session.query(CustomFactorScore)\
-                .filter(
-                    CustomFactorScore.factor_id == allocation.factor_id,
-                    CustomFactorScore.ticker == ticker,
-                    CustomFactorScore.ingestion_timestamp <= rebalance_date
-                )\
-                .order_by(CustomFactorScore.calculation_date.desc())\
-                .first()
-
-            if factor_score and factor_score.factor_value:
-                composite_score += (
-                    factor_score.factor_value * allocation.weight
-                )
-
-        if composite_score > 0:
-            composite_scores[ticker] = composite_score
-
-    # Rank and allocate positions
-    sorted_scores = sorted(
-        composite_scores.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    # Top N positions (config.target_stocks_per_portfolio)
-    target_count = config.target_stocks_per_portfolio
-    top_tickers = [ticker for ticker, _ in sorted_scores[:target_count]]
-
-    # Equal weight or optimal allocation
-    position_weight = Decimal(1) / Decimal(len(top_tickers))
-    portfolio = {ticker: position_weight for ticker in top_tickers}
-
-    return portfolio
+```sql
+-- Get chronological event timeline for ticker, with PiT enforcement
+SELECT
+    e.event_id,
+    e.ticker,
+    e.event_type,
+    e.severity_score,
+    e.headline,
+    e.event_date,
+    e.detected_at,
+    COUNT(DISTINCT adw.window_id) as decay_window_count,
+    AVG(adw.abnormal_return) FILTER (WHERE adw.window_type = '[0,+5d]') as alpha_5d,
+    COALESCE(efb.factor_id, NULL) as linked_factor_id
+FROM event e
+LEFT JOIN alpha_decay_window adw ON e.event_id = adw.event_id
+LEFT JOIN event_factor_bridge efb ON e.event_id = efb.event_id
+WHERE e.ticker = $1
+    AND e.detected_at <= $2
+ORDER BY e.detected_at DESC
+LIMIT 100;
 ```
 
-### 7.2 Daily P&L Calculation
+### 9.2 Alpha Decay Calculation Trigger
+
+When a new event is detected, trigger calculation of all 4 alpha decay windows:
 
 ```python
-def calculate_backtest_daily_pnl(
-    session: Session,
-    backtest_id: int,
-    date: datetime,
-    previous_portfolio: Dict[str, Decimal],
-    portfolio_value: Decimal
-) -> BacktestResult:
+def calculate_alpha_decay_for_event(event_id: int, session: Session):
     """
-    Calculate daily P&L for backtest.
-
-    Args:
-        session: SQLAlchemy session
-        backtest_id: Backtest ID
-        date: Current date
-        previous_portfolio: Holdings from previous day {ticker: weight}
-        portfolio_value: Portfolio NAV start of day
-
-    Returns:
-        BacktestResult with daily P&L
+    Calculate alpha decay windows for event.
+    Runs as background task after event creation.
     """
-
-    backtest = session.query(Backtest).filter_by(id=backtest_id).first()
-    config = backtest.configuration
-
-    # Get prices for all holdings (PiT: ingestion_timestamp <= date)
-    prices = {}
-    for ticker in previous_portfolio.keys():
-        price_row = session.query(PriceHistory)\
-            .filter(
-                PriceHistory.ticker == ticker,
-                PriceHistory.date == date,
-                PriceHistory.ingestion_timestamp <= date
-            )\
-            .first()
-
-        if price_row:
-            prices[ticker] = price_row.close
-
-    # Calculate weighted return
-    daily_return = Decimal('0')
-    for ticker, weight in previous_portfolio.items():
-        if ticker in prices:
-            stock_return = (prices[ticker] - previous_portfolio[ticker]) / previous_portfolio[ticker]
-            daily_return += weight * stock_return
-
-    # Apply transaction costs (if rebalance)
-    turnover = calculate_turnover(previous_portfolio, new_portfolio)
-    transaction_costs = (
-        turnover * portfolio_value *
-        (config.commission_per_trade + config.slippage_percent)
-    )
-
-    net_return = daily_return - (transaction_costs / portfolio_value)
-    new_portfolio_value = portfolio_value * (Decimal('1') + net_return)
-
-    # Get benchmark return (SPY)
-    benchmark_price = session.query(PriceHistory)\
-        .filter(
-            PriceHistory.ticker == 'SPY',
-            PriceHistory.date == date
-        )\
-        .first()
-
-    benchmark_return = None
-    if benchmark_price:
-        # Previous close for SPY
-        prev_spy = session.query(PriceHistory)\
-            .filter(
-                PriceHistory.ticker == 'SPY',
-                PriceHistory.date < date
-            )\
-            .order_by(PriceHistory.date.desc())\
-            .first()
-
-        if prev_spy:
-            benchmark_return = (benchmark_price.close - prev_spy.close) / prev_spy.close
-
-    # Create result
-    result = BacktestResult(
-        backtest_id=backtest_id,
-        date=date,
-        portfolio_value=new_portfolio_value,
-        daily_return=net_return,
-        cumulative_return=calculate_cumulative_return(backtest_id, date, net_return),
-        benchmark_return=benchmark_return,
-        excess_return=net_return - benchmark_return if benchmark_return else None,
-        turnover=turnover,
-        transaction_costs=transaction_costs
-    )
-
-    return result
-```
-
-### 7.3 Rolling Factor Regression (60-Month Window)
-
-```python
-def calculate_factor_exposures(
-    session: Session,
-    backtest_id: int,
-    as_of_date: datetime,
-    lookback_months: int = 60
-) -> Dict[str, Decimal]:
-    """
-    Compute rolling factor exposures via regression.
-
-    Args:
-        session: SQLAlchemy session
-        backtest_id: Backtest ID
-        as_of_date: Current date
-        lookback_months: Regression window (default 60 months)
-
-    Returns:
-        Dict mapping factor_name → beta estimate
-    """
-    from datetime import timedelta
-    import numpy as np
-    from scipy.stats import linregress
-
-    backtest = session.query(Backtest).filter_by(id=backtest_id).first()
-
-    # Get backtest daily returns for lookback window
-    start_date = as_of_date - timedelta(days=lookback_months*30)
-
-    backtest_returns = session.query(BacktestResult.date, BacktestResult.daily_return)\
-        .filter(
-            BacktestResult.backtest_id == backtest_id,
-            BacktestResult.date >= start_date,
-            BacktestResult.date <= as_of_date
-        )\
-        .order_by(BacktestResult.date)\
-        .all()
-
-    # Get FF factor returns for same period
-    factor_allocations = session.query(BacktestFactorAllocation)\
-        .filter_by(backtest_id=backtest_id).all()
-
-    factor_exposures = {}
-
-    for allocation in factor_allocations:
-        factor_def = session.query(FactorDefinition)\
-            .filter_by(id=allocation.factor_id).first()
-
-        ff_returns = session.query(FamaFrenchFactor.date, FamaFrenchFactor.return_value)\
-            .filter(
-                FamaFrenchFactor.factor_id == allocation.factor_id,
-                FamaFrenchFactor.date >= start_date,
-                FamaFrenchFactor.date <= as_of_date
-            )\
-            .order_by(FamaFrenchFactor.date)\
-            .all()
-
-        # Align dates and run regression
-        backtest_array = np.array([float(r[1]) for r in backtest_returns])
-        factor_array = np.array([float(r[1]) for r in ff_returns])
-
-        if len(backtest_array) > 1 and len(factor_array) > 1:
-            slope, intercept, r_value, p_value, std_err = linregress(factor_array, backtest_array)
-            factor_exposures[factor_def.factor_name] = Decimal(str(slope))
-        else:
-            factor_exposures[factor_def.factor_name] = Decimal('0')
-
-    return factor_exposures
-```
-
-### 7.4 Compute Backtest Statistics
-
-```python
-def compute_backtest_statistics(
-    session: Session,
-    backtest_id: int
-):
-    """
-    Compute summary statistics for completed backtest.
-
-    Calculates:
-    - Sharpe ratio
-    - Sortino ratio
-    - Calmar ratio
-    - Max drawdown
-    - Information ratio
-    - Hit rate
-    - Annual return
-    - Volatility
-    """
-    import numpy as np
-    from decimal import Decimal
-
-    # Fetch all daily results
-    results = session.query(BacktestResult)\
-        .filter_by(backtest_id=backtest_id)\
-        .order_by(BacktestResult.date)\
-        .all()
-
-    if not results or len(results) < 2:
+    event = session.query(Event).filter(Event.event_id == event_id).first()
+    if not event:
         return
 
-    # Convert to numpy arrays
-    returns = np.array([float(r.daily_return) for r in results])
-    benchmark_returns = np.array([
-        float(r.benchmark_return) if r.benchmark_return else 0.0
-        for r in results
-    ])
+    # Get baseline returns (252 days pre-event)
+    baseline_start = event.event_date - timedelta(days=252)
+    baseline_prices = session.query(PriceHistory).filter(
+        PriceHistory.ticker == event.ticker,
+        PriceHistory.date >= baseline_start,
+        PriceHistory.date < event.event_date,
+        PriceHistory.ingestion_timestamp <= event.detected_at
+    ).order_by(PriceHistory.date).all()
 
-    # Risk-free rate (assume 2% annual)
-    rf_daily = 0.02 / 252
+    if not baseline_prices:
+        return
 
-    # Sharpe ratio
-    excess_returns = returns - rf_daily
-    sharpe = np.mean(excess_returns) / np.std(excess_returns) * np.sqrt(252)
+    baseline_returns = calculate_returns(baseline_prices)
+    baseline_vol = np.std(baseline_returns)
 
-    # Sortino ratio (only downside volatility)
-    downside_returns = np.minimum(excess_returns, 0)
-    downside_vol = np.std(downside_returns)
-    sortino = np.mean(excess_returns) / downside_vol * np.sqrt(252) if downside_vol > 0 else 0
+    for window_type, days in [
+        ('[0,+1d]', 1),
+        ('[0,+5d]', 5),
+        ('[0,+21d]', 21),
+        ('[0,+63d]', 63)
+    ]:
+        window_end = event.event_date + timedelta(days=days)
 
-    # Max drawdown
-    cumulative = np.cumprod(1 + returns)
-    running_max = np.maximum.accumulate(cumulative)
-    drawdown = (cumulative - running_max) / running_max
-    max_drawdown = np.min(drawdown)
+        # Get prices during window (PiT: only data known at detected_at)
+        window_prices = session.query(PriceHistory).filter(
+            PriceHistory.ticker == event.ticker,
+            PriceHistory.date >= event.event_date,
+            PriceHistory.date <= window_end,
+            PriceHistory.ingestion_timestamp <= event.detected_at + timedelta(days=days+5)
+        ).order_by(PriceHistory.date).all()
 
-    # Calmar ratio
-    annual_return = np.mean(returns) * 252
-    calmar = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
+        if not window_prices:
+            continue
 
-    # Information ratio
-    excess_vs_benchmark = returns - benchmark_returns
-    info_ratio = np.mean(excess_vs_benchmark) / np.std(excess_vs_benchmark) * np.sqrt(252)
+        window_returns = calculate_returns(window_prices)
+        abnormal_return = np.mean(window_returns) - np.mean(baseline_returns)
 
-    # Hit rate (% days outperforming benchmark)
-    outperformance = excess_vs_benchmark > 0
-    hit_rate = np.sum(outperformance) / len(outperformance)
-
-    # Annual volatility
-    annual_vol = np.std(returns) * np.sqrt(252)
-
-    # Store statistics
-    stats = [
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='sharpe_ratio',
-            metric_value=Decimal(str(sharpe)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='sortino_ratio',
-            metric_value=Decimal(str(sortino)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='max_drawdown',
-            metric_value=Decimal(str(max_drawdown)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='calmar_ratio',
-            metric_value=Decimal(str(calmar)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='information_ratio',
-            metric_value=Decimal(str(info_ratio)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='hit_rate',
-            metric_value=Decimal(str(hit_rate)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='annual_return',
-            metric_value=Decimal(str(annual_return)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-        BacktestStatistic(
-            backtest_id=backtest_id,
-            metric_name='volatility',
-            metric_value=Decimal(str(annual_vol)),
-            period_start=results[0].date,
-            period_end=results[-1].date,
-            period_type='full'
-        ),
-    ]
-
-    for stat in stats:
-        session.add(stat)
+        decay_window = AlphaDecayWindow(
+            event_id=event_id,
+            window_type=window_type,
+            abnormal_return=Decimal(str(abnormal_return * 100)),
+            volatility=Decimal(str(np.std(window_returns))),
+            confidence_score=min(100, len(window_prices) * 10),
+            data_points=len(window_prices),
+            measured_at=datetime.utcnow()
+        )
+        session.add(decay_window)
 
     session.commit()
 ```
 
----
-
-## 8. Data Access Patterns: Repository/DAO Layer
-
-### 8.1 PiT-Safe Security Repository
-
-```python
-# backend/repositories/security_repository.py
-from sqlmodel import Session
-from typing import List, Optional
-from datetime import datetime
-from backend.models import Security, SecurityLifecycleEvent, SecurityStatus
-
-class SecurityRepository:
-    """Repository for security master data with PiT safety."""
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def get_active_securities(
-        self,
-        as_of_date: datetime,
-        sector: Optional[str] = None
-    ) -> List[Security]:
-        """
-        Get securities active as-of date (no survivorship bias).
-
-        Args:
-            as_of_date: Date to evaluate status
-            sector: Optional sector filter
-
-        Returns:
-            List of active Security objects
-        """
-        # Find delisted securities
-        delisted = self.session.query(SecurityLifecycleEvent.ticker)\
-            .filter(
-                SecurityLifecycleEvent.event_type.in_(
-                    [SecurityStatus.DELISTED, SecurityStatus.ACQUIRED, SecurityStatus.BANKRUPT]
-                ),
-                SecurityLifecycleEvent.effective_date <= as_of_date
-            )\
-            .distinct()\
-            .all()
-
-        delisted_tickers = [row[0] for row in delisted]
-
-        query = self.session.query(Security)\
-            .filter(Security.ticker.notin_(delisted_tickers))
-
-        if sector:
-            query = query.filter(Security.sector == sector)
-
-        return query.all()
-
-    def get_security_status_at_date(
-        self,
-        ticker: str,
-        as_of_date: datetime
-    ) -> SecurityStatus:
-        """
-        Determine security status (active, delisted, etc.) at a date.
-
-        Args:
-            ticker: Security ticker
-            as_of_date: Date to evaluate
-
-        Returns:
-            SecurityStatus enum value
-        """
-        # Check for lifecycle events effective by as_of_date
-        event = self.session.query(SecurityLifecycleEvent)\
-            .filter(
-                SecurityLifecycleEvent.ticker == ticker,
-                SecurityLifecycleEvent.effective_date <= as_of_date
-            )\
-            .order_by(SecurityLifecycleEvent.effective_date.desc())\
-            .first()
-
-        if event:
-            return event.event_type
-        else:
-            return SecurityStatus.ACTIVE
-```
-
-### 8.2 PiT-Safe Price Repository
-
-```python
-# backend/repositories/price_repository.py
-from sqlmodel import Session
-from typing import List, Optional, Dict
-from datetime import datetime, timedelta
-from decimal import Decimal
-from backend.models import PriceHistory
-
-class PriceRepository:
-    """Repository for price data with strict PiT enforcement."""
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def get_price_at_date(
-        self,
-        ticker: str,
-        date: datetime,
-        as_of_date: Optional[datetime] = None
-    ) -> Optional[PriceHistory]:
-        """
-        Get price for security at specific date (PiT safe).
-
-        Args:
-            ticker: Security ticker
-            date: Trade date
-            as_of_date: Date to enforce PiT constraint.
-                        If None, uses current date (next-day prices).
-
-        Returns:
-            PriceHistory or None if not available
-        """
-        if as_of_date is None:
-            as_of_date = datetime.utcnow()
-
-        return self.session.query(PriceHistory)\
-            .filter(
-                PriceHistory.ticker == ticker,
-                PriceHistory.date == date,
-                # CRITICAL: PiT enforcement
-                PriceHistory.ingestion_timestamp <= as_of_date
-            )\
-            .first()
-
-    def get_price_returns(
-        self,
-        ticker: str,
-        start_date: datetime,
-        end_date: datetime,
-        as_of_date: Optional[datetime] = None
-    ) -> List[tuple]:
-        """
-        Get price returns for period (PiT safe).
-
-        Returns:
-            List of (date, return) tuples
-        """
-        if as_of_date is None:
-            as_of_date = datetime.utcnow()
-
-        prices = self.session.query(PriceHistory)\
-            .filter(
-                PriceHistory.ticker == ticker,
-                PriceHistory.date >= start_date,
-                PriceHistory.date <= end_date,
-                # CRITICAL: PiT enforcement
-                PriceHistory.ingestion_timestamp <= as_of_date
-            )\
-            .order_by(PriceHistory.date)\
-            .all()
-
-        returns = []
-        for i in range(1, len(prices)):
-            ret = (prices[i].close - prices[i-1].close) / prices[i-1].close
-            returns.append((prices[i].date, ret))
-
-        return returns
-
-    def get_latest_prices(
-        self,
-        tickers: List[str],
-        as_of_date: Optional[datetime] = None
-    ) -> Dict[str, Decimal]:
-        """
-        Get latest prices for multiple securities (PiT safe).
-
-        Returns:
-            Dict mapping ticker → close price
-        """
-        if as_of_date is None:
-            as_of_date = datetime.utcnow()
-
-        results = self.session.query(
-            PriceHistory.ticker,
-            PriceHistory.close
-        )\
-        .filter(
-            PriceHistory.ticker.in_(tickers),
-            # PiT: get prices ingested by as_of_date
-            PriceHistory.ingestion_timestamp <= as_of_date
-        )\
-        .order_by(PriceHistory.ticker, PriceHistory.date.desc())\
-        .distinct(PriceHistory.ticker)\
-        .all()
-
-        return {ticker: close for ticker, close in results}
-```
-
-### 8.3 PiT-Safe Fundamentals Repository
-
-```python
-# backend/repositories/fundamentals_repository.py
-from sqlmodel import Session
-from typing import Optional, Dict, List
-from datetime import datetime
-from decimal import Decimal
-from backend.models import FundamentalsSnapshot
-
-class FundamentalsRepository:
-    """Repository for fundamental data with disclosure-lag awareness."""
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def get_fundamental_metric(
-        self,
-        ticker: str,
-        metric_name: str,
-        as_of_date: datetime
-    ) -> Optional[FundamentalsSnapshot]:
-        """
-        Get latest fundamental metric respecting disclosure lag.
-
-        Uses source_document_date (filing date) for PiT constraint,
-        not ingestion_timestamp (since we may have historical data dumps).
-
-        Args:
-            ticker: Security ticker
-            metric_name: Fundamental metric (revenue, fcf, etc.)
-            as_of_date: Current date (PiT constraint)
-
-        Returns:
-            FundamentalsSnapshot or None
-        """
-        return self.session.query(FundamentalsSnapshot)\
-            .filter(
-                FundamentalsSnapshot.ticker == ticker,
-                FundamentalsSnapshot.metric_name == metric_name,
-                # Must have been disclosed by as_of_date
-                FundamentalsSnapshot.source_document_date <= as_of_date,
-                # And must have been ingested
-                FundamentalsSnapshot.ingestion_timestamp <= as_of_date
-            )\
-            .order_by(FundamentalsSnapshot.fiscal_period_end.desc())\
-            .first()
-
-    def get_fundamental_metrics(
-        self,
-        ticker: str,
-        as_of_date: datetime,
-        fiscal_period_end: Optional[datetime] = None
-    ) -> Dict[str, Decimal]:
-        """
-        Get all fundamental metrics for security.
-
-        Args:
-            ticker: Security ticker
-            as_of_date: Current date (PiT constraint)
-            fiscal_period_end: Optional specific period
-
-        Returns:
-            Dict mapping metric_name → value
-        """
-        query = self.session.query(FundamentalsSnapshot)\
-            .filter(
-                FundamentalsSnapshot.ticker == ticker,
-                FundamentalsSnapshot.source_document_date <= as_of_date,
-                FundamentalsSnapshot.ingestion_timestamp <= as_of_date
-            )
-
-        if fiscal_period_end:
-            query = query.filter(
-                FundamentalsSnapshot.fiscal_period_end == fiscal_period_end
-            )
-        else:
-            # Get latest period for each metric
-            query = query.order_by(
-                FundamentalsSnapshot.metric_name,
-                FundamentalsSnapshot.fiscal_period_end.desc()
-            )
-
-        results = query.all()
-
-        # De-duplicate: keep only latest per metric
-        metrics_dict = {}
-        for row in results:
-            if row.metric_name not in metrics_dict:
-                metrics_dict[row.metric_name] = row.metric_value
-
-        return metrics_dict
-```
-
-### 8.4 PiT-Safe Factor Repository
-
-```python
-# backend/repositories/factor_repository.py
-from sqlmodel import Session
-from typing import Optional, List, Dict
-from datetime import datetime
-from decimal import Decimal
-from backend.models import CustomFactorScore, FactorDefinition
-
-class FactorRepository:
-    """Repository for factor scores with PiT enforcement."""
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def get_factor_scores_for_universe(
-        self,
-        factor_id: int,
-        tickers: List[str],
-        as_of_date: datetime
-    ) -> Dict[str, Optional[Decimal]]:
-        """
-        Get factor scores for all securities in universe (PiT safe).
-
-        Args:
-            factor_id: FactorDefinition ID
-            tickers: List of security tickers
-            as_of_date: Current date (PiT constraint)
-
-        Returns:
-            Dict mapping ticker → factor_score (or None if not available)
-        """
-        scores = self.session.query(CustomFactorScore)\
-            .filter(
-                CustomFactorScore.factor_id == factor_id,
-                CustomFactorScore.ticker.in_(tickers),
-                # PiT: only see scores computed by as_of_date
-                CustomFactorScore.ingestion_timestamp <= as_of_date
-            )\
-            .order_by(
-                CustomFactorScore.ticker,
-                CustomFactorScore.calculation_date.desc()
-            )\
-            .all()
-
-        # De-duplicate: keep only latest score per ticker
-        result_dict = {}
-        for score in scores:
-            if score.ticker not in result_dict:
-                result_dict[score.ticker] = score.factor_value
-
-        # Fill missing tickers with None
-        for ticker in tickers:
-            if ticker not in result_dict:
-                result_dict[ticker] = None
-
-        return result_dict
-
-    def get_factor_definition_at_publication_date(
-        self,
-        factor_name: str
-    ) -> Optional[FactorDefinition]:
-        """Get factor definition with publication tracking."""
-        return self.session.query(FactorDefinition)\
-            .filter(FactorDefinition.factor_name == factor_name)\
-            .first()
-```
-
----
-
-## 9. Shared Infrastructure for Phases 2-4
-
-### 9.1 Phase 2: Event Scanner
-
-The Event Scanner identifies corporate actions (earnings, dividends, splits, M&A) for event studies.
-
-**New tables:**
-```python
-class CorporateEvent(SQLModel, table=True):
-    """Corporate events (earnings, dividends, M&A, etc.)"""
-    __tablename__ = "corporate_events"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(foreign_key="securities.ticker", index=True)
-    event_type: str = Field(index=True)  # earnings, dividend, split, merger, bankruptcy, etc.
-    announcement_date: datetime = Field(index=True)
-    effective_date: datetime = Field(index=True)
-    ingestion_timestamp: datetime = Field(index=True)  # PiT marker
-    details: Optional[Dict] = Field(default=None, sa_column=Column(JSON))
-```
-
-**Shared infrastructure:**
-- `SecurityLifecycleEvent` already tracks M&A/bankruptcy
-- `PriceHistory` provides post-event price reactions
-- `FundamentalsSnapshot` provides pre/post earnings comparisons
-- PiT enforcement ensures no look-ahead bias in event studies
-
-### 9.2 Phase 3: Earnings Predictor
-
-Predicts earnings surprises using ML on fundamental trends.
-
-**New tables:**
-```python
-class EarningsForecast(SQLModel, table=True):
-    """ML-predicted earnings"""
-    __tablename__ = "earnings_forecasts"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(foreign_key="securities.ticker", index=True)
-    fiscal_period_end: datetime = Field(index=True)
-    model_version: str = Field(index=True)
-    forecast_date: datetime = Field(index=True)
-    predicted_eps: Decimal = Field()
-    predicted_revenue: Decimal = Field()
-    ingestion_timestamp: datetime = Field(index=True)  # PiT marker
-```
-
-**Shared infrastructure:**
-- `FundamentalsSnapshot` provides historical data for training
-- `PriceHistory` provides returns for surprise impact analysis
-- `CustomFactorScore` can include forecast-based factors
-- PiT enforcement prevents training on future earnings
-
-### 9.3 Phase 4: Sentiment Analysis
-
-Analyzes news/social sentiment for strategy enhancement.
-
-**New tables:**
-```python
-class SentimentScore(SQLModel, table=True):
-    """NLP sentiment from news/social media"""
-    __tablename__ = "sentiment_scores"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(foreign_key="securities.ticker", index=True)
-    sentiment_date: datetime = Field(index=True)
-    sentiment_source: str = Field(index=True)  # news, twitter, reddit, etc.
-    sentiment_score: Decimal = Field()  # -1.0 to 1.0
-    article_count: int = Field()
-    ingestion_timestamp: datetime = Field(index=True)  # PiT marker
-```
-
-**Shared infrastructure:**
-- `CustomFactorScore` can incorporate sentiment as a factor
-- PiT enforcement ensures no future sentiment leakage
-- Same architecture as prices/fundamentals for consistency
-
-### 9.4 Unified Data Mart for ML Training
-
-```python
-class MLTrainingDataSnapshot(SQLModel, table=True):
-    """
-    Unified view of all features for ML training.
-
-    Denormalized snapshot for model training, computed daily.
-    Includes:
-    - Fundamental metrics (latest disclosed)
-    - Technical indicators (lagged)
-    - Sentiment scores (lagged)
-    - Factor exposures
-    - Forward returns (training target)
-
-    All data strictly PiT-safe (no look-ahead).
-    """
-    __tablename__ = "ml_training_data_snapshot"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    ticker: str = Field(foreign_key="securities.ticker", index=True)
-    snapshot_date: datetime = Field(index=True, sa_column=Column(DateTime(timezone=True)))
-
-    # Features
-    features: Dict[str, Any] = Field(
-        default=None,
-        sa_column=Column(JSON),
-        description="Denormalized feature dict for ML training"
-    )
-
-    # Target (computed forward returns)
-    forward_return_1m: Optional[Decimal] = Field(default=None)  # 1-month forward return
-    forward_return_3m: Optional[Decimal] = Field(default=None)  # 3-month forward return
-    forward_return_6m: Optional[Decimal] = Field(default=None)  # 6-month forward return
-
-    # Metadata
-    ingestion_timestamp: datetime = Field(
-        index=True,
-        sa_column=Column(DateTime(timezone=True), default=datetime.utcnow)
-    )
-```
-
-All phases share the same **PiT-safe query infrastructure**, **survivorship-bias-free universe**, and **partitioned time-series architecture**.
-
----
-
-## 10. Schema Summary & Constraints
-
-### 10.1 Table Inventory
-
-| Table Name | Rows (Scale) | Partitioning | Key Indexes |
-|---|---|---|---|
-| securities | ~3,000 | None | ticker, sector |
-| security_lifecycle_events | ~30,000 | None | ticker, effective_date |
-| price_history | ~10M | Monthly | (ticker, date, ingestion_timestamp) |
-| fundamentals_snapshot | ~5M | Quarterly | (ticker, metric_name, source_document_date) |
-| factor_definitions | ~20 | None | factor_name, publication_date |
-| fama_french_factors | ~100K | None | (factor_id, date) |
-| custom_factor_scores | ~10M | Monthly | (factor_id, ticker, ingestion_timestamp) |
-| backtests | ~100K | None | (user_id, created_at, status) |
-| backtest_configurations | ~100K | None | backtest_id |
-| backtest_factor_allocations | ~500K | None | backtest_id |
-| backtest_results | ~50M | Monthly | (backtest_id, date) |
-| backtest_statistics | ~1M | None | (backtest_id, metric_name) |
-| factor_correlation_matrix | ~500K | None | (backtest_id, as_of_date) |
-| alpha_decay_analysis | ~10K | None | (factor_id, backtest_id) |
-| screener_factor_scores | ~10M | Monthly | (factor_id, ingestion_timestamp) |
-
-**Total estimated size:** ~100 GB (5 years of daily data)
-
-### 10.2 Uniqueness Constraints
+### 9.3 Event-to-Factor Bridge Query (for Backtester)
 
 ```sql
--- Securities: one per ticker
-UNIQUE(ticker), UNIQUE(cusip), UNIQUE(isin)
-
--- Prices: one per ticker per day
-UNIQUE(ticker, date)
-
--- Fundamentals: one metric per ticker per period
-UNIQUE(ticker, fiscal_period_end, metric_name)
-
--- Factor definitions: one per name
-UNIQUE(factor_name)
-
--- FF factors: one per factor per date
-UNIQUE(factor_id, date)
-
--- Custom factor scores: one per factor per ticker per date
-UNIQUE(factor_id, ticker, calculation_date)
-
--- Backtest configs: one per backtest
-UNIQUE(backtest_id)
-
--- Backtest results: one per backtest per date
-UNIQUE(backtest_id, date)
-
--- Backtest stats: one per backtest per metric per period
-UNIQUE(backtest_id, metric_name, period_start, period_end)
-
--- Screener scores: one per ticker per factor per date
-UNIQUE(ticker, score_date, factor_id)
-```
-
-### 10.3 Foreign Key Relationships
-
-```sql
--- All foreign keys enforce referential integrity and cascade deletes
-FOREIGN KEY(ticker) REFERENCES securities(ticker)
-FOREIGN KEY(backtest_id) REFERENCES backtests(id)
-FOREIGN KEY(factor_id) REFERENCES factor_definitions(id)
-```
-
----
-
-## 11. Performance & Optimization Guide
-
-### 11.1 Connection Pooling
-
-```python
-# backend/database.py
-from sqlalchemy import create_engine
-from sqlalchemy.pool import QueuePool
-
-DATABASE_URL = "postgresql://user:password@localhost:5432/alphadesk_v2"
-
-engine = create_engine(
-    DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=20,  # Max connections in pool
-    max_overflow=10,  # Additional connections if needed
-    pool_pre_ping=True,  # Test connections before use
-    pool_recycle=3600,  # Recycle connections every hour
-    echo=False
-)
-```
-
-### 11.2 Query Optimization Examples
-
-```python
-# GOOD: Use indexes for PiT queries
-query = session.query(PriceHistory)\
-    .filter(
-        PriceHistory.ticker == ticker,
-        PriceHistory.date == date,
-        PriceHistory.ingestion_timestamp <= as_of_date
-    )
-# Uses composite index: idx_price_pit_range
-
-# BAD: Full table scan (no index)
-query = session.query(PriceHistory)\
-    .filter(PriceHistory.open < 100)
-
-# GOOD: Batch operations
-for tickers in batch(ticker_list, 1000):
-    prices = session.query(PriceHistory)\
-        .filter(PriceHistory.ticker.in_(tickers))
-
-# BAD: Individual queries in loop
-for ticker in ticker_list:
-    price = session.query(PriceHistory)\
-        .filter(PriceHistory.ticker == ticker).first()
-```
-
-### 11.3 Materialized Views for Reporting
-
-```sql
--- Materialized view: Latest prices per security
-CREATE MATERIALIZED VIEW latest_prices_mv AS
-SELECT
-    ticker,
-    date,
-    close,
-    volume,
-    ingestion_timestamp
-FROM (
+-- Get all active event signals for backtesting as of date
+WITH event_signals AS (
     SELECT
-        ticker, date, close, volume, ingestion_timestamp,
-        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY date DESC) as rn
-    FROM price_history
-) t
-WHERE rn = 1;
+        efb.bridge_id,
+        e.event_id,
+        e.ticker,
+        e.event_type,
+        e.severity_score,
+        efb.factor_id,
+        efb.signal_value,
+        efb.signal_confidence,
+        e.detected_at,
+        efb.valid_until,
+        MAX(adw.abnormal_return) FILTER (
+            WHERE adw.window_type = '[0,+21d]'
+        ) OVER (PARTITION BY e.event_id) as realized_alpha_21d
+    FROM event_factor_bridge efb
+    JOIN event e ON efb.event_id = e.event_id
+    LEFT JOIN alpha_decay_window adw ON e.event_id = adw.event_id
+    WHERE efb.valid_until >= $1
+        AND e.detected_at <= $1
+)
+SELECT *
+FROM event_signals
+WHERE realized_alpha_21d IS NOT NULL
+ORDER BY e.detected_at DESC;
+```
 
--- Refresh hourly or on-demand
-REFRESH MATERIALIZED VIEW latest_prices_mv;
+### 9.4 Event Correlation Analysis Query
 
--- Use in screener queries
-SELECT s.ticker, s.company_name, lpm.close
-FROM securities s
-JOIN latest_prices_mv lpm ON s.ticker = lpm.ticker;
+```sql
+-- Find event type co-occurrence patterns
+WITH event_pairs AS (
+    SELECT
+        e1.ticker,
+        e1.event_type as type_1,
+        e1.event_date as date_1,
+        e2.event_type as type_2,
+        e2.event_date as date_2,
+        ABS(EXTRACT(DAY FROM (e2.event_date - e1.event_date))) as days_apart
+    FROM event e1
+    JOIN event e2 ON e1.ticker = e2.ticker
+        AND e1.event_id < e2.event_id
+        AND ABS(EXTRACT(DAY FROM (e2.event_date - e1.event_date))) <= 30
+    WHERE e1.detected_at <= $1
+        AND e2.detected_at <= $1
+)
+SELECT
+    type_1,
+    type_2,
+    COUNT(*) as co_occurrence_count,
+    STDDEV_POP(days_apart) as avg_spacing_days
+FROM event_pairs
+GROUP BY type_1, type_2
+ORDER BY co_occurrence_count DESC;
 ```
 
 ---
 
-## 12. Database Migration Checklist
+## 10. Integration with Existing Phase 1 Tables
 
-- [ ] Create PostgreSQL database and user
-- [ ] Run Alembic migrations to create schema
-- [ ] Seed master data (securities, Fama-French factors)
-- [ ] Migrate historical prices from SQLite (with PiT timestamps)
-- [ ] Migrate historical fundamentals from SQLite
-- [ ] Create security lifecycle events (IPO, delisting records)
-- [ ] Create indexes and partitions
-- [ ] Test PiT enforcement on sample backtests
-- [ ] Load first 2-3 years of price data
-- [ ] Validate materialized views
-- [ ] Performance benchmark (query latency)
-- [ ] Set up automated data pipelines (daily price updates, fundamentals snapshots)
-- [ ] Configure backups and point-in-time recovery
+### 10.1 Foreign Key Relationships
+
+All new Event Scanner tables maintain referential integrity with Phase 1:
+
+- `event.ticker` → `security.ticker` (security master)
+- `event_factor_bridge.factor_id` → `factor_definition.id` (factor catalog)
+- Alpha decay calculations use `price_history` (price master)
+
+### 10.2 PiT Enforcement Across Phases
+
+When analyzing events as of date D:
+
+```python
+# Phase 1: Get factor scores as of D
+factor_scores = session.query(CustomFactorScore).filter(
+    CustomFactorScore.calculation_date <= D,
+    CustomFactorScore.ingestion_timestamp <= D
+).all()
+
+# Phase 2: Get event signals as of D
+event_signals = session.query(EventFactorBridge).filter(
+    EventFactorBridge.created_at <= D,
+    EventFactorBridge.valid_until >= D
+).all()
+
+# Phase 2 (sub): Get alpha decay measurements as of D
+decay_windows = session.query(AlphaDecayWindow).filter(
+    AlphaDecayWindow.measured_at <= D,
+    AlphaDecayWindow.event_id.in_([s.event_id for s in event_signals])
+).all()
+
+# Combine: events become additional factors in backtest
+combined_factors = factor_scores + event_signals
+```
+
+### 10.3 Backtest Integration
+
+Events feed into backtests via the `event_factor_bridge` table:
+
+1. **Pre-backtest**: User selects event-based factors alongside traditional factors
+2. **Backtest config**: Stores which event types + severity thresholds are included
+3. **Backtest results**: Daily returns include allocation to event signals
+4. **Post-backtest**: Alpha decay analysis compares predicted (signal_value) vs. realized (abnormal_return)
 
 ---
 
-## 13. Conclusion
+## 11. Example Data Flows
 
-This database design provides:
+### Flow 1: Earnings Event Detection → Factor Signal
 
-1. **Rock-solid PiT enforcement** via `ingestion_timestamp` on all time-series data
-2. **Zero survivorship bias** through `SecurityLifecycleEvent` tracking
-3. **Walk-forward backtesting** with no look-ahead bias
-4. **Scalability** to 100GB+ via partitioning and smart indexing
-5. **Shared infrastructure** for Phases 2-4 (Event Scanner, Earnings Predictor, Sentiment)
-6. **Production-grade** with proper constraints, relationships, and audit trails
+```
+1. yfinance calendar ingestion (background task):
+   "AAPL earnings announced 2026-01-15"
 
-The schema enforces data integrity at the database layer, making it mathematically impossible to accidentally introduce biases that would inflate backtest returns by 4-25%.
+2. Rule matching (event_classification_rule):
+   pattern_type = calendar_event
+   pattern_value = {event_type: earnings_date}
+   → Create Event(ticker=AAPL, event_type=earnings, ...)
 
-For a research-grade platform serving self-directed investors and small funds, this architecture ensures institutional-quality factor research without Bloomberg/FactSet pricing.
+3. Severity scoring:
+   historical EPS surprise magnitude = 8% (previous 4 quarters)
+   → severity_score = 4
 
+4. Alpha decay calculation (background task over 63 days):
+   Day 1: [0,+1d] abnormal_return = +2.1%
+   Day 5: [0,+5d] abnormal_return = +3.8%
+   Day 21: [0,+21d] abnormal_return = +4.2%
+   Day 63: [0,+63d] abnormal_return = +2.1% (decay confirmed)
+
+5. Factor bridge creation:
+   signal_value = +0.75 (bullish signal based on alpha pattern)
+   valid_until = 2026-02-05 (21-day window)
+   → Event becomes backtestable factor
+
+6. Backtest query:
+   SELECT * FROM event_factor_bridge
+   WHERE factor_id = 789 AND valid_until >= '2026-01-20'
+   → Include in portfolio factor exposure on Jan 20
+```
+
+### Flow 2: Insider Trade Clustering → Correlation Detected
+
+```
+1. SEC EDGAR Form 4 ingestion:
+   AAPL insiders buy $5M shares on 2026-01-10
+   → Event(ticker=AAPL, event_type=insider_trade, severity=4)
+
+2. One week later, M&A rumor filed (8-K item 1.01):
+   AAPL to acquire TechCorp for $30B on 2026-01-17
+   → Event(ticker=AAPL, event_type=M&A, severity=5)
+
+3. Correlation analysis (weekly batch):
+   co_occurrence_count += 1 (insider_trade → M&A within 7 days)
+   correlation_strength = 0.72 (strong correlation detected)
+   p_value = 0.003 (statistically significant)
+
+4. Alert triggered (event_alert_configuration):
+   user_config: min_severity=3, event_type_filter=[insider_trade, M&A]
+   → User notified: "High-severity M&A event detected post-insider trading"
+```
+
+---
+
+## 12. Summary
+
+The Event Scanner Phase 2 schema:
+
+- **Core tables**: `event`, `event_classification_rule`, `alpha_decay_window`, `event_factor_bridge`
+- **Supporting tables**: `event_source_mapping`, `event_alert_configuration`, `event_correlation_analysis`
+- **PiT enforcement**: All tables include `detected_at` or `measured_at` timestamps for temporal consistency
+- **Indexing**: Optimized for event timeline queries, alpha decay retrieval, and factor backtester lookups
+- **Integration**: Seamless FK relationships to existing security, price_history, and factor_definition tables
+- **Scalability**: BIGSERIAL IDs for event and window tables; JSON metadata for flexible source data storage
+
+This design enables:
+- Real-time event detection from SEC EDGAR and yfinance
+- Historical alpha decay measurement with statistical confidence
+- Event signals as backtestable factors
+- User-configurable event alerts
+- Event correlation analysis for strategy discovery
+- Full PiT compliance for backtesting reproducibility

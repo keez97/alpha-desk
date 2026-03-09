@@ -21,6 +21,12 @@ from backend.models.backtests import (
     BacktestResult,
     BacktestStatistic,
 )
+from backend.models.events import (
+    Event,
+    EventClassificationRule,
+    AlphaDecayWindow,
+    EventAlertConfiguration,
+)
 
 
 @pytest.fixture(name="session")
@@ -359,3 +365,127 @@ def sample_security_lifecycle_fixture(session: Session, sample_securities):
     session.commit()
 
     return events
+
+
+@pytest.fixture(name="sample_events")
+def sample_events_fixture(session: Session, sample_securities):
+    """
+    Create sample events for testing Event Scanner functionality.
+    """
+    events = []
+    base_date = date(2023, 1, 1)
+    now = datetime.now(timezone.utc)
+
+    # Create various event types
+    event_configs = [
+        ("AAPL", "earnings_announcement", 3, "Q1 Earnings"),
+        ("AAPL", "insider_trade_buy_large", 4, "CEO purchase"),
+        ("MSFT", "sec_filing_10k", 2, "Annual Report"),
+        ("GOOGL", "beneficial_ownership_13d", 4, "Activist stake"),
+        ("TSLA", "sec_filing_8k_item_1_01", 5, "Bankruptcy filing"),
+        ("AMZN", "dividend_ex_date", 1, "Dividend"),
+    ]
+
+    for ticker, event_type, severity, headline in event_configs:
+        event = Event(
+            ticker=ticker,
+            event_type=event_type,
+            severity_score=severity,
+            detected_at=now - timedelta(days=len(events)),
+            event_date=base_date + timedelta(days=len(events)),
+            source="SEC_EDGAR" if "sec_filing" in event_type else "YFINANCE",
+            headline=headline,
+            description=f"{headline} for {ticker}",
+            metadata={
+                "source_type": "SEC_EDGAR" if "sec_filing" in event_type else "YFINANCE",
+            },
+        )
+        events.append(event)
+        session.add(event)
+
+    session.commit()
+
+    return events
+
+
+@pytest.fixture(name="sample_classification_rules")
+def sample_classification_rules_fixture(session: Session):
+    """
+    Create sample event classification rules for testing.
+    """
+    rules = [
+        EventClassificationRule(
+            classification="earnings_announcement",
+            pattern_type="calendar_event",
+            pattern_value={"event_type": "earnings"},
+            confidence_score=95,
+            enabled=True,
+            description="Earnings announcement detection",
+        ),
+        EventClassificationRule(
+            classification="insider_trade_buy",
+            pattern_type="filing_form",
+            pattern_value={"filing_type": "4", "transaction_type": "buy"},
+            confidence_score=90,
+            enabled=True,
+            description="Insider buy transaction",
+        ),
+        EventClassificationRule(
+            classification="bankruptcy",
+            pattern_type="filing_form",
+            pattern_value={"filing_type": "8-K", "item_number": "1.01"},
+            confidence_score=99,
+            enabled=True,
+            description="Bankruptcy filing (8-K Item 1.01)",
+        ),
+    ]
+
+    for rule in rules:
+        session.add(rule)
+
+    session.commit()
+
+    return rules
+
+
+@pytest.fixture(name="sample_alpha_decay_windows")
+def sample_alpha_decay_windows_fixture(session: Session, sample_events):
+    """
+    Create sample alpha decay windows for testing.
+    """
+    windows = []
+
+    for event in sample_events[:3]:  # Create windows for first 3 events
+        for window_type, days in [("1d", 1), ("5d", 5), ("21d", 21)]:
+            window = AlphaDecayWindow(
+                event_id=event.event_id,
+                window_type=window_type,
+                abnormal_return=Decimal(str(0.001 * days)),  # Vary by window
+                benchmark_return=Decimal("0.0005"),
+                measured_at=datetime.now(timezone.utc),
+                confidence=Decimal("0.95"),
+                sample_size=1,
+            )
+            windows.append(window)
+            session.add(window)
+
+    session.commit()
+
+    return windows
+
+
+@pytest.fixture(name="sample_alert_configuration")
+def sample_alert_configuration_fixture(session: Session):
+    """
+    Create sample alert configuration for testing.
+    """
+    config = EventAlertConfiguration(
+        event_type_filter=["earnings_announcement", "insider_trade_buy_large", "sec_filing_8k_item_1_01"],
+        severity_threshold=2,
+        enabled=True,
+        tickers_filter=["AAPL", "MSFT", "GOOGL"],
+    )
+    session.add(config)
+    session.commit()
+
+    return config

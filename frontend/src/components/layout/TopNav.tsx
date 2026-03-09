@@ -5,6 +5,7 @@ import { classNames } from '../../lib/utils';
 const navItems = [
   { label: 'Morning Brief', path: '/' },
   { label: 'Screener', path: '/screener' },
+  { label: 'Events', path: '/events' },
   { label: 'Weekly Report', path: '/weekly-report' },
   { label: 'Portfolio', path: '/portfolio' },
   { label: 'RRG', path: '/rrg' },

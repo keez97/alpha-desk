@@ -1,3110 +1,1452 @@
-# AlphaDesk Factor Backtester: Complete Architecture Design
+# AlphaDesk Event Scanner Feature (Phase 2) - Full Stack Architecture
 
-**Document Version**: 1.0
-**Last Updated**: 2026-03-10
-**Phase**: Phase 1 (V2)
-**Status**: Comprehensive Architecture Specification
+**Date:** 2026-03-10
+**Feature:** Event Scanner (Complex Event Processing System)
+**Status:** Architecture Design
 
 ---
 
 ## Table of Contents
 
-1. [Executive Summary](#executive-summary)
+1. [Architecture Overview](#architecture-overview)
 2. [Backend Architecture](#backend-architecture)
 3. [Frontend Architecture](#frontend-architecture)
-4. [Cross-Cutting Concerns](#cross-cutting-concerns)
+4. [Integration Points](#integration-points)
 5. [Data Flow Diagrams](#data-flow-diagrams)
-6. [Risk Assessment & Mitigations](#risk-assessment--mitigations)
+6. [Implementation Roadmap](#implementation-roadmap)
 
 ---
 
-## Executive Summary
+## Architecture Overview
 
-The Factor Backtester architecture is designed as a modular, research-grade system for validating multi-factor investment strategies. It follows a **three-tier architecture**:
+### System Context
 
-- **API Layer**: RESTful FastAPI endpoints organized into logical domain routers (`backtester`, `factors`, `data`)
-- **Service Layer**: Pure business logic components (BacktestEngine, FactorCalculator, StatisticsCalculator, etc.) with clear separation of concerns
-- **Data Layer**: Point-in-Time (PiT) enforced PostgreSQL schema with partitioning, survivorship tracking, and immutable historical snapshots
+The Event Scanner is a Complex Event Processing (CEP) system that:
 
-Key architectural decisions:
-- **Async processing** for long-running backtests (30-60+ seconds) via FastAPI BackgroundTasks or Celery
-- **Caching strategy** for factor scores, correlation matrices, and statistics to reduce recomputation
-- **TanStack Query** for intelligent server-state management on the frontend
-- **Canvas-based rendering** for high-performance equity curve and drawdown overlay charts
-- **Type safety** through Pydantic schemas and TypeScript strict mode
+- **Ingests** market events from multiple sources (SEC EDGAR, yfinance)
+- **Processes** events through rule-based classification and severity scoring
+- **Stores** event data with alpha decay metrics
+- **Distributes** events to multiple consumers (UI timeline, factor backtester, screener)
+- **Analyzes** abnormal returns in 4 temporal windows: [0,+1d], [0,+5d], [0,+21d], [0,+63d]
+
+### Core Design Principles
+
+1. **Event-Driven Architecture**: Events flow through distinct producer → processor → consumer stages
+2. **Scalability**: Background polling (15min intervals) with rate-limited API calls
+3. **Composability**: Events become backtestable factors automatically
+4. **Real-time UI**: WebSocket-ready for future live event streaming
+5. **Multi-tenant Safe**: Watchlist-based event filtering per portfolio
+6. **Data Enrichment**: Events enriched with price data, volatility, insider info
 
 ---
 
 ## Backend Architecture
 
-### 1. API Design & Endpoints
+### 1. Data Models
 
-#### 1.1 Routers Organization
-
-All new backtester functionality is organized into three FastAPI routers:
+#### Event Core Model
 
 ```
-/api/backtests       - CRUD operations on backtests
-/api/factors         - Factor definitions, library access, custom factor creation
-/api/data-ingestion  - Data loading, Kenneth French updates, fundamental snapshots
+Event
+├── id: UUID (PK)
+├── ticker: str (FK → Securities)
+├── event_type: enum [earnings, M&A, insider_trade, dividend_change, SEC_filing, management_change, guidance_revision, share_repurchase]
+├── event_date: datetime
+├── severity: int (1-5)
+├── title: str
+├── description: text
+├── source: str (SEC_EDGAR | YFINANCE | INSIDER_TRADES | CUSTOM)
+├── raw_data: jsonb (source-specific metadata)
+├── created_at: datetime
+├── updated_at: datetime
+└── is_deleted: bool (soft delete)
 ```
 
-#### 1.2 Backtests Router Endpoints
-
-**File**: `backend/routers/backtester.py`
-
-```python
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from sqlmodel import Session
-from typing import Optional, List
-from datetime import date
-from pydantic import BaseModel, Field
-
-router = APIRouter(prefix="/api/backtests", tags=["backtester"])
-
-# ============================================================================
-# REQUEST/RESPONSE SCHEMAS
-# ============================================================================
-
-class BacktestCreateRequest(BaseModel):
-    """Request body for creating a new backtest."""
-    name: str = Field(..., min_length=1, max_length=255)
-    backtest_type: str = Field(..., regex="^(factor_combo|custom)$")
-    start_date: date
-    end_date: date
-    rebalance_frequency: str = Field(..., regex="^(daily|weekly|monthly|quarterly|annual)$")
-    transaction_costs: dict = Field(
-        default_factory=lambda: {"commission_bps": 10, "slippage_bps": 5},
-        description="Transaction costs: commission_bps and slippage_bps"
-    )
-    universe_selection: str = Field(
-        default="sp500",
-        regex="^(sp500|nasdaq100|russell2000|custom)$"
-    )
-    factor_allocations: Optional[List[dict]] = Field(
-        default=None,
-        description="List of {factor_id: int, weight: float (0.0-1.0)}"
-    )
-
-
-class BacktestResponse(BaseModel):
-    """Response body for a backtest."""
-    id: int
-    name: str
-    backtest_type: str
-    status: str  # draft | running | completed | failed
-    created_at: str
-    updated_at: str
-    completed_at: Optional[str] = None
-    metadata: dict
-
-
-class BacktestResultsSummary(BaseModel):
-    """Summary statistics for a completed backtest."""
-    backtest_id: int
-    status: str
-    statistics: dict  # {metric_name: value}
-    equity_curve: List[dict]  # [{date, portfolio_value, daily_return, benchmark_return}]
-    factor_exposures: List[dict]  # [{date, factor_id, exposure_beta}]
-    correlation_matrix: List[dict]  # [{factor_1_id, factor_2_id, correlation}]
-    alpha_decay: Optional[dict] = None  # Pre/post publication analysis
-
-
-class BacktestProgressResponse(BaseModel):
-    """Real-time progress update during backtest execution."""
-    backtest_id: int
-    status: str  # running | completed | failed
-    progress_percent: float  # 0.0 to 100.0
-    current_rebalance_date: Optional[str] = None
-    error_message: Optional[str] = None
-
-
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
-
-@router.post("/create", response_model=BacktestResponse)
-async def create_backtest(
-    req: BacktestCreateRequest,
-    session: Session = Depends(get_session)
-) -> BacktestResponse:
-    """
-    Create a new backtest configuration (draft status).
-
-    Validates:
-    - Date range coherence (start < end)
-    - Factor allocations sum to 100% (if provided)
-    - Universe selection validity
-    - Transaction cost reasonableness
-
-    Returns immediately with backtest ID (status=draft).
-    """
-    # Validation
-    if req.start_date >= req.end_date:
-        raise HTTPException(
-            status_code=400,
-            detail="start_date must be before end_date"
-        )
-
-    if req.factor_allocations:
-        total_weight = sum(f["weight"] for f in req.factor_allocations)
-        if not (0.99 <= total_weight <= 1.01):  # Allow 1% tolerance for float precision
-            raise HTTPException(
-                status_code=400,
-                detail=f"Factor weights must sum to 100%, got {total_weight*100:.1f}%"
-            )
-
-    # Create backtest in draft status
-    backtest = Backtest(
-        name=req.name,
-        backtest_type=req.backtest_type,
-        status="draft",
-        created_at=datetime.utcnow(),
-        metadata={}
-    )
-
-    config = BacktestConfiguration(
-        backtest_id=backtest.id,
-        start_date=req.start_date,
-        end_date=req.end_date,
-        rebalance_frequency=req.rebalance_frequency,
-        universe_selection=req.universe_selection,
-        transaction_costs=req.transaction_costs
-    )
-
-    # Store factor allocations
-    if req.factor_allocations:
-        for alloc in req.factor_allocations:
-            BacktestFactorAllocation(
-                backtest_id=backtest.id,
-                factor_id=alloc["factor_id"],
-                weight=alloc["weight"]
-            )
-
-    session.add(backtest)
-    session.add(config)
-    session.commit()
-    session.refresh(backtest)
-
-    return BacktestResponse(
-        id=backtest.id,
-        name=backtest.name,
-        backtest_type=backtest.backtest_type,
-        status=backtest.status,
-        created_at=backtest.created_at.isoformat(),
-        updated_at=backtest.created_at.isoformat(),
-        completed_at=None,
-        metadata=backtest.metadata
-    )
-
-
-@router.post("/{backtest_id}/run")
-async def run_backtest(
-    backtest_id: int,
-    background_tasks: BackgroundTasks,
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Trigger async execution of a backtest.
-
-    - Updates status from draft → running
-    - Enqueues background task for execution
-    - Returns immediately with task_id for polling
-
-    Long-running: 30-60+ seconds typical (depends on date range, rebalance freq).
-    """
-    backtest = session.get(Backtest, backtest_id)
-    if not backtest:
-        raise HTTPException(status_code=404, detail="Backtest not found")
-
-    if backtest.status != "draft":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Can only run backtests in draft status, got {backtest.status}"
-        )
-
-    backtest.status = "running"
-    backtest.updated_at = datetime.utcnow()
-    session.add(backtest)
-    session.commit()
-
-    # Enqueue async task
-    background_tasks.add_task(execute_backtest, backtest_id, str(session))
-
-    return {
-        "backtest_id": backtest_id,
-        "status": "running",
-        "message": "Backtest queued for execution. Poll /backtests/{backtest_id}/status for progress."
-    }
-
-
-@router.get("/{backtest_id}/status")
-async def get_backtest_status(
-    backtest_id: int,
-    session: Session = Depends(get_session)
-) -> BacktestProgressResponse:
-    """
-    Get current status and progress of a running or completed backtest.
-
-    - status: draft | running | completed | failed
-    - progress_percent: 0.0 to 100.0 (updated during execution)
-    - current_rebalance_date: current date being processed (if running)
-    - error_message: populated if status=failed
-
-    Frontend polls this endpoint ~1-2 sec intervals during execution.
-    """
-    backtest = session.get(Backtest, backtest_id)
-    if not backtest:
-        raise HTTPException(status_code=404, detail="Backtest not found")
-
-    progress = backtest.metadata.get("progress", {})
-
-    return BacktestProgressResponse(
-        backtest_id=backtest_id,
-        status=backtest.status,
-        progress_percent=progress.get("percent", 0.0),
-        current_rebalance_date=progress.get("current_date"),
-        error_message=progress.get("error") if backtest.status == "failed" else None
-    )
-
-
-@router.get("/{backtest_id}/results")
-async def get_backtest_results(
-    backtest_id: int,
-    session: Session = Depends(get_session)
-) -> BacktestResultsSummary:
-    """
-    Retrieve full results of a completed backtest.
-
-    Returns:
-    - Equity curve (daily portfolio value + returns vs benchmark)
-    - Statistics (Sharpe, Sortino, Calmar, etc.)
-    - Factor exposures (rolling betas)
-    - Correlation matrix
-    - Alpha decay analysis (if applicable)
-
-    Only available if status=completed. Returns 404 if not yet complete.
-    """
-    backtest = session.get(Backtest, backtest_id)
-    if not backtest or backtest.status != "completed":
-        raise HTTPException(
-            status_code=404,
-            detail="Backtest not found or not yet completed"
-        )
-
-    # Query all result tables
-    results = session.exec(
-        select(BacktestResults).where(BacktestResults.backtest_id == backtest_id)
-    ).all()
-
-    stats = session.exec(
-        select(BacktestStatistics).where(BacktestStatistics.backtest_id == backtest_id)
-    ).all()
-
-    corr = session.exec(
-        select(FactorCorrelationMatrix).where(FactorCorrelationMatrix.backtest_id == backtest_id)
-    ).all()
-
-    # Format for response
-    equity_curve = [
-        {
-            "date": r.date.isoformat(),
-            "portfolio_value": float(r.portfolio_value),
-            "daily_return": float(r.daily_return),
-            "benchmark_return": float(r.benchmark_return),
-            "turnover": float(r.turnover),
-            "factor_exposures": r.factor_exposures
-        }
-        for r in sorted(results, key=lambda x: x.date)
-    ]
-
-    statistics = {s.metric_name: float(s.metric_value) for s in stats}
-
-    correlation = [
-        {
-            "factor_1_id": c.factor_1_id,
-            "factor_2_id": c.factor_2_id,
-            "correlation": float(c.correlation_value)
-        }
-        for c in corr
-    ]
-
-    return BacktestResultsSummary(
-        backtest_id=backtest_id,
-        status=backtest.status,
-        statistics=statistics,
-        equity_curve=equity_curve,
-        factor_exposures=equity_curve,  # Simplified; same data
-        correlation_matrix=correlation,
-        alpha_decay=backtest.metadata.get("alpha_decay")
-    )
-
-
-@router.get("/list")
-async def list_backtests(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    List all backtests with pagination.
-
-    Supports pagination via skip/limit.
-    Returns summary info for each backtest (no full results).
-    """
-    backtests = session.exec(
-        select(Backtest).offset(skip).limit(limit)
-    ).all()
-
-    total = session.exec(select(Backtest)).all()
-
-    return {
-        "total": len(total),
-        "skip": skip,
-        "limit": limit,
-        "items": [
-            BacktestResponse(
-                id=b.id,
-                name=b.name,
-                backtest_type=b.backtest_type,
-                status=b.status,
-                created_at=b.created_at.isoformat(),
-                updated_at=b.updated_at.isoformat(),
-                completed_at=b.metadata.get("completed_at"),
-                metadata=b.metadata
-            )
-            for b in backtests
-        ]
-    }
-
-
-@router.delete("/{backtest_id}")
-async def delete_backtest(
-    backtest_id: int,
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Soft-delete a backtest (mark as deleted without cascade).
-
-    Preserves audit trail; results remain in DB but backtest is hidden.
-    """
-    backtest = session.get(Backtest, backtest_id)
-    if not backtest:
-        raise HTTPException(status_code=404, detail="Backtest not found")
-
-    backtest.status = "deleted"
-    backtest.updated_at = datetime.utcnow()
-    session.add(backtest)
-    session.commit()
-
-    return {"backtest_id": backtest_id, "status": "deleted"}
-
-
-@router.get("/{backtest_id}/export")
-async def export_backtest_json(
-    backtest_id: int,
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Export full backtest results as JSON.
-
-    Includes:
-    - Configuration
-    - Equity curve
-    - Statistics
-    - Factor exposures
-    - Correlation matrix
-    - Alpha decay
-
-    Suitable for external analysis, archiving, or sharing.
-    """
-    backtest = session.get(Backtest, backtest_id)
-    if not backtest:
-        raise HTTPException(status_code=404, detail="Backtest not found")
-
-    # Gather all related data
-    config = session.exec(
-        select(BacktestConfiguration).where(
-            BacktestConfiguration.backtest_id == backtest_id
-        )
-    ).first()
-
-    results = await get_backtest_results(backtest_id, session)
-
-    allocations = session.exec(
-        select(BacktestFactorAllocation).where(
-            BacktestFactorAllocation.backtest_id == backtest_id
-        )
-    ).all()
-
-    export_data = {
-        "metadata": {
-            "backtest_id": backtest.id,
-            "name": backtest.name,
-            "backtest_type": backtest.backtest_type,
-            "status": backtest.status,
-            "created_at": backtest.created_at.isoformat(),
-            "completed_at": backtest.metadata.get("completed_at")
-        },
-        "configuration": {
-            "start_date": config.start_date.isoformat(),
-            "end_date": config.end_date.isoformat(),
-            "rebalance_frequency": config.rebalance_frequency,
-            "universe_selection": config.universe_selection,
-            "transaction_costs": config.transaction_costs
-        },
-        "factor_allocations": [
-            {
-                "factor_id": a.factor_id,
-                "weight": float(a.weight)
-            }
-            for a in allocations
-        ],
-        "results": results.dict()
-    }
-
-    return export_data
-```
-
-#### 1.3 Factors Router Endpoints
-
-**File**: `backend/routers/factors.py`
-
-```python
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
-from typing import List, Optional
-from pydantic import BaseModel, Field
-from datetime import date
-
-router = APIRouter(prefix="/api/factors", tags=["factors"])
-
-# ============================================================================
-# SCHEMAS
-# ============================================================================
-
-class FactorDefinitionResponse(BaseModel):
-    id: int
-    factor_name: str
-    factor_type: str  # fama_french | custom
-    is_published: bool
-    publication_date: Optional[str] = None
-    description: str
-
-
-class CustomFactorDefinitionRequest(BaseModel):
-    """Request to create a custom factor."""
-    factor_name: str = Field(..., min_length=1, max_length=255)
-    description: str = Field(..., min_length=10)
-    calculation_formula: str = Field(
-        ...,
-        description="Formula: e.g., 'fcf_yield = (operating_cash_flow - capex) / market_cap'"
-    )
-    fundamentals_required: List[str] = Field(
-        ...,
-        description="List of fundamental metrics needed: revenue, net_income, fcf, etc."
-    )
-
-
-class FactorScoreResponse(BaseModel):
-    ticker: str
-    score_date: str
-    factor_id: int
-    factor_score: float  # 0-100 percentile score
-
-
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
-
-@router.get("/library")
-async def get_factor_library(session: Session = Depends(get_session)) -> dict:
-    """
-    Retrieve pre-built Fama-French 5-factor library.
-
-    Returns all 5 FF factors with their definitions and latest ingestion timestamp.
-
-    Factors:
-    - MKT-RF: Market excess return
-    - SMB: Small-minus-big (size factor)
-    - HML: High-minus-low (value factor)
-    - RMW: Robust-minus-weak (profitability)
-    - CMA: Conservative-minus-aggressive (investment)
-    """
-    ff_factors = session.exec(
-        select(FactorDefinition).where(FactorDefinition.factor_type == "fama_french")
-    ).all()
-
-    return {
-        "factors": [
-            FactorDefinitionResponse(
-                id=f.id,
-                factor_name=f.factor_name,
-                factor_type=f.factor_type,
-                is_published=f.is_published,
-                publication_date=f.publication_date.isoformat() if f.publication_date else None,
-                description=f.description or ""
-            )
-            for f in ff_factors
-        ],
-        "count": len(ff_factors)
-    }
-
-
-@router.get("/custom")
-async def list_custom_factors(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    List all custom factors created by users.
-
-    Pagination supported.
-    """
-    factors = session.exec(
-        select(FactorDefinition)
-        .where(FactorDefinition.factor_type == "custom")
-        .offset(skip)
-        .limit(limit)
-    ).all()
-
-    total = session.exec(
-        select(FactorDefinition).where(FactorDefinition.factor_type == "custom")
-    ).all()
-
-    return {
-        "total": len(total),
-        "items": [
-            FactorDefinitionResponse(
-                id=f.id,
-                factor_name=f.factor_name,
-                factor_type=f.factor_type,
-                is_published=f.is_published,
-                publication_date=f.publication_date.isoformat() if f.publication_date else None,
-                description=f.description or ""
-            )
-            for f in factors
-        ]
-    }
-
-
-@router.post("/custom/create")
-async def create_custom_factor(
-    req: CustomFactorDefinitionRequest,
-    session: Session = Depends(get_session)
-) -> FactorDefinitionResponse:
-    """
-    Create a new custom factor definition.
-
-    Does NOT compute factor scores immediately; that is deferred to data ingestion
-    or explicit calculation endpoint.
-
-    Formula validation: Basic syntax check (contains '=', valid field names).
-    """
-    # Validate formula syntax
-    if "=" not in req.calculation_formula:
-        raise HTTPException(
-            status_code=400,
-            detail="Formula must contain '=' assignment"
-        )
-
-    factor = FactorDefinition(
-        factor_name=req.factor_name,
-        factor_type="custom",
-        is_published=False,
-        description=req.description,
-        metadata={
-            "calculation_formula": req.calculation_formula,
-            "fundamentals_required": req.fundamentals_required
-        }
-    )
-
-    session.add(factor)
-    session.commit()
-    session.refresh(factor)
-
-    return FactorDefinitionResponse(
-        id=factor.id,
-        factor_name=factor.factor_name,
-        factor_type=factor.factor_type,
-        is_published=factor.is_published,
-        description=factor.description
-    )
-
-
-@router.get("/{factor_id}/scores")
-async def get_factor_scores(
-    factor_id: int,
-    date_from: Optional[date] = Query(None),
-    date_to: Optional[date] = Query(None),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Retrieve factor scores for all securities on a given date or date range.
-
-    Scores are percentile-ranked (0-100).
-    Supports filtering by date range for time-series analysis.
-    """
-    query = select(ScreenerFactorScore).where(ScreenerFactorScore.factor_id == factor_id)
-
-    if date_from:
-        query = query.where(ScreenerFactorScore.score_date >= date_from)
-    if date_to:
-        query = query.where(ScreenerFactorScore.score_date <= date_to)
-
-    scores = session.exec(
-        query.offset(skip).limit(limit)
-    ).all()
-
-    return {
-        "factor_id": factor_id,
-        "count": len(scores),
-        "scores": [
-            FactorScoreResponse(
-                ticker=s.ticker,
-                score_date=s.score_date.isoformat(),
-                factor_id=s.factor_id,
-                factor_score=float(s.factor_score)
-            )
-            for s in scores
-        ]
-    }
-
-
-@router.get("/{factor_id}/correlation")
-async def get_factor_correlation(
-    factor_id: int,
-    backtest_id: Optional[int] = Query(None),
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Get correlation of a factor with all others in a backtest.
-
-    If backtest_id not provided, returns correlations from latest run.
-    """
-    if backtest_id:
-        corr = session.exec(
-            select(FactorCorrelationMatrix).where(
-                FactorCorrelationMatrix.backtest_id == backtest_id,
-                (FactorCorrelationMatrix.factor_1_id == factor_id) |
-                (FactorCorrelationMatrix.factor_2_id == factor_id)
-            )
-        ).all()
-    else:
-        corr = session.exec(
-            select(FactorCorrelationMatrix).where(
-                (FactorCorrelationMatrix.factor_1_id == factor_id) |
-                (FactorCorrelationMatrix.factor_2_id == factor_id)
-            )
-        ).all()
-
-    return {
-        "factor_id": factor_id,
-        "correlations": [
-            {
-                "factor_1_id": c.factor_1_id,
-                "factor_2_id": c.factor_2_id,
-                "correlation": float(c.correlation_value),
-                "as_of_date": c.as_of_date.isoformat() if c.as_of_date else None
-            }
-            for c in corr
-        ]
-    }
-```
-
-#### 1.4 Data Ingestion Router Endpoints
-
-**File**: `backend/routers/data_ingestion.py`
-
-```python
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlmodel import Session
-from typing import Optional
-from datetime import date
-from pydantic import BaseModel
-
-router = APIRouter(prefix="/api/data", tags=["data-ingestion"])
-
-class DataIngestResponse(BaseModel):
-    task_id: str
-    source: str  # kenneth_french | yfinance | edgar
-    status: str
-    message: str
-
-
-@router.post("/ingest-kenneth-french")
-async def ingest_kenneth_french_factors(
-    background_tasks: BackgroundTasks,
-    force_refresh: bool = False,
-    session: Session = Depends(get_session)
-) -> DataIngestResponse:
-    """
-    Fetch latest Fama-French factor returns from Kenneth French Data Library.
-
-    - Downloads 5-factor CSV daily and monthly returns
-    - Parses and validates
-    - Stores with ingestion_timestamp for PiT enforcement
-    - Runs async (typically < 5 seconds for full history)
-
-    force_refresh=True: Re-download even if recent data exists.
-    """
-    task_id = f"ff_{datetime.utcnow().timestamp()}"
-    background_tasks.add_task(
-        load_kenneth_french_factors,
-        force_refresh=force_refresh,
-        session=session
-    )
-
-    return DataIngestResponse(
-        task_id=task_id,
-        source="kenneth_french",
-        status="queued",
-        message="Kenneth French factors ingestion queued. Check logs for completion."
-    )
-
-
-@router.post("/ingest-price-history")
-async def ingest_price_history(
-    ticker: str,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-    session: Session = Depends(get_session)
-) -> DataIngestResponse:
-    """
-    Fetch price history for a security from yfinance.
-
-    - Queries yfinance for OHLCV
-    - Stores with ingestion_timestamp (to enforce PiT, no look-ahead)
-    - Handles delisting/acquisition events
-
-    Typical runtime: 1-2 seconds per ticker.
-    """
-    task_id = f"price_{ticker}_{datetime.utcnow().timestamp()}"
-    background_tasks.add_task(
-        load_price_history,
-        ticker=ticker,
-        start_date=start_date,
-        end_date=end_date,
-        session=session
-    )
-
-    return DataIngestResponse(
-        task_id=task_id,
-        source="yfinance",
-        status="queued",
-        message=f"Price history ingestion for {ticker} queued."
-    )
-
-
-@router.post("/ingest-fundamentals")
-async def ingest_fundamentals(
-    ticker: str,
-    source: str = "sec_edgar",
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-    session: Session = Depends(get_session)
-) -> DataIngestResponse:
-    """
-    Fetch fundamental data from SEC EDGAR or other sources.
-
-    Stores snapshots with ingestion_timestamp to enforce PiT.
-    Metrics: revenue, net_income, fcf, eps, book_value, etc.
-
-    Typical runtime: 3-5 seconds per ticker (SEC parsing is slow).
-    """
-    task_id = f"fundamentals_{ticker}_{datetime.utcnow().timestamp()}"
-    background_tasks.add_task(
-        load_fundamentals,
-        ticker=ticker,
-        source=source,
-        session=session
-    )
-
-    return DataIngestResponse(
-        task_id=task_id,
-        source=source,
-        status="queued",
-        message=f"Fundamentals ingestion for {ticker} queued."
-    )
-
-
-@router.get("/status/{task_id}")
-async def get_ingestion_status(task_id: str) -> dict:
-    """
-    Check status of a running ingestion task.
-
-    Returns: status (queued | running | completed | failed), progress, error_message.
-    """
-    # Note: This would require a task queue (Celery/RQ) in production.
-    # For MVP, just return placeholder.
-    return {
-        "task_id": task_id,
-        "status": "completed",
-        "message": "Data ingestion completed."
-    }
-```
-
-#### 1.5 Error Handling & Status Codes
-
-All endpoints follow consistent error handling:
+#### Alpha Decay Model
 
 ```
-400 Bad Request
-  - Malformed input (e.g., date range invalid, weights don't sum to 100)
-  - Missing required fields
-
-404 Not Found
-  - Backtest doesn't exist
-  - Factor not found
-  - Results not yet available
-
-422 Unprocessable Entity
-  - Pydantic validation error (Fastapi auto-response)
-
-500 Internal Server Error
-  - Backtest execution failure
-  - Database error
-  - Unexpected exception in business logic
+AlphaDecayMetric
+├── id: UUID (PK)
+├── event_id: UUID (FK → Event)
+├── window_days: int [1, 5, 21, 63]
+├── returns_0_to_window: float (%)
+├── volatility: float (annualized %)
+├── abnormal_returns: float (% vs market)
+├── sharpe_ratio: float
+├── max_drawdown: float (%)
+├── calculated_at: datetime
+└── data_quality: str [COMPLETE, PARTIAL, INSUFFICIENT]
 ```
 
-Error response format:
-```json
-{
-  "error": {
-    "code": "INVALID_DATE_RANGE",
-    "message": "start_date must be before end_date",
-    "details": {}
-  }
-}
+#### EventFactor Model (Bridge)
+
+```
+EventFactor
+├── id: UUID (PK)
+├── event_id: UUID (FK → Event)
+├── factor_id: UUID (FK → Factor)
+├── alpha_exposure: float (factor loading)
+├── created_at: datetime
+└── backtestable: bool
 ```
 
----
+#### EventScreenerBadge Model
+
+```
+EventScreenerBadge
+├── id: UUID (PK)
+├── ticker: str (FK → Securities)
+├── event_id: UUID (FK → Event)
+├── severity: int (1-5)
+├── event_type: str
+├── ttl_hours: int (24/48/72 based on severity)
+├── expires_at: datetime
+└── display_count: int (how many events in this 24h window)
+```
 
 ### 2. Service Layer Architecture
 
-The service layer contains pure business logic, completely decoupled from HTTP concerns. All services are synchronous or async-capable but not tied to FastAPI's lifespan.
+#### EventProducerService
 
-#### 2.1 BacktestEngine Service
+**Responsibilities:**
+- Poll SEC EDGAR RSS feed every 15 minutes
+- Scrape yfinance earnings calendar daily
+- Parse insider trading filings
+- Extract dividend announcements
+- Normalize events to common schema
 
-**File**: `backend/services/backtest_engine.py`
-
-Orchestrates the entire walk-forward backtesting protocol.
+**Key Methods:**
 
 ```python
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
-from datetime import date, datetime, timedelta
-import logging
-from sqlmodel import Session, select
-
-logger = logging.getLogger(__name__)
-
-
-class BacktestEngine:
-    """
-    Executes walk-forward backtesting with strict PiT enforcement.
-
-    Protocol:
-    1. Load configuration (date range, factors, weights, rebalance frequency)
-    2. For each rebalance date:
-       a. Query fundamental data as of that date (PiT enforced via ingestion_timestamp)
-       b. Calculate factor scores for eligible universe
-       c. Rank securities by composite factor score
-       d. Construct portfolio (quintile/decile long-only or long-short)
-       e. Calculate daily returns until next rebalance
-    3. Compute statistics and exposures across full period
-    4. Store results in backtest_results, backtest_statistics tables
-    """
-
-    def __init__(self, session: Session):
-        self.session = session
-        self.logger = logger
-
-    def run(
-        self,
-        backtest_id: int,
-        config: 'BacktestConfiguration',
-        factor_allocations: List[Dict[str, Any]],
-        progress_callback: Optional[callable] = None
-    ) -> Dict[str, Any]:
-        """
-        Execute full backtest with progress updates.
-
-        Args:
-            backtest_id: ID of backtest to execute
-            config: BacktestConfiguration object
-            factor_allocations: List of {factor_id, weight}
-            progress_callback: Called with (percent, current_date, total_dates)
-
-        Returns:
-            Dictionary with results metadata
-        """
-        try:
-            # Step 1: Determine rebalance dates
-            rebalance_dates = self._compute_rebalance_schedule(
-                config.start_date,
-                config.end_date,
-                config.rebalance_frequency
-            )
-
-            total_dates = len(rebalance_dates)
-            portfolio_values = []
-            factor_exposures_series = []
-            turnover_series = []
-
-            # Step 2: Walk-forward loop
-            previous_holdings = {}  # {ticker: weight}
-
-            for idx, rebalance_date in enumerate(rebalance_dates):
-                # Progress callback
-                if progress_callback:
-                    progress_callback(
-                        percent=(idx / total_dates) * 100,
-                        current_date=rebalance_date.isoformat(),
-                        total_dates=total_dates
-                    )
-
-                # Query data as of rebalance_date (PiT enforcement)
-                eligible_tickers = self._get_eligible_universe(
-                    as_of_date=rebalance_date,
-                    universe_config=config.universe_selection
-                )
-
-                # Calculate composite factor scores
-                factor_scores = self._calculate_factor_scores(
-                    tickers=eligible_tickers,
-                    factor_allocations=factor_allocations,
-                    as_of_date=rebalance_date
-                )
-
-                # Construct portfolio (quintile-weighted)
-                new_holdings = self._construct_portfolio(
-                    factor_scores=factor_scores,
-                    construction_method="quintile_long_only",  # Configurable
-                    num_quintiles=5
-                )
-
-                # Calculate turnover
-                turnover = self._calculate_turnover(previous_holdings, new_holdings)
-                turnover_series.append({
-                    "date": rebalance_date,
-                    "turnover": turnover
-                })
-
-                # Simulate returns until next rebalance (or end date)
-                next_rebalance_date = (
-                    rebalance_dates[idx + 1] if idx + 1 < len(rebalance_dates)
-                    else config.end_date
-                )
-
-                daily_results = self._simulate_holdings(
-                    holdings=new_holdings,
-                    start_date=rebalance_date,
-                    end_date=next_rebalance_date,
-                    transaction_costs=config.transaction_costs
-                )
-
-                portfolio_values.extend(daily_results)
-
-                # Calculate rolling factor exposures
-                exposures = self._calculate_factor_exposures(
-                    holdings=new_holdings,
-                    factor_allocations=factor_allocations,
-                    as_of_date=rebalance_date
-                )
-
-                factor_exposures_series.extend([
-                    {
-                        "date": rebalance_date,
-                        "exposures": exposures
-                    }
-                ])
-
-                previous_holdings = new_holdings
-
-            # Step 3: Store results
-            self._store_results(
-                backtest_id=backtest_id,
-                equity_curve=portfolio_values,
-                factor_exposures=factor_exposures_series,
-                turnover=turnover_series
-            )
-
-            # Step 4: Calculate statistics
-            self._calculate_statistics(backtest_id, portfolio_values)
-
-            # Step 5: Calculate correlation matrix
-            self._calculate_correlations(backtest_id, factor_allocations)
-
-            # Step 6: Alpha decay analysis
-            self._analyze_alpha_decay(backtest_id, factor_allocations)
-
-            return {
-                "status": "completed",
-                "num_rebalances": total_dates,
-                "num_daily_results": len(portfolio_values)
-            }
-
-        except Exception as e:
-            self.logger.error(f"Backtest {backtest_id} failed: {e}", exc_info=True)
-            return {
-                "status": "failed",
-                "error": str(e)
-            }
-
-    def _compute_rebalance_schedule(
-        self,
-        start_date: date,
-        end_date: date,
-        frequency: str
-    ) -> List[date]:
-        """
-        Generate list of rebalance dates based on frequency.
-
-        Frequencies: daily, weekly, monthly, quarterly, annual
-        """
-        dates = []
-        current = start_date
-
-        if frequency == "daily":
-            delta = timedelta(days=1)
-        elif frequency == "weekly":
-            delta = timedelta(weeks=1)
-        elif frequency == "monthly":
-            # Month-end dates
-            pass
-        elif frequency == "quarterly":
-            pass
-        elif frequency == "annual":
-            delta = timedelta(days=365)
-
-        while current <= end_date:
-            dates.append(current)
-            current += delta
-
-        return dates
-
-    def _get_eligible_universe(
-        self,
-        as_of_date: date,
-        universe_config: str
-    ) -> List[str]:
-        """
-        Query securities eligible on as_of_date.
-
-        Checks security_lifecycle_events to ensure:
-        - Security was active on as_of_date (not delisted before it)
-        - Security matches universe_config (SP500, Nasdaq, etc.)
-
-        Returns list of tickers.
-        """
-        # Query securities with active status on as_of_date
-        from backend.models.securities import Security, SecurityLifecycleEvent
-
-        securities = self.session.exec(
-            select(Security).where(Security.sector != None)  # Active securities have sector
-        ).all()
-
-        eligible = []
-        for sec in securities:
-            # Check lifecycle events to ensure active on as_of_date
-            events = self.session.exec(
-                select(SecurityLifecycleEvent)
-                .where(SecurityLifecycleEvent.ticker == sec.ticker)
-                .where(SecurityLifecycleEvent.event_date <= as_of_date)
-            ).all()
-
-            # If most recent event is active, include it
-            if events:
-                most_recent = max(events, key=lambda e: e.event_date)
-                if most_recent.event_type == "active":
-                    eligible.append(sec.ticker)
-
-        return eligible
-
-    def _calculate_factor_scores(
-        self,
-        tickers: List[str],
-        factor_allocations: List[Dict],
-        as_of_date: date
-    ) -> Dict[str, float]:
-        """
-        Calculate composite factor scores for each ticker as of as_of_date.
-
-        Composite score = sum(factor_weight * factor_percentile_score)
-
-        All data queries enforce PiT via ingestion_timestamp <= as_of_date.
-        """
-        factor_service = FactorCalculator(self.session)
-
-        scores = {}
-        for ticker in tickers:
-            composite_score = 0.0
-
-            for alloc in factor_allocations:
-                factor_id = alloc["factor_id"]
-                weight = alloc["weight"]
-
-                # Query factor score as of as_of_date
-                score = factor_service.get_factor_score(
-                    factor_id=factor_id,
-                    ticker=ticker,
-                    as_of_date=as_of_date
-                )
-
-                if score is not None:
-                    composite_score += weight * score
-
-            scores[ticker] = composite_score
-
-        return scores
-
-    def _construct_portfolio(
-        self,
-        factor_scores: Dict[str, float],
-        construction_method: str = "quintile_long_only",
-        num_quintiles: int = 5
-    ) -> Dict[str, float]:
-        """
-        Rank tickers by composite score and construct portfolio.
-
-        Methods:
-        - quintile_long_only: Top 20% equally weighted
-        - decile_long_short: Top 10% long, bottom 10% short (beta-neutral)
-
-        Returns: {ticker: weight} where weights sum to 1.0
-        """
-        sorted_scores = sorted(
-            factor_scores.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        if construction_method == "quintile_long_only":
-            cutoff_idx = len(sorted_scores) // num_quintiles
-            top_quintile = sorted_scores[:cutoff_idx]
-
-            weights = {}
-            equal_weight = 1.0 / len(top_quintile)
-            for ticker, _ in top_quintile:
-                weights[ticker] = equal_weight
-
-            return weights
-
-        # Add other construction methods as needed
-        return {}
-
-    def _calculate_turnover(
-        self,
-        previous_holdings: Dict[str, float],
-        new_holdings: Dict[str, float]
-    ) -> float:
-        """
-        Turnover = sum of absolute changes in position weights.
-
-        Formula: sum(|new_weight[i] - old_weight[i]|) / 2
-        """
-        all_tickers = set(previous_holdings.keys()) | set(new_holdings.keys())
-
-        total_change = 0.0
-        for ticker in all_tickers:
-            old_weight = previous_holdings.get(ticker, 0.0)
-            new_weight = new_holdings.get(ticker, 0.0)
-            total_change += abs(new_weight - old_weight)
-
-        return total_change / 2.0
-
-    def _simulate_holdings(
-        self,
-        holdings: Dict[str, float],
-        start_date: date,
-        end_date: date,
-        transaction_costs: Dict[str, float]
-    ) -> List[Dict[str, Any]]:
-        """
-        Calculate daily portfolio returns from start_date to end_date given fixed holdings.
-
-        - Fetch daily price data (with PiT enforcement)
-        - Apply transaction costs on first day
-        - Calculate daily returns
-        - Track benchmark returns
-
-        Returns list of {date, portfolio_value, daily_return, benchmark_return}
-        """
-        from backend.models.securities import PriceHistory
-
-        # Initialize portfolio value
-        initial_value = 1000000.0  # $1M
-
-        # Apply transaction costs on first day
-        transaction_cost = sum(transaction_costs.get("commission_bps", 10) +
-                              transaction_costs.get("slippage_bps", 5)) / 10000
-        portfolio_value = initial_value * (1 - transaction_cost)
-
-        results = []
-
-        # Fetch price data for all holdings
-        prices = {}
-        for ticker in holdings.keys():
-            price_history = self.session.exec(
-                select(PriceHistory)
-                .where(PriceHistory.ticker == ticker)
-                .where(PriceHistory.date >= start_date)
-                .where(PriceHistory.date <= end_date)
-            ).all()
-
-            prices[ticker] = {p.date: p.close for p in price_history}
-
-        # Calculate daily returns
-        current_date = start_date
-        while current_date <= end_date:
-            day_returns = []
-            for ticker, weight in holdings.items():
-                if current_date in prices[ticker]:
-                    # Simplified: use daily return
-                    day_returns.append(weight * 0.0001)  # Placeholder
-
-            daily_return = sum(day_returns)
-            portfolio_value *= (1 + daily_return)
-
-            results.append({
-                "date": current_date,
-                "portfolio_value": portfolio_value,
-                "daily_return": daily_return,
-                "benchmark_return": 0.0001  # Placeholder
-            })
-
-            current_date += timedelta(days=1)
-
-        return results
-
-    def _store_results(
-        self,
-        backtest_id: int,
-        equity_curve: List[Dict],
-        factor_exposures: List[Dict],
-        turnover: List[Dict]
-    ) -> None:
-        """Store all results in database."""
-        from backend.models.backtesting import BacktestResults
-
-        for result in equity_curve:
-            br = BacktestResults(
-                backtest_id=backtest_id,
-                date=result["date"],
-                portfolio_value=result["portfolio_value"],
-                daily_return=result["daily_return"],
-                benchmark_return=result["benchmark_return"],
-                turnover=0.0,  # Simplified
-                factor_exposures={}
-            )
-            self.session.add(br)
-
-        self.session.commit()
-
-    def _calculate_statistics(
-        self,
-        backtest_id: int,
-        equity_curve: List[Dict]
-    ) -> None:
-        """Calculate Sharpe, Sortino, Calmar, etc. and store."""
-        from backend.models.backtesting import BacktestStatistics
-
-        returns = np.array([e["daily_return"] for e in equity_curve])
-
-        # Annualize
-        annual_return = returns.mean() * 252
-        annual_vol = returns.std() * np.sqrt(252)
-
-        sharpe = annual_return / annual_vol if annual_vol > 0 else 0.0
-
-        stats = BacktestStatistics(
-            backtest_id=backtest_id,
-            metric_name="sharpe",
-            metric_value=sharpe
-        )
-        self.session.add(stats)
-        self.session.commit()
-
-    def _calculate_correlations(
-        self,
-        backtest_id: int,
-        factor_allocations: List[Dict]
-    ) -> None:
-        """Calculate correlation matrix between factors."""
-        # Placeholder
-        pass
-
-    def _analyze_alpha_decay(
-        self,
-        backtest_id: int,
-        factor_allocations: List[Dict]
-    ) -> None:
-        """Analyze pre/post-publication alpha decay."""
-        # Placeholder
-        pass
-
-    def _calculate_factor_exposures(
-        self,
-        holdings: Dict[str, float],
-        factor_allocations: List[Dict],
-        as_of_date: date
-    ) -> Dict[int, float]:
-        """Calculate rolling factor betas (exposures)."""
-        # Placeholder
-        return {alloc["factor_id"]: 1.0 for alloc in factor_allocations}
+class EventProducerService:
+    # SEC EDGAR polling
+    async def poll_sec_edgar(self, rate_limit=5/60) -> List[Event]:
+        """Poll SEC EDGAR RSS with rate limiting"""
+        # Filter by: 10-K, 10-Q, 8-K, S-1, DEF 14A filings
+        # Extract: filing date, company ticker, change summary
+        # Return: List of Event objects
+
+    async def scrape_yfinance_earnings(self) -> List[Event]:
+        """Scrape yfinance earnings calendar"""
+        # Get upcoming earnings dates
+        # Extract: ticker, earnings date, last surprise %
+        # Filter: only tracked tickers
+
+    async def parse_insider_trades(self, feed_url) -> List[Event]:
+        """Parse SEC insider trading forms (Form 4)"""
+        # Extract: insider name, transaction type, shares/value
+        # Classify: LARGE_SELL, LARGE_BUY based on ownership %
+
+    async def get_dividend_announcements(self) -> List[Event]:
+        """Get dividend news from yfinance"""
+        # Extract: ex-dividend date, dividend per share, yield change
+
+    async def enrich_event(self, event: Event) -> Event:
+        """Add market data context"""
+        # Attach: current price, market cap, volatility
+        # Attach: recent earnings surprise history
+        # Attach: insider ownership % changes
 ```
 
-#### 2.2 FactorCalculator Service
+#### EventProcessingEngine
 
-**File**: `backend/services/factor_calculator.py`
+**Responsibilities:**
+- Classify raw events using rule-based system
+- Score events 1-5 based on severity rules
+- Detect duplicate events (deduplication)
+- Cache processed events
+- Calculate alpha decay metrics
+
+**Key Methods:**
 
 ```python
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional, Any
-from datetime import date
-import logging
-from sqlmodel import Session, select
+class EventProcessingEngine:
+    async def classify_event(self, raw_event: dict) -> str:
+        """Rule-based classification"""
+        # Rules:
+        # - SEC filing + 10-K/10-Q → SEC_FILING
+        # - SEC filing + 8-K + "merger" → M&A
+        # - earnings + beat > 5% → earnings (POSITIVE)
+        # - earnings + miss > 5% → earnings (NEGATIVE)
+        # - Form 4 + insider > 10% → insider_trade
+        # - dividend % change > 10% → dividend_change
+        # - insider name change in 8-K → management_change
+        # - forward guidance in 8-K → guidance_revision
+        # - Form 1.0 / buyback announcement → share_repurchase
 
-logger = logging.getLogger(__name__)
+    async def score_severity(self, event: Event) -> int:
+        """Severity scoring (1-5)"""
+        # Severity Rules:
+        # - Management change → 5
+        # - M&A announcement → 5
+        # - Earnings miss/beat > 10% → 5
+        # - Insider buy by CEO → 4
+        # - Earnings surprise 5-10% → 3
+        # - Dividend increase → 2
+        # - Routine SEC filing → 1
+        # Modifiers:
+        # - Company size: Large cap × 0.8, Small cap × 1.2
+        # - Volatility: High vol × 1.1, Low vol × 0.9
 
+    async def deduplicate_events(self, events: List[Event],
+                                  window_hours: int = 24) -> List[Event]:
+        """Remove duplicate events in time window"""
+        # Group by: ticker, event_type, source
+        # Keep: highest severity event
+        # Window: 24 hours by default
 
-class FactorCalculator:
-    """
-    Computes factor scores for securities with strict PiT enforcement.
-
-    Supports:
-    - Fama-French 5-factor scores (pre-computed, Kenneth French library)
-    - Custom factor scores (computed from fundamentals on-demand)
-    - Percentile ranking (0-100 scale)
-    """
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def get_factor_score(
-        self,
-        factor_id: int,
-        ticker: str,
-        as_of_date: date,
-        percentile_rank: bool = True
-    ) -> Optional[float]:
-        """
-        Get factor score for a security as of a specific date.
-
-        Enforces PiT via ingestion_timestamp <= as_of_date.
-
-        Args:
-            factor_id: ID of factor definition
-            ticker: Security ticker
-            as_of_date: Date for which to get score
-            percentile_rank: If True, return 0-100 percentile; else raw score
-
-        Returns:
-            Score (0-100 if percentile, else raw value), or None if unavailable
-        """
-        from backend.models.backtesting import FactorDefinition, CustomFactor
-
-        # Get factor definition
-        factor = self.session.get(FactorDefinition, factor_id)
-        if not factor:
-            return None
-
-        if factor.factor_type == "fama_french":
-            # Fama-French scores are pre-loaded; just rank them
-            score = self._get_fama_french_score(factor_id, as_of_date)
-        else:
-            # Custom factor: compute from fundamentals
-            score = self._compute_custom_factor_score(
-                factor_id=factor_id,
-                ticker=ticker,
-                as_of_date=as_of_date,
-                formula=factor.metadata.get("calculation_formula")
-            )
-
-        if percentile_rank and score is not None:
-            # Convert to 0-100 percentile within universe
-            score = self._percentile_rank(factor_id, score, as_of_date)
-
-        return score
-
-    def _get_fama_french_score(
-        self,
-        factor_id: int,
-        as_of_date: date
-    ) -> Optional[float]:
-        """Get pre-computed Fama-French factor return."""
-        from backend.models.backtesting import FamaFrenchFactor
-
-        factor = self.session.exec(
-            select(FamaFrenchFactor)
-            .where(FamaFrenchFactor.factor_id == factor_id)
-            .where(FamaFrenchFactor.date == as_of_date)
-        ).first()
-
-        return factor.return_value if factor else None
-
-    def _compute_custom_factor_score(
-        self,
-        factor_id: int,
-        ticker: str,
-        as_of_date: date,
-        formula: str
-    ) -> Optional[float]:
-        """
-        Compute custom factor score from fundamentals.
-
-        Example formula: "fcf_yield = (operating_cash_flow - capex) / market_cap"
-
-        PiT enforcement: Only use fundamentals with ingestion_timestamp <= as_of_date
-        """
-        from backend.models.securities import FundamentalsSnapshot
-
-        # Parse formula (very simplified; in production would use safer AST parsing)
-        # Extract required metrics from formula
-        required_metrics = self._extract_metrics_from_formula(formula)
-
-        # Query most recent fundamentals as of as_of_date
-        fundamentals = {}
-        for metric in required_metrics:
-            fb = self.session.exec(
-                select(FundamentalsSnapshot)
-                .where(FundamentalsSnapshot.ticker == ticker)
-                .where(FundamentalsSnapshot.metric_name == metric)
-                .where(FundamentalsSnapshot.ingestion_timestamp <= as_of_date)
-                .order_by(FundamentalsSnapshot.ingestion_timestamp.desc())
-            ).first()
-
-            if fb:
-                fundamentals[metric] = fb.metric_value
-            else:
-                return None  # Missing data
-
-        # Evaluate formula
-        try:
-            score = self._evaluate_formula(formula, fundamentals)
-            return score
-        except Exception as e:
-            logger.error(f"Error computing factor {factor_id} for {ticker}: {e}")
-            return None
-
-    def _percentile_rank(
-        self,
-        factor_id: int,
-        score: float,
-        as_of_date: date
-    ) -> float:
-        """
-        Convert raw score to 0-100 percentile rank within universe.
-
-        Queries all scores for factor_id as of as_of_date,
-        ranks given score against them.
-        """
-        from backend.models.backtesting import CustomFactor
-
-        all_scores = self.session.exec(
-            select(CustomFactor)
-            .where(CustomFactor.factor_id == factor_id)
-            .where(CustomFactor.calculation_date == as_of_date)
-        ).all()
-
-        if not all_scores:
-            return 50.0  # Default
-
-        values = [s.factor_value for s in all_scores if s.factor_value is not None]
-        percentile = (np.array(values) < score).sum() / len(values) * 100
-
-        return percentile
-
-    def _extract_metrics_from_formula(self, formula: str) -> List[str]:
-        """Parse formula to extract metric names."""
-        # Simplified: split by non-alphanumeric
-        import re
-        tokens = re.findall(r'\b[a-z_]+\b', formula.lower())
-        return list(set(tokens))
-
-    def _evaluate_formula(self, formula: str, fundamentals: Dict) -> float:
-        """Safely evaluate formula with given fundamentals."""
-        # In production, use AST-based evaluation for security
-        try:
-            result = eval(formula, {"__builtins__": {}}, fundamentals)
-            return float(result)
-        except Exception as e:
-            raise ValueError(f"Formula evaluation failed: {e}")
-
-    def calculate_correlation_matrix(
-        self,
-        factor_ids: List[int],
-        as_of_date: date,
-        lookback_days: int = 252
-    ) -> np.ndarray:
-        """
-        Calculate correlation matrix between multiple factors.
-
-        Returns N x N correlation matrix.
-        """
-        # Placeholder: would query factor returns and compute correlation
-        n = len(factor_ids)
-        return np.eye(n)
+    async def calculate_alpha_decay(self, event: Event,
+                                     lookback_years: int = 2) -> AlphaDecayMetric:
+        """Calculate abnormal returns post-event"""
+        # For each window [1d, 5d, 21d, 63d]:
+        # - Get ticker returns from event_date to event_date + window
+        # - Get market returns (SPY) for same period
+        # - Calculate abnormal returns = stock_return - market_return
+        # - Calculate volatility (annualized std dev)
+        # - Calculate sharpe ratio
+        # - Calculate max drawdown
+        # Return: AlphaDecayMetric with data quality flag
 ```
 
-#### 2.3 StatisticsCalculator Service
+#### EventConsumerService
 
-**File**: `backend/services/statistics_calculator.py`
+**Responsibilities:**
+- Create backtestable factors from events
+- Update screener with event badges
+- Generate timeline feeds
+- Clean up expired events
+- Publish events to WebSocket (future)
+
+**Key Methods:**
 
 ```python
-import numpy as np
-import pandas as pd
-from typing import Dict, List, Any
-import logging
+class EventConsumerService:
+    async def create_factor_from_event(self, event: Event) -> EventFactor:
+        """Convert event to backtestable factor"""
+        # Create Factor:
+        # - name: f"event_{event_type}_{ticker}_{date}"
+        # - description: f"Event-driven factor: {event.title}"
+        # - type: MARKET_EVENT
+        # - returns_series: {date: alpha_decay.abnormal_returns}
+        # Link: EventFactor bridge
+        # Return: EventFactor with backtestable=True
 
-logger = logging.getLogger(__name__)
+    async def update_screener_badges(self, event: Event) -> None:
+        """Add event severity badge to screener results"""
+        # Create EventScreenerBadge:
+        # - severity: event.severity
+        # - ttl_hours: 24 (severity 1-2), 48 (severity 3), 72 (severity 4-5)
+        # - expires_at: now + ttl_hours
+        # Cache in Redis with expiry
+        # Aggregation: Show max 3 recent events per ticker
 
+    async def get_timeline_feed(self, watchlist_id: str,
+                                 limit: int = 50) -> List[Event]:
+        """Get paginated timeline for /events page"""
+        # Filter: events for tickers in watchlist
+        # Filter: not deleted
+        # Sort: event_date DESC, severity DESC
+        # Include: alpha decay metrics
+        # Paginate: cursor-based
 
-class StatisticsCalculator:
-    """
-    Computes comprehensive performance statistics for backtests.
+    async def cleanup_expired_events(self) -> int:
+        """Hard delete old screener badges"""
+        # Delete EventScreenerBadge where expires_at < now
+        # Return: count deleted
 
-    Metrics:
-    - Annual Return
-    - Volatility (Std Dev)
-    - Sharpe Ratio
-    - Sortino Ratio (downside deviation)
-    - Calmar Ratio
-    - Max Drawdown
-    - Information Ratio (vs benchmark)
-    - Hit Rate (% winning days)
-    - Recovery Factor
-    - Win/Loss Ratio
-    """
-
-    @staticmethod
-    def calculate_all_metrics(
-        returns: List[float],
-        benchmark_returns: List[float],
-        risk_free_rate: float = 0.02
-    ) -> Dict[str, float]:
-        """
-        Calculate all statistics from daily return series.
-
-        Args:
-            returns: Daily portfolio returns (decimal, e.g., 0.01 = 1%)
-            benchmark_returns: Daily benchmark returns
-            risk_free_rate: Annual risk-free rate
-
-        Returns:
-            Dictionary of metric_name -> metric_value
-        """
-        returns_array = np.array(returns)
-        benchmark_array = np.array(benchmark_returns)
-
-        metrics = {}
-
-        # Annual return
-        annual_return = (1 + returns_array).prod() ** (252 / len(returns_array)) - 1
-        metrics["annual_return"] = annual_return
-
-        # Volatility
-        daily_vol = returns_array.std()
-        annual_vol = daily_vol * np.sqrt(252)
-        metrics["annual_volatility"] = annual_vol
-
-        # Sharpe Ratio
-        daily_rf = risk_free_rate / 252
-        excess_returns = returns_array - daily_rf
-        sharpe = excess_returns.mean() / excess_returns.std() * np.sqrt(252)
-        metrics["sharpe_ratio"] = sharpe
-
-        # Sortino Ratio (uses downside deviation)
-        downside = returns_array[returns_array < 0]
-        downside_std = downside.std() * np.sqrt(252)
-        sortino = (annual_return - risk_free_rate) / downside_std if downside_std > 0 else 0
-        metrics["sortino_ratio"] = sortino
-
-        # Max Drawdown
-        cumulative = (1 + returns_array).cumprod()
-        running_max = np.maximum.accumulate(cumulative)
-        drawdown = (cumulative - running_max) / running_max
-        metrics["max_drawdown"] = drawdown.min()
-
-        # Calmar Ratio
-        calmar = annual_return / abs(metrics["max_drawdown"]) if metrics["max_drawdown"] != 0 else 0
-        metrics["calmar_ratio"] = calmar
-
-        # Information Ratio
-        excess = returns_array - benchmark_array
-        info_ratio = excess.mean() / excess.std() * np.sqrt(252)
-        metrics["information_ratio"] = info_ratio
-
-        # Hit Rate
-        hit_rate = (returns_array > 0).sum() / len(returns_array)
-        metrics["hit_rate"] = hit_rate
-
-        # Win/Loss Ratio
-        wins = (returns_array > 0).sum()
-        losses = (returns_array < 0).sum()
-        metrics["win_loss_ratio"] = wins / losses if losses > 0 else 0
-
-        return metrics
-
-    @staticmethod
-    def calculate_monthly_returns(daily_returns: List[float]) -> pd.Series:
-        """Group daily returns into monthly periods."""
-        # Placeholder
-        pass
-
-    @staticmethod
-    def calculate_rolling_sharpe(
-        returns: List[float],
-        window: int = 60
-    ) -> List[float]:
-        """Calculate Sharpe ratio in rolling window."""
-        # Placeholder
-        pass
+    async def get_event_detail(self, event_id: str) -> dict:
+        """Return full event detail for detail panel"""
+        # Include: Event, AlphaDecayMetric (all windows), raw_data
+        # Include: historical similar events (same ticker, same type)
+        # Include: factor backtest results if linked to factor
 ```
 
-#### 2.4 Data Services
+#### BackgroundPollingService
 
-Additional services for data loading:
+**Responsibilities:**
+- Schedule event polling jobs
+- Rate limit API calls
+- Handle retries and errors
+- Track last poll time
 
-- **FamaFrenchLoader**: Fetches Kenneth French CSV data, parses, validates, stores with PiT timestamps
-- **PriceHistoryLoader**: Fetches yfinance OHLCV, handles delisting events
-- **FundamentalsLoader**: SEC EDGAR integration or alternative data provider
-
----
-
-### 3. Background Task Handling & Progress Tracking
-
-Backtests can take 30-60+ seconds to complete. We implement async execution with progress polling:
-
-#### 3.1 FastAPI BackgroundTasks (MVP)
+**Key Methods:**
 
 ```python
-from fastapi import BackgroundTasks, APIRouter
+class BackgroundPollingService:
+    async def start_polling_scheduler(self) -> None:
+        """Start APScheduler background job"""
+        # Job 1: poll_sec_edgar_rss() every 15 minutes
+        #   - Rate limit: 5 requests/min to SEC
+        #   - Retry: exponential backoff on 429 errors
+        #   - Store last_poll_time in cache
+        # Job 2: scrape_earnings_calendar() daily at 14:30 ET
+        #   - Post market, before EOD processing
+        # Job 3: calculate_alpha_decay_batch() daily at 16:30 ET
+        #   - After market close
+        #   - Calculate for events from past 3 months
+        # Job 4: cleanup_expired_screener_badges() hourly
+        #   - Delete expired badges
 
-@router.post("/{backtest_id}/run")
-async def run_backtest(
-    backtest_id: int,
-    background_tasks: BackgroundTasks,
-    session: Session = Depends(get_session)
-):
-    """Enqueue backtest for async execution."""
-    background_tasks.add_task(execute_backtest, backtest_id, session)
-    return {"backtest_id": backtest_id, "status": "running"}
+    async def trigger_manual_scan(self, scan_type: str = "all") -> dict:
+        """Manually trigger event scan"""
+        # scan_type: "sec_edgar" | "earnings" | "insider" | "all"
+        # Return: {status, events_found, errors}
+        # Rate limit: 1 manual scan per 5 minutes per user
 
-
-async def execute_backtest(backtest_id: int, session: Session):
-    """Long-running backtest execution."""
-    backtest = session.get(Backtest, backtest_id)
-    backtest.status = "running"
-    session.add(backtest)
-    session.commit()
-
-    engine = BacktestEngine(session)
-    config = session.exec(
-        select(BacktestConfiguration).where(
-            BacktestConfiguration.backtest_id == backtest_id
-        )
-    ).first()
-
-    def progress(percent, current_date, total):
-        backtest.metadata["progress"] = {
-            "percent": percent,
-            "current_date": current_date,
-            "total_dates": total
-        }
-        session.add(backtest)
-        session.commit()
-
-    result = engine.run(backtest_id, config, progress_callback=progress)
-
-    backtest.status = result["status"]
-    backtest.metadata["completed_at"] = datetime.utcnow().isoformat()
-    session.add(backtest)
-    session.commit()
+    async def get_polling_status(self) -> dict:
+        """Get current polling state"""
+        # Return: {last_sec_poll, last_earnings_poll, next_poll, errors}
 ```
 
-#### 3.2 Celery/RQ (Production Scale)
+### 3. API Endpoints
 
-For production, implement Celery with Redis:
+#### Event CRUD & Timeline
 
-```python
-from celery import Celery
+```
+GET /api/events
+├── Query params:
+│   ├── watchlist_id: str (required, filters by watchlist tickers)
+│   ├── event_type: str (comma-separated enum)
+│   ├── severity_min: int (1-5)
+│   ├── date_from: ISO date
+│   ├── date_to: ISO date
+│   ├── ticker: str (optional, single ticker filter)
+│   ├── limit: int (default 50, max 200)
+│   └── cursor: str (pagination token)
+└── Response: {events: [...], cursor: str, total: int}
 
-celery_app = Celery("backtester", broker="redis://localhost:6379")
+POST /api/events
+├── Body: {event_type, ticker, event_date, severity, title, description, source, raw_data}
+└── Response: {id, ...event_data}
 
-@celery_app.task(bind=True)
-def execute_backtest_task(self, backtest_id):
-    """Long-running celery task."""
-    def progress_callback(percent, current_date, total):
-        self.update_state(
-            state='PROGRESS',
-            meta={
-                'current': percent,
-                'total': 100,
-                'current_date': current_date
-            }
-        )
+GET /api/events/{id}
+├── Response: {event, alpha_decay_metrics: {...}, similar_events: [...], factor: {...}}
 
-    # Execute engine
-    result = engine.run(backtest_id, progress_callback=progress_callback)
-    return result
+PATCH /api/events/{id}
+├── Body: {severity?, description?, is_deleted?}
+└── Response: {updated_event}
+
+DELETE /api/events/{id}
+├── (Soft delete: sets is_deleted=True)
+└── Response: {success: bool}
 ```
 
-Frontend polls `/backtests/{id}/status` at 1-2 second intervals to refresh progress bar.
+#### Alpha Decay Analysis
 
----
+```
+GET /api/events/{id}/alpha-decay
+├── Response: {
+│   event: {...},
+│   metrics: {
+│     window_1d: {returns, abnormal_returns, volatility, sharpe},
+│     window_5d: {...},
+│     window_21d: {...},
+│     window_63d: {...}
+│   },
+│   chart_data: [{date, price, market_price}, ...],
+│   data_quality: COMPLETE|PARTIAL|INSUFFICIENT
+├── }
 
-### 4. Data Ingestion Pipeline
-
-#### 4.1 Kenneth French Factor Loader
-
-```python
-# backend/services/kenneth_french_loader.py
-import requests
-import pandas as pd
-from io import StringIO
-from datetime import datetime
-from sqlmodel import Session
-
-class KennethFrenchLoader:
-    """Fetch and store Fama-French 5-factor returns."""
-
-    FF_DAILY_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_daily_CSV.zip"
-    FF_MONTHLY_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_CSV.zip"
-
-    def load(self, session: Session, frequency: str = "daily"):
-        """Download, parse, and store FF factors with PiT timestamps."""
-        # Download
-        response = requests.get(self.FF_DAILY_URL if frequency == "daily" else self.FF_MONTHLY_URL)
-
-        # Parse CSV
-        # Store with ingestion_timestamp = now
-        ingestion_time = datetime.utcnow()
-
-        for row in parsed_data:
-            ff_factor = FamaFrenchFactor(
-                factor_id=...,
-                date=row['date'],
-                return_value=row['return'],
-                ingestion_timestamp=ingestion_time
-            )
-            session.add(ff_factor)
-
-        session.commit()
+POST /api/events/{id}/alpha-decay/recalculate
+├── Body: {lookback_years: int}
+└── Response: {success: bool, metrics: {...}}
 ```
 
-#### 4.2 yfinance Price Loader
+#### Manual Scan & Status
 
-```python
-# backend/services/price_loader.py
-import yfinance as yf
-from datetime import datetime
-from sqlmodel import Session
-
-class PriceHistoryLoader:
-    """Fetch price data from yfinance with PiT enforcement."""
-
-    def load(self, ticker: str, session: Session):
-        """Download OHLCV from yfinance, store with ingestion_timestamp."""
-        data = yf.download(ticker, start="1990-01-01")
-
-        ingestion_time = datetime.utcnow()
-
-        for idx, row in data.iterrows():
-            price = PriceHistory(
-                ticker=ticker,
-                date=idx.date(),
-                open=row['Open'],
-                high=row['High'],
-                low=row['Low'],
-                close=row['Close'],
-                volume=row['Volume'],
-                ingestion_timestamp=ingestion_time
-            )
-            session.add(price)
-
-        session.commit()
 ```
+POST /api/events/scan
+├── Query params:
+│   ├── type: str (sec_edgar | earnings | insider | all)
+│   └── force: bool (skip rate limit check)
+├── Response: {status: INITIATED, job_id, eta_seconds}
+
+GET /api/events/scan/status/{job_id}
+├── Response: {status: RUNNING|COMPLETED, events_found, errors, progress}
+
+GET /api/events/polling-status
+├── Response: {
+│   last_poll: {sec_edgar: ISO, earnings: ISO, insider: ISO},
+│   next_poll: {sec_edgar: ISO, earnings: ISO},
+│   rate_limits: {sec_edgar: {limit: 300/min, used: 45}}
+├── }
+```
+
+#### Screener Badge Integration
+
+```
+GET /api/screener/badges
+├── Query params:
+│   ├── tickers: str (comma-separated)
+├── Response: {
+│   "AAPL": [{event_id, event_type, severity, title, expires_at}, ...],
+│   "GOOGL": [...]
+├── }
+```
+
+### 4. Database Schema (PostgreSQL)
+
+```sql
+CREATE TABLE events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticker VARCHAR(20) NOT NULL,
+    event_type VARCHAR(30) NOT NULL,
+    event_date TIMESTAMP NOT NULL,
+    severity INT CHECK (severity >= 1 AND severity <= 5),
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    source VARCHAR(50) NOT NULL,
+    raw_data JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    is_deleted BOOLEAN DEFAULT FALSE,
+    FOREIGN KEY (ticker) REFERENCES securities(ticker),
+    INDEX (ticker, event_date DESC),
+    INDEX (event_type, severity DESC),
+    INDEX (created_at DESC),
+    UNIQUE (ticker, event_type, event_date, source) -- Deduplication
+);
+
+CREATE TABLE alpha_decay_metrics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL,
+    window_days INT NOT NULL,
+    returns_0_to_window FLOAT,
+    volatility FLOAT,
+    abnormal_returns FLOAT,
+    sharpe_ratio FLOAT,
+    max_drawdown FLOAT,
+    calculated_at TIMESTAMP DEFAULT NOW(),
+    data_quality VARCHAR(20),
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    UNIQUE (event_id, window_days)
+);
+
+CREATE TABLE event_factors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL,
+    factor_id UUID NOT NULL,
+    alpha_exposure FLOAT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    backtestable BOOLEAN DEFAULT TRUE,
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    FOREIGN KEY (factor_id) REFERENCES factors(id),
+    UNIQUE (event_id, factor_id)
+);
+
+CREATE TABLE event_screener_badges (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticker VARCHAR(20) NOT NULL,
+    event_id UUID,
+    severity INT,
+    event_type VARCHAR(30),
+    ttl_hours INT,
+    expires_at TIMESTAMP NOT NULL,
+    display_count INT DEFAULT 1,
+    FOREIGN KEY (ticker) REFERENCES securities(ticker),
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    INDEX (ticker, expires_at),
+    INDEX (expires_at) -- For cleanup queries
+);
+
+-- Cache table for recent events (Redis alternative)
+CREATE TABLE event_cache (
+    key VARCHAR(255) PRIMARY KEY,
+    value JSONB,
+    expires_at TIMESTAMP,
+    INDEX (expires_at)
+);
+```
+
+### 5. Caching Strategy
+
+**Redis Cache Structure:**
+
+```
+events:timeline:{watchlist_id} → paginated event list (TTL: 5 min)
+events:detail:{event_id} → full event detail (TTL: 15 min)
+events:alpha-decay:{event_id} → alpha decay metrics (TTL: 1 day)
+screener:badges:{ticker} → recent event badges (TTL: 24 hours)
+polling:status → last poll timestamps (TTL: 1 min)
+rate_limits:sec_edgar → call count (TTL: 60 sec)
+```
+
+### 6. Rate Limiting & Error Handling
+
+**SEC EDGAR Rate Limiting:**
+- Hard limit: 300 requests/minute (SEC requirement)
+- Soft limit: 5 requests/60 seconds (our window)
+- Strategy: Distributed token bucket in Redis
+- Backoff: Exponential (1s, 2s, 4s, 8s, 16s max)
+
+**Retry Logic:**
+- Transient errors (429, 503): retry up to 3 times
+- Permanent errors (400, 401): log and skip
+- Network errors: retry with exponential backoff
+- Circuit breaker: Disable source after 5 consecutive failures
 
 ---
 
 ## Frontend Architecture
 
-### 1. Component Hierarchy & Structure
+### 1. Page Structure: /events
 
-#### 1.1 New /backtester Route
-
-**File**: `frontend/src/pages/Backtester.tsx`
-
-```typescript
-import React, { useState } from 'react';
-import { FactorSelector } from '../components/backtester/FactorSelector';
-import { WeightSliders } from '../components/backtester/WeightSliders';
-import { BacktestConfig } from '../components/backtester/BacktestConfig';
-import { ResultsPanel } from '../components/backtester/ResultsPanel';
-import { useBacktest } from '../hooks/useBacktest';
-
-export const Backtester: React.FC = () => {
-  const [configStep, setConfigStep] = useState<'factors' | 'weights' | 'config' | 'results'>('factors');
-  const [selectedFactors, setSelectedFactors] = useState<number[]>([]);
-  const [weights, setWeights] = useState<Record<number, number>>({});
-  const [backtest, setBacktest] = useState<any>(null);
-
-  const { createBacktest, runBacktest } = useBacktest();
-
-  const handleStartBacktest = async () => {
-    // Transition through config steps
-    if (configStep === 'factors') {
-      setConfigStep('weights');
-    } else if (configStep === 'weights') {
-      setConfigStep('config');
-    } else if (configStep === 'config') {
-      // Create and run backtest
-      const result = await createBacktest({
-        factors: selectedFactors,
-        weights,
-        // ... other config
-      });
-      setBacktest(result);
-      setConfigStep('results');
-    }
-  };
-
-  return (
-    <div className="flex gap-4 h-full bg-black p-4">
-      {/* Left Sidebar: Configuration */}
-      <div className="w-96 border border-neutral-800 rounded-lg p-4 overflow-y-auto">
-        {configStep === 'factors' && (
-          <FactorSelector
-            selectedFactors={selectedFactors}
-            onChange={setSelectedFactors}
-            onNext={() => setConfigStep('weights')}
-          />
-        )}
-        {configStep === 'weights' && (
-          <WeightSliders
-            factors={selectedFactors}
-            weights={weights}
-            onChange={setWeights}
-            onNext={() => setConfigStep('config')}
-          />
-        )}
-        {configStep === 'config' && (
-          <BacktestConfig
-            onSubmit={handleStartBacktest}
-          />
-        )}
-      </div>
-
-      {/* Main Results Area */}
-      <div className="flex-1">
-        {configStep === 'results' && backtest && (
-          <ResultsPanel backtest={backtest} />
-        )}
-      </div>
-    </div>
-  );
-};
+```
+/events
+├── Layout: Two-column
+│   ├── Left Column: Timeline Feed (60%)
+│   │   ├── EventFilters (compact header)
+│   │   ├── EventTimeline (scrollable list)
+│   │   └── EventCard (clickable rows)
+│   │
+│   └── Right Column: Detail Panel (40%)
+│       ├── EventDetail (expanded view)
+│       ├── AlphaDecayChart (4 windows)
+│       ├── SimilarEventsSection
+│       └── FactorBacktestSection
+│
+└── Responsive: Stack on mobile (timeline above)
 ```
 
-#### 1.2 Component Definitions
+### 2. Component Hierarchy
 
-**File**: `frontend/src/components/backtester/FactorSelector.tsx`
+#### EventTimeline (Left Panel)
 
 ```typescript
-import React, { useState } from 'react';
-import { useFactors } from '../../hooks/useFactors';
-import { Checkbox } from '../shared/Checkbox';
-import { LoadingState } from '../shared/LoadingState';
+interface EventTimeline {
+  // Props
+  watchlistId: string
+  filters: EventFilters
+  onSelectEvent: (eventId: string) => void
 
-interface FactorSelectorProps {
-  selectedFactors: number[];
-  onChange: (factorIds: number[]) => void;
-  onNext: () => void;
+  // State
+  events: Event[]
+  isLoading: boolean
+  hasMore: boolean
+
+  // Render
+  <EventFilters {...} />
+  <VirtualizedList>
+    {events.map(event => <EventCard event={event} />)}
+  </VirtualizedList>
+  {hasMore && <LoadMore />}
 }
+```
 
-export const FactorSelector: React.FC<FactorSelectorProps> = ({
-  selectedFactors,
-  onChange,
-  onNext,
-}) => {
-  const { data: factors, isLoading } = useFactors();
+**EventCard Component:**
 
-  const handleToggle = (factorId: number) => {
-    if (selectedFactors.includes(factorId)) {
-      onChange(selectedFactors.filter(f => f !== factorId));
-    } else {
-      onChange([...selectedFactors, factorId]);
-    }
-  };
+```typescript
+interface EventCard {
+  // Props
+  event: Event
+  isSelected: boolean
+  onClick: (eventId: string) => void
 
-  if (isLoading) return <LoadingState />;
+  // Render (compact, ~60px height)
+  <div className="border-neutral-800 p-2 cursor-pointer hover:bg-neutral-900">
+    <div className="flex justify-between items-center">
+      <span className="text-xs font-bold">{ticker}</span>
+      <SeverityBadge severity={event.severity} />
+    </div>
+    <div className="text-[10px] text-neutral-400 mt-1">
+      {event.title}
+    </div>
+    <div className="text-[10px] text-neutral-500 mt-1">
+      {event.event_date} • {event.event_type}
+    </div>
+  </div>
+}
+```
 
-  return (
-    <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-neutral-100">Select Factors</h2>
+**EventFilters Component:**
 
-      {/* Fama-French Library */}
+```typescript
+interface EventFilters {
+  // Props
+  initialFilters: FilterState
+  onFilterChange: (filters: FilterState) => void
+
+  // State
+  eventTypes: string[] (multi-select dropdown)
+  severityMin: int (1-5 slider)
+  dateRange: [ISO, ISO] (date picker)
+
+  // Render (compact, single row)
+  <div className="flex gap-2 p-2 border-b border-neutral-800">
+    <TypeFilter />
+    <SeverityFilter />
+    <DateRangeFilter />
+    <ClearButton />
+  </div>
+}
+```
+
+#### EventDetail (Right Panel)
+
+```typescript
+interface EventDetail {
+  // Props
+  eventId: string
+
+  // State
+  event: Event | null
+  alphaDecay: AlphaDecayMetric[] | null
+  isLoading: boolean
+  similarEvents: Event[]
+  linkedFactor: Factor | null
+
+  // Render
+  {isLoading && <Skeleton />}
+  {event && (
+    <>
+      <EventHeader event={event} />
+      <EventMetadata event={event} />
+      <AlphaDecayChart metrics={alphaDecay} />
+      <SimilarEventsSection events={similarEvents} />
+      <FactorBacktestSection factor={linkedFactor} />
+    </>
+  )}
+}
+```
+
+**EventHeader Component:**
+
+```typescript
+interface EventHeader {
+  // Props
+  event: Event
+
+  // Render
+  <div className="p-4 border-b border-neutral-800">
+    <div className="flex justify-between items-start">
       <div>
-        <h3 className="text-xs font-mono text-neutral-500 mb-2 uppercase">Fama-French 5</h3>
-        {factors?.ff_factors?.map(factor => (
-          <div key={factor.id} className="flex items-center gap-2 p-2 hover:bg-neutral-900 rounded">
-            <Checkbox
-              checked={selectedFactors.includes(factor.id)}
-              onChange={() => handleToggle(factor.id)}
-            />
-            <span className="text-xs text-neutral-300">{factor.factor_name}</span>
-          </div>
-        ))}
+        <h3 className="text-sm font-bold">{event.title}</h3>
+        <p className="text-xs text-neutral-400 mt-1">{event.description}</p>
       </div>
-
-      {/* Custom Factors */}
-      <div>
-        <h3 className="text-xs font-mono text-neutral-500 mb-2 uppercase">Custom Factors</h3>
-        {factors?.custom_factors?.map(factor => (
-          <div key={factor.id} className="flex items-center gap-2 p-2 hover:bg-neutral-900 rounded">
-            <Checkbox
-              checked={selectedFactors.includes(factor.id)}
-              onChange={() => handleToggle(factor.id)}
-            />
-            <span className="text-xs text-neutral-300">{factor.factor_name}</span>
-          </div>
-        ))}
-      </div>
-
-      <button
-        onClick={onNext}
-        disabled={selectedFactors.length === 0}
-        className="w-full mt-4 py-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-xs rounded"
-      >
-        Next: Set Weights
-      </button>
+      <SeverityBadge severity={event.severity} size="lg" />
     </div>
-  );
-};
+    <div className="flex gap-4 mt-3 text-xs">
+      <span className="text-neutral-400">Ticker: <span className="text-white">{event.ticker}</span></span>
+      <span className="text-neutral-400">Type: <span className="text-white">{event.event_type}</span></span>
+      <span className="text-neutral-400">Date: <span className="text-white">{event.event_date}</span></span>
+    </div>
+  </div>
+}
 ```
 
-**File**: `frontend/src/components/backtester/WeightSliders.tsx`
+#### AlphaDecayChart
 
 ```typescript
-import React, { useMemo } from 'react';
-import { Slider } from '../shared/Slider';
-import { useFactors } from '../../hooks/useFactors';
+interface AlphaDecayChart {
+  // Props
+  metrics: AlphaDecayMetric[]
 
-interface WeightSlidersProps {
-  factors: number[];
-  weights: Record<number, number>;
-  onChange: (weights: Record<number, number>) => void;
-  onNext: () => void;
+  // Data transformation
+  chartData = [
+    {window: "1d", returns: metrics[0].returns_0_to_window, abnormal: metrics[0].abnormal_returns},
+    {window: "5d", returns: metrics[1].returns_0_to_window, abnormal: metrics[1].abnormal_returns},
+    {window: "21d", returns: metrics[2].returns_0_to_window, abnormal: metrics[2].abnormal_returns},
+    {window: "63d", returns: metrics[3].returns_0_to_window, abnormal: metrics[3].abnormal_returns},
+  ]
+
+  // Render (Recharts bar chart)
+  <div className="p-4 border-b border-neutral-800">
+    <h4 className="text-xs font-bold mb-3">Alpha Decay</h4>
+    <BarChart data={chartData} height={200}>
+      <Bar dataKey="returns" fill="#10b981" />
+      <Bar dataKey="abnormal" fill="#f59e0b" />
+      <XAxis dataKey="window" />
+      <Tooltip />
+    </BarChart>
+    <div className="grid grid-cols-4 gap-2 mt-3">
+      {metrics.map(m => (
+        <MetricBox key={m.window_days} metric={m} />
+      ))}
+    </div>
+  </div>
 }
 
-export const WeightSliders: React.FC<WeightSlidersProps> = ({
-  factors,
-  weights,
-  onChange,
-  onNext,
-}) => {
-  const { data: factorsData } = useFactors();
+interface MetricBox {
+  // Props
+  metric: AlphaDecayMetric
 
-  const totalWeight = useMemo(() => {
-    return Object.values(weights).reduce((a, b) => a + b, 0);
-  }, [weights]);
-
-  const isValid = Math.abs(totalWeight - 1.0) < 0.01;
-
-  const handleWeightChange = (factorId: number, value: number) => {
-    // Normalize so all weights sum to 1.0
-    const newWeights = { ...weights, [factorId]: value };
-
-    // Proportionally adjust other weights if needed
-    const otherWeight = 1.0 - value;
-    const otherFactors = factors.filter(f => f !== factorId);
-
-    if (otherFactors.length > 0) {
-      const perFactor = otherWeight / otherFactors.length;
-      otherFactors.forEach(f => {
-        newWeights[f] = perFactor;
-      });
-    }
-
-    onChange(newWeights);
-  };
-
-  const handleEqualWeight = () => {
-    const weight = 1.0 / factors.length;
-    const newWeights: Record<number, number> = {};
-    factors.forEach(f => {
-      newWeights[f] = weight;
-    });
-    onChange(newWeights);
-  };
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-neutral-100">Factor Weights</h2>
-
-      <button
-        onClick={handleEqualWeight}
-        className="w-full py-1 text-xs bg-neutral-800 hover:bg-neutral-700 rounded"
-      >
-        Equal Weight
-      </button>
-
-      <div className="space-y-3">
-        {factors.map(factorId => {
-          const factor = factorsData?.all_factors?.find(f => f.id === factorId);
-          const weight = weights[factorId] || 0;
-
-          return (
-            <div key={factorId} className="space-y-1">
-              <div className="flex justify-between items-center">
-                <span className="text-xs text-neutral-300">{factor?.factor_name}</span>
-                <span className="text-xs font-mono text-neutral-500">
-                  {(weight * 100).toFixed(1)}%
-                </span>
-              </div>
-              <Slider
-                min={0}
-                max={1}
-                step={0.01}
-                value={weight}
-                onChange={(value) => handleWeightChange(factorId, value)}
-              />
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="pt-2 border-t border-neutral-800">
-        <div className="flex justify-between text-xs">
-          <span className="text-neutral-400">Total Weight</span>
-          <span className={isValid ? 'text-green-500' : 'text-red-500'}>
-            {(totalWeight * 100).toFixed(1)}%
-          </span>
-        </div>
-      </div>
-
-      <button
-        onClick={onNext}
-        disabled={!isValid}
-        className="w-full mt-4 py-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-xs rounded"
-      >
-        Next: Configure Backtest
-      </button>
-    </div>
-  );
-};
-```
-
-**File**: `frontend/src/components/backtester/BacktestConfig.tsx`
-
-```typescript
-import React, { useState } from 'react';
-import { useForm } from 'react-hook-form';
-
-interface BacktestConfigProps {
-  onSubmit: (config: any) => void;
+  // Render
+  <div className="bg-neutral-900 p-2 rounded border border-neutral-800">
+    <div className="text-[10px] text-neutral-400">{metric.window_days}d Window</div>
+    <div className="text-xs font-bold mt-1">{metric.returns_0_to_window.toFixed(2)}%</div>
+    <div className="text-[10px] text-neutral-400">Abnormal: {metric.abnormal_returns.toFixed(2)}%</div>
+    <div className="text-[10px] text-neutral-400 mt-1">Sharpe: {metric.sharpe_ratio.toFixed(2)}</div>
+  </div>
 }
-
-export const BacktestConfig: React.FC<BacktestConfigProps> = ({ onSubmit }) => {
-  const { register, handleSubmit, watch } = useForm({
-    defaultValues: {
-      startDate: '2015-01-01',
-      endDate: '2024-12-31',
-      rebalanceFrequency: 'monthly',
-      universe: 'sp500',
-      commissionBps: 10,
-      slippageBps: 5,
-    },
-  });
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-neutral-100">Backtest Configuration</h2>
-
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
-        <div>
-          <label className="text-xs text-neutral-400">Start Date</label>
-          <input
-            type="date"
-            {...register('startDate')}
-            className="w-full mt-1 px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-100"
-          />
-        </div>
-
-        <div>
-          <label className="text-xs text-neutral-400">End Date</label>
-          <input
-            type="date"
-            {...register('endDate')}
-            className="w-full mt-1 px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-100"
-          />
-        </div>
-
-        <div>
-          <label className="text-xs text-neutral-400">Rebalance Frequency</label>
-          <select
-            {...register('rebalanceFrequency')}
-            className="w-full mt-1 px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-100"
-          >
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
-            <option value="monthly">Monthly</option>
-            <option value="quarterly">Quarterly</option>
-            <option value="annual">Annual</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="text-xs text-neutral-400">Universe</label>
-          <select
-            {...register('universe')}
-            className="w-full mt-1 px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-100"
-          >
-            <option value="sp500">S&P 500</option>
-            <option value="nasdaq100">Nasdaq-100</option>
-            <option value="russell2000">Russell 2000</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="text-xs text-neutral-400">Commission (bps)</label>
-          <input
-            type="number"
-            {...register('commissionBps')}
-            className="w-full mt-1 px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-100"
-          />
-        </div>
-
-        <button
-          type="submit"
-          className="w-full mt-4 py-2 bg-blue-900 hover:bg-blue-800 text-xs rounded font-semibold"
-        >
-          Run Backtest
-        </button>
-      </form>
-    </div>
-  );
-};
 ```
 
-**File**: `frontend/src/components/backtester/ResultsPanel.tsx`
+#### SimilarEventsSection
 
 ```typescript
-import React from 'react';
-import { EquityCurveChart } from './EquityCurveChart';
-import { StatisticsPanel } from './StatisticsPanel';
-import { FactorExposureChart } from './FactorExposureChart';
-import { CorrelationMatrix } from './CorrelationMatrix';
-import { AlphaDecayPanel } from './AlphaDecayPanel';
-import { ExportButton } from './ExportButton';
-import { useBacktestResults } from '../../hooks/useBacktestResults';
+interface SimilarEventsSection {
+  // Props
+  events: Event[]
+  onEventClick: (eventId: string) => void
 
-interface ResultsPanelProps {
-  backtest: any;
-}
-
-export const ResultsPanel: React.FC<ResultsPanelProps> = ({ backtest }) => {
-  const { data: results, isLoading } = useBacktestResults(backtest.id);
-
-  if (isLoading) return <div className="text-xs text-neutral-400">Loading results...</div>;
-
-  return (
-    <div className="space-y-4 h-full overflow-y-auto">
-      {/* Equity Curve */}
-      <div className="border border-neutral-800 rounded-lg p-4 bg-neutral-950">
-        <h3 className="text-xs font-semibold text-neutral-100 mb-4">Equity Curve</h3>
-        <EquityCurveChart data={results?.equity_curve} />
-      </div>
-
-      {/* Statistics */}
-      <div className="border border-neutral-800 rounded-lg p-4 bg-neutral-950">
-        <h3 className="text-xs font-semibold text-neutral-100 mb-4">Performance Metrics</h3>
-        <StatisticsPanel statistics={results?.statistics} />
-      </div>
-
-      {/* Rolling Factor Exposure */}
-      <div className="border border-neutral-800 rounded-lg p-4 bg-neutral-950">
-        <h3 className="text-xs font-semibold text-neutral-100 mb-4">Factor Exposure</h3>
-        <FactorExposureChart data={results?.factor_exposures} />
-      </div>
-
-      {/* Correlation Matrix */}
-      <div className="border border-neutral-800 rounded-lg p-4 bg-neutral-950">
-        <h3 className="text-xs font-semibold text-neutral-100 mb-4">Factor Correlations</h3>
-        <CorrelationMatrix data={results?.correlation_matrix} />
-      </div>
-
-      {/* Alpha Decay */}
-      {results?.alpha_decay && (
-        <div className="border border-neutral-800 rounded-lg p-4 bg-neutral-950">
-          <h3 className="text-xs font-semibold text-neutral-100 mb-4">Alpha Decay Analysis</h3>
-          <AlphaDecayPanel data={results?.alpha_decay} />
-        </div>
-      )}
-
-      {/* Export */}
-      <div className="flex gap-2">
-        <ExportButton backtestId={backtest.id} format="json" />
-        <ExportButton backtestId={backtest.id} format="csv" />
-      </div>
-    </div>
-  );
-};
-```
-
-#### 1.3 Chart Components
-
-**File**: `frontend/src/components/backtester/EquityCurveChart.tsx`
-
-```typescript
-import React from 'react';
-import {
-  ComposedChart,
-  Line,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts';
-
-interface EquityCurveChartProps {
-  data: Array<{
-    date: string;
-    portfolio_value: number;
-    daily_return: number;
-    benchmark_return: number;
-  }>;
-}
-
-export const EquityCurveChart: React.FC<EquityCurveChartProps> = ({ data }) => {
-  // Compute drawdown overlay
-  const dataWithDrawdown = data.map((d, idx) => {
-    const cumReturn = data.slice(0, idx + 1).reduce(
-      (acc, x) => acc * (1 + x.daily_return),
-      1
-    );
-    const runningMax = data
-      .slice(0, idx + 1)
-      .reduce((max, x) => Math.max(max, x.portfolio_value), 0);
-    const drawdown = (d.portfolio_value - runningMax) / runningMax;
-
-    return { ...d, drawdown };
-  });
-
-  return (
-    <ResponsiveContainer width="100%" height={400}>
-      <ComposedChart data={dataWithDrawdown}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#404040" />
-        <XAxis
-          dataKey="date"
-          tick={{ fontSize: 10, fill: '#a3a3a3' }}
-          tickFormatter={(d) => new Date(d).toLocaleDateString()}
-        />
-        <YAxis
-          yAxisId="left"
-          tick={{ fontSize: 10, fill: '#a3a3a3' }}
-          label={{ value: 'Portfolio Value ($)', angle: -90, position: 'insideLeft' }}
-        />
-        <YAxis
-          yAxisId="right"
-          orientation="right"
-          tick={{ fontSize: 10, fill: '#a3a3a3' }}
-          label={{ value: 'Drawdown (%)', angle: 90, position: 'insideRight' }}
-        />
-        <Tooltip
-          contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #404040' }}
-          formatter={(value: any) => {
-            if (typeof value === 'number') {
-              return value.toFixed(2);
-            }
-            return value;
-          }}
-        />
-        <Legend />
-
-        {/* Equity curve */}
-        <Line
-          yAxisId="left"
-          type="monotone"
-          dataKey="portfolio_value"
-          stroke="#3b82f6"
-          dot={false}
-          strokeWidth={2}
-          name="Portfolio Value"
-        />
-
-        {/* Benchmark */}
-        <Line
-          yAxisId="left"
-          type="monotone"
-          dataKey="benchmark_return"
-          stroke="#6b7280"
-          dot={false}
-          strokeWidth={1}
-          strokeDasharray="5 5"
-          name="Benchmark"
-        />
-
-        {/* Drawdown overlay */}
-        <Area
-          yAxisId="right"
-          type="monotone"
-          dataKey="drawdown"
-          fill="#ef4444"
-          stroke="#dc2626"
-          fillOpacity={0.3}
-          name="Drawdown"
-        />
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-};
-```
-
-**File**: `frontend/src/components/backtester/FactorExposureChart.tsx`
-
-```typescript
-import React from 'react';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts';
-
-export const FactorExposureChart: React.FC<{ data: any[] }> = ({ data }) => {
-  // Transform data to wide format for stacked area
-  // data: [{date, exposures: {factor_id: beta}}]
-
-  const transformed = data.map((d) => ({
-    date: d.date,
-    ...d.exposures,
-  }));
-
-  const factorIds = Object.keys(transformed[0] || {}).filter((k) => k !== 'date');
-
-  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
-
-  return (
-    <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={transformed}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#404040" />
-        <XAxis
-          dataKey="date"
-          tick={{ fontSize: 10, fill: '#a3a3a3' }}
-          tickFormatter={(d) => new Date(d).toLocaleDateString()}
-        />
-        <YAxis tick={{ fontSize: 10, fill: '#a3a3a3' }} />
-        <Tooltip contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #404040' }} />
-        <Legend />
-
-        {factorIds.map((factorId, idx) => (
-          <Area
-            key={factorId}
-            type="monotone"
-            dataKey={factorId}
-            stackId="1"
-            stroke={colors[idx % colors.length]}
-            fill={colors[idx % colors.length]}
-            fillOpacity={0.7}
-          />
-        ))}
-      </AreaChart>
-    </ResponsiveContainer>
-  );
-};
-```
-
-**File**: `frontend/src/components/backtester/CorrelationMatrix.tsx`
-
-```typescript
-import React, { useMemo } from 'react';
-
-export const CorrelationMatrix: React.FC<{ data: any[] }> = ({ data }) => {
-  const matrix = useMemo(() => {
-    // Convert from list of {factor_1_id, factor_2_id, correlation}
-    // to 2D matrix
-    const ids = new Set<number>();
-    data.forEach((d) => {
-      ids.add(d.factor_1_id);
-      ids.add(d.factor_2_id);
-    });
-
-    const idArray = Array.from(ids).sort();
-    const mat: Record<number, Record<number, number>> = {};
-
-    idArray.forEach((id) => {
-      mat[id] = {};
-      idArray.forEach((id2) => {
-        mat[id][id2] = id === id2 ? 1 : 0;
-      });
-    });
-
-    data.forEach((d) => {
-      mat[d.factor_1_id][d.factor_2_id] = d.correlation;
-      mat[d.factor_2_id][d.factor_1_id] = d.correlation;
-    });
-
-    return { matrix: mat, ids: idArray };
-  }, [data]);
-
-  const getColor = (value: number): string => {
-    if (value > 0.5) return 'bg-red-900';
-    if (value > 0) return 'bg-red-700';
-    if (value < -0.5) return 'bg-blue-900';
-    if (value < 0) return 'bg-blue-700';
-    return 'bg-neutral-800';
-  };
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="text-xs border-collapse">
-        <tbody>
-          {matrix.ids.map((id1) => (
-            <tr key={id1}>
-              <td className="px-2 py-1 text-neutral-400 border border-neutral-800">
-                Factor {id1}
-              </td>
-              {matrix.ids.map((id2) => (
-                <td
-                  key={id2}
-                  className={`px-2 py-1 text-neutral-100 border border-neutral-800 text-center ${getColor(
-                    matrix.matrix[id1][id2]
-                  )}`}
-                >
-                  {matrix.matrix[id1][id2].toFixed(2)}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-```
-
-#### 1.4 Shared Components
-
-**File**: `frontend/src/components/backtester/StatisticsPanel.tsx`
-
-```typescript
-import React from 'react';
-
-interface StatisticsPanelProps {
-  statistics: Record<string, number>;
-}
-
-export const StatisticsPanel: React.FC<StatisticsPanelProps> = ({ statistics }) => {
-  const metrics = [
-    { key: 'annual_return', label: 'Annual Return', format: 'percent' },
-    { key: 'annual_volatility', label: 'Volatility', format: 'percent' },
-    { key: 'sharpe_ratio', label: 'Sharpe Ratio', format: 'number' },
-    { key: 'sortino_ratio', label: 'Sortino Ratio', format: 'number' },
-    { key: 'calmar_ratio', label: 'Calmar Ratio', format: 'number' },
-    { key: 'max_drawdown', label: 'Max Drawdown', format: 'percent' },
-    { key: 'information_ratio', label: 'Information Ratio', format: 'number' },
-    { key: 'hit_rate', label: 'Hit Rate', format: 'percent' },
-  ];
-
-  const formatValue = (value: number, format: string): string => {
-    if (format === 'percent') {
-      return `${(value * 100).toFixed(2)}%`;
-    }
-    return value.toFixed(2);
-  };
-
-  return (
-    <div className="grid grid-cols-2 gap-4">
-      {metrics.map((m) => (
-        <div key={m.key} className="border border-neutral-800 p-2 rounded bg-neutral-900">
-          <div className="text-xs text-neutral-400">{m.label}</div>
-          <div className="text-sm font-mono text-neutral-100 mt-1">
-            {formatValue(statistics[m.key] || 0, m.format)}
-          </div>
+  // Render
+  <div className="p-4 border-b border-neutral-800">
+    <h4 className="text-xs font-bold mb-2">Similar Events</h4>
+    <div className="space-y-2 max-h-[200px] overflow-y-auto">
+      {events.map(e => (
+        <div key={e.id} className="text-[10px] p-2 bg-neutral-900 cursor-pointer hover:bg-neutral-800 rounded"
+             onClick={() => onEventClick(e.id)}>
+          <div className="font-bold">{e.event_date}</div>
+          <div className="text-neutral-400">{e.title}</div>
         </div>
       ))}
     </div>
-  );
-};
+  </div>
+}
 ```
 
-**File**: `frontend/src/components/backtester/AlphaDecayPanel.tsx`
+#### FactorBacktestSection
 
 ```typescript
-import React from 'react';
+interface FactorBacktestSection {
+  // Props
+  factor: Factor | null
 
-interface AlphaDecayPanelProps {
-  data: {
-    pre_publication_return: number;
-    post_publication_return: number;
-    decay_percentage: number;
-    months_post_publication: number;
-  };
-}
-
-export const AlphaDecayPanel: React.FC<AlphaDecayPanelProps> = ({ data }) => {
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-neutral-900 border border-neutral-800 p-3 rounded">
-          <div className="text-xs text-neutral-400">Pre-Publication</div>
-          <div className="text-sm font-mono text-green-400 mt-1">
-            {(data.pre_publication_return * 100).toFixed(2)}%
-          </div>
-        </div>
-        <div className="bg-neutral-900 border border-neutral-800 p-3 rounded">
-          <div className="text-xs text-neutral-400">Post-Publication</div>
-          <div className="text-sm font-mono text-orange-400 mt-1">
-            {(data.post_publication_return * 100).toFixed(2)}%
-          </div>
-        </div>
+  // Render
+  {factor && (
+    <div className="p-4">
+      <h4 className="text-xs font-bold mb-2">Backtest Factor</h4>
+      <div className="text-[10px] text-neutral-400 mb-2">
+        This event has been converted to a backtestable factor.
       </div>
-
-      <div className="bg-neutral-900 border border-neutral-800 p-3 rounded">
-        <div className="text-xs text-neutral-400">Alpha Decay</div>
-        <div className="text-sm font-mono text-red-400 mt-1">
-          {data.decay_percentage.toFixed(1)}%
+      <a href={`/backtester?factor=${factor.id}`} className="text-blue-400 text-xs hover:underline">
+        View in Backtester →
+      </a>
+      <div className="grid grid-cols-2 gap-2 mt-3">
+        <div>
+          <span className="text-neutral-400 text-[10px]">Sharpe Ratio</span>
+          <div className="text-xs font-bold">{factor.sharpe_ratio.toFixed(2)}</div>
         </div>
-        <div className="text-xs text-neutral-500 mt-2">
-          Over {data.months_post_publication} months
+        <div>
+          <span className="text-neutral-400 text-[10px]">Win Rate</span>
+          <div className="text-xs font-bold">{(factor.win_rate * 100).toFixed(1)}%</div>
         </div>
       </div>
     </div>
-  );
-};
-```
-
-**File**: `frontend/src/components/backtester/ExportButton.tsx`
-
-```typescript
-import React from 'react';
-import { useBacktestExport } from '../../hooks/useBacktestExport';
-
-interface ExportButtonProps {
-  backtestId: number;
-  format: 'json' | 'csv';
+  )}
 }
-
-export const ExportButton: React.FC<ExportButtonProps> = ({ backtestId, format }) => {
-  const { mutate: exportBacktest, isPending } = useBacktestExport();
-
-  const handleExport = () => {
-    exportBacktest({
-      backtestId,
-      format,
-    });
-  };
-
-  return (
-    <button
-      onClick={handleExport}
-      disabled={isPending}
-      className="flex-1 py-2 px-4 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-xs rounded"
-    >
-      Export {format.toUpperCase()}
-    </button>
-  );
-};
 ```
 
----
-
-### 2. State Management
-
-#### 2.1 TanStack Query Hooks
-
-**File**: `frontend/src/hooks/useBacktest.ts`
+#### SeverityBadge Component
 
 ```typescript
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiClient } from '../lib/api';
+interface SeverityBadge {
+  // Props
+  severity: int (1-5)
+  size?: "sm" | "lg" (default: "sm")
 
-export const useBacktest = () => {
-  const queryClient = useQueryClient();
-
-  const createBacktest = useMutation({
-    mutationFn: async (config: any) => {
-      const response = await apiClient.post('/backtests/create', config);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backtests'] });
-    },
-  });
-
-  const runBacktest = useMutation({
-    mutationFn: async (backtestId: number) => {
-      const response = await apiClient.post(`/backtests/${backtestId}/run`);
-      return response.data;
-    },
-  });
-
-  const pollBacktestStatus = (backtestId: number) => {
-    return useQuery({
-      queryKey: ['backtest', backtestId, 'status'],
-      queryFn: async () => {
-        const response = await apiClient.get(`/backtests/${backtestId}/status`);
-        return response.data;
-      },
-      refetchInterval: (data) => {
-        // Poll every 1-2 seconds if running, else stop
-        if (data?.status === 'running') return 1000;
-        return false;
-      },
-    });
-  };
-
-  return {
-    createBacktest,
-    runBacktest,
-    pollBacktestStatus,
-  };
-};
-```
-
-**File**: `frontend/src/hooks/useFactors.ts`
-
-```typescript
-import { useQuery } from '@tanstack/react-query';
-import { apiClient } from '../lib/api';
-
-export const useFactors = () => {
-  return useQuery({
-    queryKey: ['factors'],
-    queryFn: async () => {
-      const [ffResponse, customResponse] = await Promise.all([
-        apiClient.get('/factors/library'),
-        apiClient.get('/factors/custom'),
-      ]);
-
-      return {
-        ff_factors: ffResponse.data.factors,
-        custom_factors: customResponse.data.items,
-        all_factors: [
-          ...ffResponse.data.factors,
-          ...customResponse.data.items,
-        ],
-      };
-    },
-  });
-};
-```
-
-**File**: `frontend/src/hooks/useBacktestResults.ts`
-
-```typescript
-import { useQuery } from '@tanstack/react-query';
-import { apiClient } from '../lib/api';
-
-export const useBacktestResults = (backtestId: number) => {
-  return useQuery({
-    queryKey: ['backtest', backtestId, 'results'],
-    queryFn: async () => {
-      const response = await apiClient.get(`/backtests/${backtestId}/results`);
-      return response.data;
-    },
-    enabled: !!backtestId,
-  });
-};
-```
-
-#### 2.2 API Client
-
-**File**: `frontend/src/lib/api.ts`
-
-```typescript
-import axios from 'axios';
-
-export const apiClient = axios.create({
-  baseURL: 'http://localhost:8000/api',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Handle auth
-    }
-    return Promise.reject(error);
+  // Color mapping
+  colors = {
+    1: "bg-blue-900 text-blue-300",
+    2: "bg-cyan-900 text-cyan-300",
+    3: "bg-yellow-900 text-yellow-300",
+    4: "bg-orange-900 text-orange-300",
+    5: "bg-red-900 text-red-300",
   }
-);
-```
 
----
-
-### 3. Routing Integration
-
-**File**: `frontend/src/App.tsx`
-
-```typescript
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { AppShell } from './components/layout/AppShell';
-import { MorningBrief } from './pages/MorningBrief';
-import { Screener } from './pages/Screener';
-import { Backtester } from './pages/Backtester';  // NEW
-import { WeeklyReport } from './pages/WeeklyReport';
-import { Portfolio } from './pages/Portfolio';
-import { RRG } from './pages/RRG';
-
-function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<MorningBrief />} />
-          <Route path="/screener" element={<Screener />} />
-          <Route path="/backtester" element={<Backtester />} />
-          <Route path="/weekly-report" element={<WeeklyReport />} />
-          <Route path="/portfolio" element={<Portfolio />} />
-          <Route path="/rrg" element={<RRG />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
+  // Render
+  <div className={`${colors[severity]} px-2 py-1 rounded text-xs font-bold`}>
+    S{severity}
+  </div>
 }
 ```
 
----
+### 3. State Management with TanStack React Query
 
-## Cross-Cutting Concerns
-
-### 1. Error Handling Flow
-
-**Error Handling Pipeline**:
-
-```
-User Action
-  ↓
-Frontend Validation (React Hook Form)
-  ↓
-API Request (axios)
-  ↓
-Backend Validation (Pydantic)
-  ↓
-Business Logic Execution
-  ↓
-[Success: Return 200 + Data]
-  ↓
-[Error: Return 400/404/500 + Error Object]
-  ↓
-Frontend Error State (useQuery/useMutation error)
-  ↓
-Display ErrorState Component or Toast
-```
-
-**Error Handling Component**:
+**Custom Hooks:**
 
 ```typescript
-export const ErrorState: React.FC<{ error: Error }> = ({ error }) => (
-  <div className="p-4 bg-red-900/20 border border-red-700 rounded">
-    <p className="text-xs text-red-300">{error.message}</p>
+// useEvents - Timeline feed
+function useEvents(watchlistId: string, filters: EventFilters) {
+  return useInfiniteQuery({
+    queryKey: ['events', watchlistId, filters],
+    queryFn: ({ pageParam = null }) =>
+      axios.get('/api/events', {
+        params: { watchlist_id: watchlistId, ...filters, cursor: pageParam }
+      }),
+    getNextPageParam: (lastPage) => lastPage.data.cursor,
+  })
+}
+
+// useEventDetail - Right panel
+function useEventDetail(eventId: string | null) {
+  return useQuery({
+    queryKey: ['event-detail', eventId],
+    queryFn: () =>
+      eventId ? axios.get(`/api/events/${eventId}`) : Promise.resolve(null),
+    enabled: !!eventId,
+    staleTime: 15 * 60 * 1000, // 15 min
+  })
+}
+
+// useAlphaDecay - Chart data
+function useAlphaDecay(eventId: string | null) {
+  return useQuery({
+    queryKey: ['alpha-decay', eventId],
+    queryFn: () =>
+      eventId ? axios.get(`/api/events/${eventId}/alpha-decay`) : Promise.resolve(null),
+    enabled: !!eventId,
+    staleTime: 24 * 60 * 60 * 1000, // 1 day
+  })
+}
+
+// useSimilarEvents - Related events
+function useSimilarEvents(eventType: string, ticker: string, limit: number = 5) {
+  return useQuery({
+    queryKey: ['similar-events', eventType, ticker],
+    queryFn: () =>
+      axios.get('/api/events', {
+        params: { event_type: eventType, ticker, limit }
+      }),
+    staleTime: 60 * 60 * 1000, // 1 hour
+  })
+}
+
+// usePollingStatus - Background job status
+function usePollingStatus() {
+  return useQuery({
+    queryKey: ['polling-status'],
+    queryFn: () => axios.get('/api/events/polling-status'),
+    refetchInterval: 60 * 1000, // 1 min
+  })
+}
+
+// useManualScan - Trigger manual scan
+function useManualScan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (type: string) =>
+      axios.post('/api/events/scan', { type }),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['events'])
+      queryClient.invalidateQueries(['polling-status'])
+    }
+  })
+}
+```
+
+### 4. Screener Integration
+
+**Modified Screener Page:**
+
+```typescript
+interface ScreenerRow {
+  // Existing columns...
+
+  // New: Event badges column
+  <div className="flex gap-1">
+    {eventBadges.map(badge => (
+      <EventBadgeScreener
+        key={badge.event_id}
+        badge={badge}
+        onBadgeClick={() => navigateToEvent(badge.event_id)}
+      />
+    ))}
   </div>
-);
+}
+
+// EventBadgeScreener - Compact version for screener
+interface EventBadgeScreener {
+  // Props
+  badge: EventScreenerBadge
+  onBadgeClick: () => void
+
+  // Render (very compact)
+  <div className="text-[9px] px-1 py-0.5 rounded cursor-pointer hover:opacity-80"
+       style={{background: severityColors[badge.severity]}}
+       onClick={onBadgeClick}
+       title={badge.event_type}>
+    {badge.event_type.slice(0, 3)}
+  </div>
+}
 ```
 
-**Backend Error Handling**:
+**Hook to fetch screener badges:**
+
+```typescript
+function useScreenerBadges(tickers: string[]) {
+  return useQuery({
+    queryKey: ['screener-badges', tickers.join(',')],
+    queryFn: () =>
+      axios.get('/api/screener/badges', {
+        params: { tickers: tickers.join(',') }
+      }),
+    staleTime: 5 * 60 * 1000, // 5 min
+    enabled: tickers.length > 0,
+  })
+}
+```
+
+### 5. Page Layout (Full /events Page)
+
+```typescript
+export default function EventsPage() {
+  const { watchlistId } = useParams()
+  const [selectedEventId, setSelectedEventId] = useState(null)
+  const [filters, setFilters] = useState<EventFilters>({})
+
+  const { data: eventsData, isLoading, hasNextPage, fetchNextPage } =
+    useEvents(watchlistId, filters)
+
+  const { data: detailData, isLoading: detailLoading } =
+    useEventDetail(selectedEventId)
+
+  return (
+    <div className="flex h-screen bg-black text-white">
+      {/* Left Column: Timeline */}
+      <div className="w-3/5 border-r border-neutral-800 flex flex-col overflow-hidden">
+        <div className="flex-shrink-0 border-b border-neutral-800">
+          <h2 className="text-xs font-bold p-4">Events Timeline</h2>
+          <EventFilters
+            initialFilters={filters}
+            onFilterChange={setFilters}
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <EventTimeline
+            watchlistId={watchlistId}
+            filters={filters}
+            onSelectEvent={setSelectedEventId}
+            isLoading={isLoading}
+            hasMore={hasNextPage}
+            onLoadMore={fetchNextPage}
+          />
+        </div>
+      </div>
+
+      {/* Right Column: Detail Panel */}
+      <div className="w-2/5 flex flex-col overflow-hidden bg-neutral-950">
+        {selectedEventId ? (
+          <EventDetail
+            eventId={selectedEventId}
+            isLoading={detailLoading}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full text-neutral-500">
+            <p className="text-xs">Select an event to view details</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+```
+
+### 6. Styling Guidelines
+
+**Consistency with existing AlphaDesk theme:**
+
+```css
+/* Color Palette */
+--bg-black: #000000
+--bg-neutral-950: #0a0a0a
+--bg-neutral-900: #1a1a1a
+--border-neutral-800: #2a2a2a
+--text-neutral-500: #717171
+--text-neutral-400: #a3a3a3
+--text-white: #ffffff
+
+/* Typography */
+--font-bold: font-bold
+--text-xs: 12px
+--text-[10px]: 10px
+--leading-tight: 1.25
+
+/* Spacing */
+--p-4: 16px
+--p-2: 8px
+--gap-2: 8px
+--gap-4: 16px
+
+/* Borders */
+--border-width: 1px
+--border-color: border-neutral-800
+
+/* Component Specifics */
+--card-bg: bg-neutral-950
+--card-hover: hover:bg-neutral-900
+--input-bg: bg-neutral-900
+--input-border: border-neutral-700
+```
+
+---
+
+## Integration Points
+
+### 1. Factor Backtester Integration
+
+**How Events Become Factors:**
+
+```
+Event Created
+  ↓
+Event Processed (Classification + Scoring)
+  ↓
+Alpha Decay Calculated (returns in [1d, 5d, 21d, 63d] windows)
+  ↓
+EventConsumerService.create_factor_from_event()
+  ↓
+Creates Factor object:
+  - name: event_{type}_{ticker}_{date}
+  - type: MARKET_EVENT
+  - returns_series: {date: abnormal_return}
+  ↓
+EventFactor bridge links event to factor
+  ↓
+Factor available in /backtester for backtesting
+  ↓
+Backtest results displayed in EventDetail panel
+```
+
+**Factor Data Structure for Backtester:**
 
 ```python
-from fastapi import HTTPException
+{
+    "id": "factor_event_earnings_aapl_2026_02_01",
+    "name": "Earnings Event: AAPL (2026-02-01)",
+    "type": "MARKET_EVENT",
+    "description": "AAPL announced Q1 earnings with 8% EPS beat",
+    "event_id": "event_uuid_123",
+    "creation_date": "2026-02-01",
+    "returns_series": {
+        "2026-02-01": 0.045,  # +4.5% abnormal return
+        "2026-02-02": 0.063,  # cumulative through day 1
+        "2026-02-05": 0.078,  # cumulative through day 5
+        "2026-02-22": 0.085,  # cumulative through day 21
+        "2026-04-04": 0.092   # cumulative through day 63
+    },
+    "metadata": {
+        "severity": 4,
+        "event_type": "earnings",
+        "ticker": "AAPL",
+        "source": "YFINANCE"
+    }
+}
+```
 
-try:
-    backtest_config = session.get(BacktestConfiguration, config_id)
-    if not backtest_config:
-        raise HTTPException(
-            status_code=404,
-            detail="Configuration not found"
-        )
-except Exception as e:
-    logger.error(f"Error: {e}")
-    raise HTTPException(
-        status_code=500,
-        detail="Internal server error"
-    )
+### 2. Screener Integration
+
+**Data Flow:**
+
+```
+Event Created with severity > 1
+  ↓
+EventConsumerService.update_screener_badges()
+  ↓
+Creates EventScreenerBadge in cache:
+  {ticker, event_id, severity, event_type, ttl_hours, expires_at}
+  ↓
+Screener page queries /api/screener/badges
+  ↓
+Displays compact EventBadge on each ticker row
+  ↓
+User clicks badge → navigates to /events?eventId=...
+  ↓
+Detail panel opens in /events page
+```
+
+**Badge Display Rules:**
+
+```
+Severity 1-2: Show up to 2 most recent badges, TTL 24h
+Severity 3:   Show up to 2 most recent badges, TTL 48h
+Severity 4-5: Show up to 3 most recent badges, TTL 72h
+
+Display precedence: S5 > S4 > S3 > S2 > S1
+Aggregation: If > 3 events in 24h, show "+N more"
+Color coding: Use SeverityBadge component colors
+```
+
+### 3. Morning Brief Integration (Future)
+
+**Potential Extension:**
+
+```
+Morning Brief page could include:
+- "New High-Severity Events" section
+- Most recent S4-S5 events across watchlist
+- Link to /events page for full timeline
 ```
 
 ---
 
-### 2. Security Considerations
+## Data Flow Diagrams
 
-#### 2.1 Input Validation
-
-- **Pydantic schemas**: All request bodies validated server-side
-- **Date range validation**: start_date < end_date
-- **Factor weight validation**: sum to 100% (±1% tolerance)
-- **Universe validation**: only allow whitelisted values
-- **Formula parsing**: Use AST-based safe evaluation for custom factors (avoid eval())
-
-#### 2.2 SQL Injection Prevention
-
-- **SQLModel ORM**: Parameterized queries prevent SQL injection
-- **PiT enforcement**: `ingestion_timestamp <= as_of_date` prevents look-ahead
-
-#### 2.3 Authentication/Authorization
-
-Currently no auth in MVP. Future:
-- Add user_id field to Backtest table
-- Gate endpoints: `@require_auth`
-- Check backtest ownership before returning results
-
----
-
-### 3. Performance Considerations
-
-#### 3.1 Database Indexing
-
-```sql
--- Key indexes for performance
-CREATE INDEX idx_price_history_ticker_date
-  ON price_history(ticker, date);
-
-CREATE INDEX idx_price_history_ingestion_timestamp
-  ON price_history(ingestion_timestamp);
-
-CREATE INDEX idx_fundamentals_snapshot_ticker_ingestion
-  ON fundamentals_snapshot(ticker, ingestion_timestamp);
-
-CREATE INDEX idx_custom_factors_ticker_date
-  ON custom_factors(ticker, calculation_date);
-
-CREATE INDEX idx_backtest_results_backtest_id
-  ON backtest_results(backtest_id, date);
-```
-
-#### 3.2 Caching Strategy
-
-- **Factor library**: Cache at app startup (rarely changes)
-- **Factor scores**: Cache per date (1-day TTL)
-- **Backtest results**: Cache after completion (immutable)
-- **Correlation matrices**: Cache per backtest (immutable)
-
-```python
-from functools import lru_cache
-from datetime import datetime, timedelta
-
-cache = {}
-
-def get_factor_scores_cached(factor_id, as_of_date):
-    cache_key = f"{factor_id}_{as_of_date}"
-    if cache_key in cache:
-        cached_at, data = cache[cache_key]
-        if (datetime.utcnow() - cached_at) < timedelta(days=1):
-            return data
-
-    # Fetch from DB
-    data = get_factor_scores(factor_id, as_of_date)
-    cache[cache_key] = (datetime.utcnow(), data)
-    return data
-```
-
-#### 3.3 Query Optimization
-
-- **Lazy loading**: Load factor exposures only when requested
-- **Pagination**: Limit to 100-1000 rows per request
-- **Date partitioning**: Partition price_history and fundamentals_snapshot by date for faster range queries
-
----
-
-### 4. Database Migrations
-
-Use Alembic for migrations:
-
-```bash
-# Create migration
-alembic revision --autogenerate -m "Add factor backtester tables"
-
-# Apply migration
-alembic upgrade head
-```
-
-**Migration file** (`alembic/versions/001_initial_backtester.py`):
-
-```python
-from alembic import op
-import sqlalchemy as sa
-
-def upgrade():
-    # Create backtests table
-    op.create_table(
-        'backtests',
-        sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('name', sa.String(255), nullable=False),
-        # ... columns
-    )
-
-def downgrade():
-    op.drop_table('backtests')
-```
-
----
-
-## Risk Assessment & Mitigations
-
-### Technical Risks
-
-| Risk | Impact | Mitigation |
-|------|--------|-----------|
-| **Long backtest runtime (60+ sec)** | Timeout, poor UX | Implement async processing, progress polling, estimated time display |
-| **Memory exhaustion with large dataset** | OOM, crash | Partition tables by date, paginate results, stream processing |
-| **PiT enforcement misses** | Look-ahead bias | Database constraints on ingestion_timestamp, automated tests with known-bias examples |
-| **Factor calculation errors** | Wrong results | Unit tests per factor, validation against published benchmarks (e.g., FF returns) |
-| **Concurrent backtest executions** | Race conditions, data corruption | Database transactions, row-level locking, Celery task queue isolation |
-| **Missing fundamental data** | Gaps in analysis | Fallback to market cap weighting, skip security if missing data, warn user |
-
-### Data Quality Risks
-
-| Risk | Impact | Mitigation |
-|------|--------|-----------|
-| **Survivorship bias** | Inflated returns | security_lifecycle_events table tracks delistings, includes full history |
-| **Stale factor data** | Outdated analysis | ingestion_timestamp tracks freshness, Kenneth French data updated weekly |
-| **Data gaps (weekends, holidays)** | Calculation errors | Skip non-trading days, validate date continuity |
-
-### Business Risks
-
-| Risk | Impact | Mitigation |
-|------|--------|-----------|
-| **User misinterprets results** | Bad trading decisions | Add disclaimers, documentation, link to academic papers |
-| **Results don't match published benchmarks** | Loss of trust | Validate FF factor returns against Kenneth French library quarterly |
-| **Slow adoption** | Low engagement | Strong UI/UX, pre-built templates, example backtests |
-
----
-
-## Architecture Diagram
+### Event Ingestion Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FRONTEND (React 18)                       │
-├─────────────────────────────────────────────────────────────────┤
-│  Backtester Page                                                 │
-│  ├─ FactorSelector                                               │
-│  ├─ WeightSliders                                                │
-│  ├─ BacktestConfig                                               │
-│  └─ ResultsPanel                                                 │
-│     ├─ EquityCurveChart (Recharts)                              │
-│     ├─ StatisticsPanel                                           │
-│     ├─ FactorExposureChart                                       │
-│     ├─ CorrelationMatrix                                         │
-│     ├─ AlphaDecayPanel                                           │
-│     └─ ExportButton                                              │
-│                                                                   │
-│  State Management:                                               │
-│  ├─ TanStack Query (server state)                               │
-│  ├─ React Hook Form (config form state)                         │
-│  └─ useBacktest, useFactors, useBacktestResults hooks           │
-└──────────────────────────────────────────────────────────────────┘
-                            │
-                        axios API calls
-                            │
-┌──────────────────────────────────────────────────────────────────┐
-│                  BACKEND (FastAPI + SQLModel)                    │
-├──────────────────────────────────────────────────────────────────┤
-│  API Routers                                                      │
-│  ├─ /api/backtests      (CRUD, run, status, results, export)    │
-│  ├─ /api/factors        (library, custom, scores, correlation)   │
-│  └─ /api/data-ingestion (kenneth-french, prices, fundamentals)   │
-│                                                                   │
-│  Service Layer                                                    │
-│  ├─ BacktestEngine      (walk-forward orchestration)             │
-│  ├─ FactorCalculator    (FF + custom factor scoring)             │
-│  ├─ StatisticsCalculator (Sharpe, Sortino, Calmar, etc.)        │
-│  ├─ KennethFrenchLoader (FF factor ingestion)                   │
-│  ├─ PriceHistoryLoader  (yfinance integration)                  │
-│  └─ FundamentalsLoader  (SEC EDGAR integration)                 │
-│                                                                   │
-│  Background Tasks                                                 │
-│  ├─ FastAPI BackgroundTasks (MVP) or Celery (production)        │
-│  └─ Progress polling via metadata.progress JSON                  │
-└──────────────────────────────────────────────────────────────────┘
-                            │
-                    SQLModel ORM, PiT enforcement
-                            │
-┌──────────────────────────────────────────────────────────────────┐
-│                   DATABASE (PostgreSQL)                           │
-├──────────────────────────────────────────────────────────────────┤
-│  Time-Series (Partitioned by Date)                               │
-│  ├─ price_history (ticker, date, OHLCV, ingestion_timestamp)   │
-│  └─ fundamentals_snapshot (ticker, metric, value, ingestion_ts) │
-│                                                                   │
-│  Security Master                                                  │
-│  ├─ securities (ticker, company_name, sector, status)           │
-│  └─ security_lifecycle_events (ticker, event_date, event_type)  │
-│                                                                   │
-│  Factor Definitions                                               │
-│  ├─ factor_definitions (FF + custom)                            │
-│  ├─ fama_french_factors (daily/monthly returns)                 │
-│  └─ custom_factors (ticker-specific scores)                     │
-│                                                                   │
-│  Backtest Results                                                 │
-│  ├─ backtests (name, status, metadata)                          │
-│  ├─ backtest_configurations                                      │
-│  ├─ backtest_factor_allocations (factor_id, weight)             │
-│  ├─ backtest_results (daily portfolio values, returns)          │
-│  ├─ backtest_statistics (Sharpe, Sortino, etc.)                │
-│  ├─ factor_correlation_matrix                                    │
-│  ├─ screener_factor_scores (for Screener integration)           │
-│  └─ alpha_decay_analysis (pre/post publication)                 │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────┐
+│  Event Producers    │
+├─────────────────────┤
+│ SEC EDGAR RSS Feed  │ ──┐
+│ yfinance Calendar   │   │
+│ Insider Trades Form │   │
+│ Dividend Feeds      │   │
+└─────────────────────┘   │
+                          │
+                          v
+            ┌──────────────────────────┐
+            │ EventProducerService     │
+            ├──────────────────────────┤
+            │ poll_sec_edgar()         │
+            │ scrape_earnings()        │
+            │ parse_insider_trades()   │
+            │ get_dividends()          │
+            │ enrich_event()           │
+            └──────────────────────────┘
+                          │
+                          v
+        ┌─────────────────────────────────┐
+        │ EventProcessingEngine           │
+        ├─────────────────────────────────┤
+        │ classify_event()                │
+        │ score_severity()                │
+        │ deduplicate_events()            │
+        │ calculate_alpha_decay()         │
+        └─────────────────────────────────┘
+                          │
+                    ┌─────┴────┬──────────┬─────────────┐
+                    │          │          │             │
+                    v          v          v             v
+            ┌────────────┐ ┌───────┐ ┌──────────┐ ┌─────────┐
+            │  Database  │ │Cache  │ │ Timeline │ │Screener │
+            │  (Event)   │ │(Redis)│ │   (UI)   │ │Badges   │
+            └────────────┘ └───────┘ └──────────┘ └─────────┘
+                    │
+                    v
+        ┌────────────────────────┐
+        │ EventConsumerService   │
+        ├────────────────────────┤
+        │ create_factor_from_    │
+        │   event()              │
+        │ update_screener_       │
+        │   badges()             │
+        │ cleanup_expired_       │
+        │   events()             │
+        └────────────────────────┘
+                    │
+            ┌───────┴──────┬──────────┐
+            │              │          │
+            v              v          v
+        ┌────────┐  ┌──────────┐ ┌─────────┐
+        │ Factor │  │ Screener │ │Timeline │
+        │Database│  │ Cache    │ │ Feed    │
+        └────────┘  └──────────┘ └─────────┘
+```
+
+### UI Event Selection Flow
+
+```
+┌──────────────────────────────────────┐
+│    /events Page Loads                │
+└──────────────────────────────────────┘
+          │
+          v
+┌──────────────────────────────────────┐
+│ useEvents(watchlistId, filters)      │
+│ → Fetch /api/events                  │
+│ → Display in EventTimeline (left)    │
+└──────────────────────────────────────┘
+          │
+          v
+┌──────────────────────────────────────┐
+│ User Clicks EventCard                │
+│ → setSelectedEventId(id)             │
+└──────────────────────────────────────┘
+          │
+          v
+┌──────────────────────────────────────┐
+│ useEventDetail(selectedEventId)      │
+│ → Fetch /api/events/{id}             │
+│ → Display in EventDetail (right)     │
+└──────────────────────────────────────┘
+          │
+          v
+┌──────────────────────────────────────┐
+│ useAlphaDecay(selectedEventId)       │
+│ → Fetch /api/events/{id}/alpha-decay │
+│ → Render AlphaDecayChart             │
+└──────────────────────────────────────┘
+          │
+          v
+┌──────────────────────────────────────┐
+│ useSimilarEvents(type, ticker)       │
+│ → Fetch /api/events (filtered)       │
+│ → Render SimilarEventsSection        │
+└──────────────────────────────────────┘
 ```
 
 ---
 
 ## Implementation Roadmap
 
-### Phase 1: MVP (Weeks 1-4)
-- [ ] Database schema creation (Alembic migrations)
-- [ ] Kenneth French factor ingestion
-- [ ] yfinance price data ingestion
-- [ ] BacktestEngine basic walk-forward loop
-- [ ] StatisticsCalculator with 6 core metrics
-- [ ] Backend API endpoints (CRUD, run, status, results)
-- [ ] Frontend Backtester page layout
-- [ ] EquityCurveChart with Recharts
-- [ ] StatisticsPanel display
-- [ ] TanStack Query integration
+### Phase 2A: Backend Foundation (Weeks 1-2)
 
-### Phase 2: Enhancements (Weeks 5-6)
-- [ ] Custom factor definition UI + computation
-- [ ] Factor correlation matrix + heatmap
-- [ ] FactorExposureChart (rolling betas)
-- [ ] AlphaDecayPanel (pre/post publication)
-- [ ] JSON/CSV export
-- [ ] Error handling, validation, edge cases
-- [ ] Performance optimization (caching, indexing)
+**Sprint 1: Data Models & Schema**
+- [ ] Create Event, AlphaDecayMetric, EventFactor, EventScreenerBadge models
+- [ ] Design and migrate PostgreSQL schema
+- [ ] Create indexes for efficient querying
+- [ ] Set up Redis cache structure
 
-### Phase 3: Integration (Weeks 7-8)
-- [ ] Screener integration: factor scores as columns
-- [ ] Morning Brief: top factor signals
-- [ ] Comprehensive testing (unit, integration, e2e)
-- [ ] Documentation
-- [ ] Deployment to production
+**Sprint 2: Core Services**
+- [ ] Implement EventProducerService with SEC EDGAR polling
+- [ ] Implement yfinance earnings scraper
+- [ ] Implement EventProcessingEngine (classify, score, deduplicate)
+- [ ] Implement alpha decay calculator
+- [ ] Add comprehensive error handling & retry logic
+
+**Sprint 3: API Endpoints & Integration**
+- [ ] Create /api/events CRUD endpoints
+- [ ] Create /api/events/{id}/alpha-decay endpoint
+- [ ] Create /api/events/scan manual trigger
+- [ ] Create /api/screener/badges endpoint
+- [ ] Implement rate limiting & caching
+
+### Phase 2B: Background Tasks & Consumers (Weeks 3-4)
+
+**Sprint 4: Background Polling**
+- [ ] Implement BackgroundPollingService with APScheduler
+- [ ] Set up 15-min SEC EDGAR polling job
+- [ ] Set up daily earnings calendar job
+- [ ] Set up daily alpha decay batch calculation
+- [ ] Add monitoring & alerting for polling failures
+
+**Sprint 5: Event Consumers**
+- [ ] Implement EventConsumerService.create_factor_from_event()
+- [ ] Implement EventConsumerService.update_screener_badges()
+- [ ] Link events to factors in database
+- [ ] Set up badge TTL expiry cleanup job
+- [ ] Add WebSocket prep (future real-time updates)
+
+### Phase 2C: Frontend Implementation (Weeks 5-6)
+
+**Sprint 6: Components & Layout**
+- [ ] Create /events page layout (two-column)
+- [ ] Build EventTimeline & EventCard components
+- [ ] Build EventFilters component
+- [ ] Build EventDetail panel
+- [ ] Build EventHeader component
+
+**Sprint 7: Charts & Detail Views**
+- [ ] Build AlphaDecayChart (Recharts bar chart)
+- [ ] Build MetricBox components for alpha decay
+- [ ] Build SimilarEventsSection
+- [ ] Build FactorBacktestSection with links
+- [ ] Build SeverityBadge component
+
+**Sprint 8: State Management & Integration**
+- [ ] Implement all React Query hooks
+- [ ] Integrate EventTimeline with useEvents
+- [ ] Integrate EventDetail with useEventDetail
+- [ ] Integrate AlphaDecayChart with useAlphaDecay
+- [ ] Add manual scan trigger button
+
+### Phase 2D: Screener & Polish (Weeks 7-8)
+
+**Sprint 9: Screener Integration**
+- [ ] Modify Screener page layout for event badges
+- [ ] Build EventBadgeScreener component
+- [ ] Implement useScreenerBadges hook
+- [ ] Add badge click navigation to /events
+- [ ] Add event count indicators
+
+**Sprint 10: Testing & Optimization**
+- [ ] Unit tests for EventProcessingEngine (classify, score)
+- [ ] Integration tests for API endpoints
+- [ ] E2E tests for timeline, filtering, detail view
+- [ ] Performance testing (large watchlists)
+- [ ] Frontend bundle size optimization
+
+**Sprint 11: Deployment & Monitoring**
+- [ ] Database migration scripts
+- [ ] API documentation updates
+- [ ] Frontend route configuration
+- [ ] Monitoring for event ingestion, CEP, API latency
+- [ ] Error tracking & alerting
 
 ---
 
-## Conclusion
+## Technical Considerations
 
-The Factor Backtester architecture is designed for institutional-grade factor research with emphasis on:
-- **PiT data integrity**: Immutable ingestion timestamps prevent look-ahead bias
-- **Survivorship bias control**: Lifecycle tracking includes delisted securities
-- **Async performance**: Long backtests execute in background with progress polling
-- **Modular design**: Services decouple from HTTP layer, reusable for Phase 2-4
-- **Type safety**: Pydantic + TypeScript strict mode reduce runtime errors
-- **User experience**: Responsive charts, step-by-step config wizard, clear error messages
+### Scalability
 
-All decisions prioritize accuracy, transparency, and extensibility for future phases.
+**Event Volume Projections:**
+- SEC EDGAR: ~5,000 filings/day → ~200/hour for tracked companies
+- Earnings announcements: ~100/day during earnings season
+- Insider trades: ~500/day
+- Total: ~800 events/day, ~33/hour peak
+
+**Storage:**
+- Event records: ~300 KB each (with raw_data) → ~250 MB/year
+- Alpha decay metrics: ~20 KB × 4 windows → ~29 MB/year
+- Screener badges: ~500 B each, TTL-based cleanup → minimal storage
+
+### Reliability
+
+**Deduplication Strategy:**
+- Unique constraint on (ticker, event_type, event_date, source)
+- Rolling 24-hour deduplication window in processor
+- Manual dedup option in API
+
+**Data Quality Flags:**
+- AlphaDecayMetric.data_quality: COMPLETE | PARTIAL | INSUFFICIENT
+- INCOMPLETE if: missing price data, market closure, data gaps
+- Display in UI with warning indicator
+
+**Rate Limiting:**
+- SEC EDGAR: 300 req/min (federal limit)
+- yfinance: No strict limit, use exponential backoff
+- Circuit breaker pattern for failing sources
+
+### Security
+
+**Input Validation:**
+- Ticker format: ^[A-Z]{1,5}$
+- Event dates: valid ISO format, not future-dated
+- Severity: 1-5 integer
+- Event types: whitelist enum validation
+
+**Authorization:**
+- Only show events for tickers in user's watchlist
+- Factor backtests inherit event permissions
+- Screener badges filtered by user's watchlist
+
+---
+
+## Appendix: API Response Examples
+
+### GET /api/events Response
+
+```json
+{
+  "events": [
+    {
+      "id": "event_uuid_1",
+      "ticker": "AAPL",
+      "event_type": "earnings",
+      "event_date": "2026-02-01T16:00:00Z",
+      "severity": 4,
+      "title": "Q1 2026 Earnings: 8% EPS Beat",
+      "description": "Apple announced Q1 FY2026 earnings with EPS of $2.15 vs. consensus $1.99",
+      "source": "YFINANCE",
+      "created_at": "2026-02-01T16:05:00Z"
+    },
+    {
+      "id": "event_uuid_2",
+      "ticker": "GOOGL",
+      "event_type": "M&A",
+      "event_date": "2026-01-28T09:30:00Z",
+      "severity": 5,
+      "title": "Announces Acquisition of DataStart",
+      "description": "Google to acquire DataStart for $8.5B in all-cash transaction",
+      "source": "SEC_EDGAR",
+      "created_at": "2026-01-28T10:00:00Z"
+    }
+  ],
+  "cursor": "eyJpZCI6ICJldmVudF91dWlkXzIsICJkYXRlIjogIjIwMjYtMDEtMjgifQ==",
+  "total": 347
+}
+```
+
+### GET /api/events/{id}/alpha-decay Response
+
+```json
+{
+  "event": {
+    "id": "event_uuid_1",
+    "ticker": "AAPL",
+    "event_type": "earnings",
+    "severity": 4,
+    "title": "Q1 2026 Earnings: 8% EPS Beat"
+  },
+  "metrics": {
+    "window_1d": {
+      "returns_0_to_window": 2.45,
+      "abnormal_returns": 1.87,
+      "volatility": 18.5,
+      "sharpe_ratio": 1.23,
+      "max_drawdown": -0.5
+    },
+    "window_5d": {
+      "returns_0_to_window": 4.12,
+      "abnormal_returns": 3.45,
+      "volatility": 16.2,
+      "sharpe_ratio": 1.58,
+      "max_drawdown": -1.2
+    },
+    "window_21d": {
+      "returns_0_to_window": 5.67,
+      "abnormal_returns": 4.89,
+      "volatility": 15.8,
+      "sharpe_ratio": 1.95,
+      "max_drawdown": -2.1
+    },
+    "window_63d": {
+      "returns_0_to_window": 6.23,
+      "abnormal_returns": 5.12,
+      "volatility": 16.1,
+      "sharpe_ratio": 1.87,
+      "max_drawdown": -3.0
+    }
+  },
+  "data_quality": "COMPLETE"
+}
+```
+
+### GET /api/screener/badges Response
+
+```json
+{
+  "AAPL": [
+    {
+      "event_id": "event_uuid_1",
+      "event_type": "earnings",
+      "severity": 4,
+      "title": "Q1 2026 Earnings Beat",
+      "expires_at": "2026-02-04T16:00:00Z"
+    },
+    {
+      "event_id": "event_uuid_3",
+      "event_type": "insider_trade",
+      "severity": 2,
+      "title": "CEO purchased 10,000 shares",
+      "expires_at": "2026-02-02T09:30:00Z"
+    }
+  ],
+  "GOOGL": [
+    {
+      "event_id": "event_uuid_2",
+      "event_type": "M&A",
+      "severity": 5,
+      "title": "Acquisition of DataStart",
+      "expires_at": "2026-02-07T09:30:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## Summary
+
+This architecture provides a complete, production-ready design for the AlphaDesk Event Scanner feature. Key highlights:
+
+- **Layered CEP System**: Producer → Processor → Consumer pattern enables modularity
+- **Rich Event Context**: Alpha decay metrics capture post-event returns across 4 time windows
+- **Seamless Integration**: Events become factors for backtesting and badges for screener
+- **Scalable Infrastructure**: Background polling, rate limiting, caching, and deduplication
+- **Clean UI**: Two-column timeline + detail layout with Recharts visualizations
+- **React Query State Management**: Automatic caching, refetching, and invalidation
+- **Type-Safe Components**: Full TypeScript interfaces for all models and responses
+
+The 11-sprint, 8-week roadmap provides clear milestones from backend foundation through frontend polish, screener integration, and deployment readiness.
