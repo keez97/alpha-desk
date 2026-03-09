@@ -3,12 +3,14 @@ from sqlmodel import Session, select
 from datetime import datetime, timedelta
 import json
 from backend.database import get_session
-from backend.models.cache import MorningBriefCache
+from backend.models.cache import MorningBriefCache, MorningReportCache
 from backend.config import CACHE_TTL_HOURS
 from backend.services.yfinance_service import get_macro_data, get_sector_data
-from backend.services.claude_service import generate_morning_drivers
+from backend.services.claude_service import generate_morning_drivers, generate_morning_report
 
 router = APIRouter(prefix="/api/morning-brief", tags=["morning-brief"])
+
+REPORT_CACHE_TTL_HOURS = 4  # Morning report refreshes every 4 hours
 
 
 @router.get("/macro")
@@ -80,9 +82,6 @@ async def refresh_drivers(session: Session = Depends(get_session)):
 
     # Delete existing cache
     cache_key = f"drivers_{today}"
-    session.exec(
-        select(MorningBriefCache).where(MorningBriefCache.cache_key == cache_key)
-    )
     cached = session.exec(
         select(MorningBriefCache).where(MorningBriefCache.cache_key == cache_key)
     ).first()
@@ -106,4 +105,78 @@ async def refresh_drivers(session: Session = Depends(get_session)):
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "data": drivers
+    }
+
+
+@router.get("/report")
+async def get_morning_report(session: Session = Depends(get_session)):
+    """Get auto-generated morning market report with caching."""
+    today = datetime.utcnow().date().isoformat()
+    cache_key = f"report_{today}"
+
+    # Check cache — return if fresh (< 4 hours old)
+    cached = session.exec(
+        select(MorningReportCache).where(
+            MorningReportCache.cache_key == cache_key,
+            MorningReportCache.expires_at > datetime.utcnow()
+        )
+    ).first()
+
+    if cached:
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "cached": True,
+            "data": json.loads(cached.data_json)
+        }
+
+    # Generate new report (non-streaming)
+    report = await generate_morning_report(today)
+
+    # Cache result
+    expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
+    cache_entry = MorningReportCache(
+        cache_key=cache_key,
+        data_json=json.dumps(report),
+        expires_at=expires_at
+    )
+    session.add(cache_entry)
+    session.commit()
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "cached": False,
+        "data": report
+    }
+
+
+@router.post("/report/refresh")
+async def refresh_morning_report(session: Session = Depends(get_session)):
+    """Force regenerate morning report."""
+    today = datetime.utcnow().date().isoformat()
+    cache_key = f"report_{today}"
+
+    # Delete existing cache
+    cached = session.exec(
+        select(MorningReportCache).where(MorningReportCache.cache_key == cache_key)
+    ).first()
+    if cached:
+        session.delete(cached)
+        session.commit()
+
+    # Generate new report
+    report = await generate_morning_report(today)
+
+    # Cache result
+    expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
+    cache_entry = MorningReportCache(
+        cache_key=cache_key,
+        data_json=json.dumps(report),
+        expires_at=expires_at
+    )
+    session.add(cache_entry)
+    session.commit()
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "data": report
     }

@@ -23,3 +23,11 @@ class ScreenerCache(SQLModel, table=True):
     screen_type: str = Field(index=True)
     results_json: str
     generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MorningReportCache(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    cache_key: str = Field(unique=True, index=True)
+    data_json: str
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    expires_at: datetime

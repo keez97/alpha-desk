@@ -3,7 +3,7 @@ import type { AxiosInstance } from 'axios';
 
 const api: AxiosInstance = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 60000, // Increased for LLM calls
 });
 
 api.interceptors.response.use(
@@ -51,12 +51,47 @@ export interface Quote {
   marketCap: number;
 }
 
+// ── Grade Types (V2 — 8-dimension institutional) ──────────
+export interface GradeDimension {
+  name: string;
+  score: number;
+  weight: number;
+  assessment: string;
+  data_points: string[];
+}
+
+export interface ScenarioCase {
+  target_pct: number;
+  probability: number;
+  drivers: string[];
+}
+
+export interface CatalystEvent {
+  event: string;
+  expected_date: string;
+  impact: 'positive' | 'negative' | 'uncertain';
+  probability: number;
+}
+
 export interface Grade {
   overall: string;
-  metrics: { name: string; grade: string; value: number }[];
+  compositeScore: number;
+  sector: string;
+  regime: string;
+  dimensions: GradeDimension[];
   summary: string;
   risks: string[];
-  catalysts: string[];
+  catalysts: string[];        // Legacy: simple string list
+  catalystEvents: CatalystEvent[];  // V2: structured catalysts
+  scenarios: {
+    bull: ScenarioCase;
+    base: ScenarioCase;
+    bear: ScenarioCase;
+  } | null;
+  contrarianSignal: string | null;
+  dataGaps: string[];
+  // Legacy compat
+  metrics: { name: string; grade: string; value: number }[];
 }
 
 export interface WatchlistItem {
@@ -143,6 +178,11 @@ export interface RRGData {
   }[];
 }
 
+export interface MorningReportSection {
+  title: string;
+  content: string;
+}
+
 // ── Macro ──────────────────────────────────────────────────
 const MACRO_NAMES: Record<string, string> = {
   '^TNX': '10Y Yield', '^IRX': '3M Yield', '^VIX': 'VIX',
@@ -207,6 +247,21 @@ export async function refreshDrivers(): Promise<DriverResponse> {
   };
 }
 
+// ── Morning Report ─────────────────────────────────────────
+export async function fetchMorningReport(): Promise<Record<string, MorningReportSection>> {
+  const { data: raw } = await api.get('/morning-brief/report');
+  const reportData = raw.data || raw;
+  // Normalize — extract only sections that have title+content
+  const result: Record<string, MorningReportSection> = {};
+  for (const [key, value] of Object.entries(reportData)) {
+    if (value && typeof value === 'object' && 'title' in (value as any) && 'content' in (value as any)) {
+      const v = value as any;
+      result[key] = { title: v.title, content: v.content };
+    }
+  }
+  return result;
+}
+
 // ── Stock Search & Quote ───────────────────────────────────
 export async function searchTicker(query: string): Promise<{ ticker: string; name: string; sector: string }[]> {
   const { data: raw } = await api.get('/search', { params: { q: query } });
@@ -226,36 +281,80 @@ export async function fetchQuote(ticker: string): Promise<Quote> {
   };
 }
 
-// ── Stock Grade ────────────────────────────────────────────
+// ── Stock Grade (V2 — institutional) ───────────────────────
 function scoreToGrade(score: number | undefined): string {
   if (!score) return 'N/A';
-  if (score >= 8) return 'STRONG BUY';
-  if (score >= 6) return 'BUY';
-  if (score >= 4) return 'HOLD';
-  if (score >= 2) return 'SELL';
+  if (score >= 8.5) return 'STRONG BUY';
+  if (score >= 7) return 'BUY';
+  if (score >= 5) return 'HOLD';
+  if (score >= 3) return 'SELL';
   return 'STRONG SELL';
 }
 
 export async function gradeStock(ticker: string): Promise<Grade> {
   const { data: raw } = await api.post(`/stock/${ticker}/grade`);
   const g = raw.grade || raw;
-  return {
-    overall: g.overall || g.overall_grade || g.grade || 'N/A',
-    metrics: Array.isArray(g.metrics) && g.metrics.length > 0
-      ? g.metrics.map((m: any) => ({
-          name: m.name || m.metric,
-          grade: m.grade,
-          value: m.value ?? 0,
+
+  // Parse V2 dimensions
+  const dimensions: GradeDimension[] = Array.isArray(g.dimensions)
+    ? g.dimensions.map((d: any) => ({
+        name: d.name || '',
+        score: d.score ?? 5,
+        weight: d.weight ?? 0.125,
+        assessment: d.assessment || '',
+        data_points: d.data_points || [],
+      }))
+    : [];
+
+  // Parse scenarios
+  let scenarios = null;
+  if (g.scenarios && typeof g.scenarios === 'object') {
+    const defaultCase = { target_pct: 0, probability: 0, drivers: [] };
+    scenarios = {
+      bull: { ...defaultCase, ...g.scenarios.bull },
+      base: { ...defaultCase, ...g.scenarios.base },
+      bear: { ...defaultCase, ...g.scenarios.bear },
+    };
+  }
+
+  // Parse structured catalysts
+  const catalystEvents: CatalystEvent[] = Array.isArray(g.catalysts)
+    ? g.catalysts
+        .filter((c: any) => typeof c === 'object' && c.event)
+        .map((c: any) => ({
+          event: c.event,
+          expected_date: c.expected_date || '',
+          impact: c.impact || 'uncertain',
+          probability: c.probability ?? 0.5,
         }))
-      : [
-          { name: 'Valuation', grade: scoreToGrade(g.valuation_score), value: g.valuation_score ?? 0 },
-          { name: 'Growth', grade: scoreToGrade(g.growth_score), value: g.growth_score ?? 0 },
-          { name: 'Quality', grade: scoreToGrade(g.quality_score), value: g.quality_score ?? 0 },
-          { name: 'Momentum', grade: scoreToGrade(g.momentum_score), value: g.momentum_score ?? 0 },
-        ].filter((m) => m.value > 0),
-    summary: g.summary || g.thesis || '',
-    risks: g.risks || g.key_risks || [],
-    catalysts: g.catalysts || [],
+    : [];
+
+  // Legacy simple catalysts (string list)
+  const simpleCatalysts: string[] = Array.isArray(g.catalysts)
+    ? g.catalysts.filter((c: any) => typeof c === 'string')
+    : [];
+
+  // Build legacy metrics from dimensions for backward compat
+  const metrics = dimensions.map(d => ({
+    name: d.name,
+    grade: scoreToGrade(d.score),
+    value: d.score,
+  }));
+
+  return {
+    overall: g.grade || g.overall || g.overall_grade || 'N/A',
+    compositeScore: g.composite_score ?? 0,
+    sector: g.sector || '',
+    regime: g.regime || 'neutral',
+    dimensions,
+    summary: g.thesis || g.summary || '',
+    risks: g.key_risks || g.risks || [],
+    catalysts: simpleCatalysts,
+    catalystEvents,
+    scenarios,
+    contrarianSignal: g.contrarian_signal || null,
+    dataGaps: g.data_gaps || [],
+    metrics,
   };
 }
 
@@ -286,7 +385,6 @@ export async function addToWatchlist(ticker: string): Promise<WatchlistItem> {
 }
 
 export async function removeFromWatchlist(id: string): Promise<void> {
-  // Backend uses ticker as the path param for delete
   await api.delete(`/watchlist/${id}`);
 }
 
@@ -331,7 +429,6 @@ export async function fetchReportList(): Promise<{ id: string; date: string; tit
 export async function fetchReport(id: string): Promise<Report> {
   const { data: raw } = await api.get(`/weekly-report/${id}`);
   const reportData = raw.report || {};
-  // Build sections from the report JSON
   const sections: ReportSection[] = [];
   if (typeof reportData === 'object') {
     for (const [key, value] of Object.entries(reportData)) {
@@ -468,7 +565,7 @@ export async function analyzePortfolio(id: string): Promise<PortfolioAnalysis> {
 }
 
 // ── RRG ────────────────────────────────────────────────────
-export async function fetchRRG(benchmark: string = 'SPY', weeks: number = 52): Promise<RRGData> {
+export async function fetchRRG(benchmark: string = 'SPY', weeks: number = 20): Promise<RRGData> {
   const { data: raw } = await api.get('/rrg', { params: { benchmark, weeks } });
   const rrg = raw.data || raw;
   return {
@@ -478,13 +575,13 @@ export async function fetchRRG(benchmark: string = 'SPY', weeks: number = 52): P
       ticker: s.ticker,
       name: s.sector || s.name || s.ticker,
       rsRatio: s.rs_ratio ?? s.rsRatio ?? 100,
-      rsMomentum: s.rs_momentum ?? s.rsMomentum ?? 100,
+      rsMomentum: s.rs_momentum ?? s.rsMomentum ?? 0,
       volume: s.volume ?? 0,
       quadrant: s.quadrant || 'Unknown',
       history: (s.trail || s.history || []).map((h: any) => ({
         date: h.date,
         rsRatio: h.rs_ratio ?? h.rsRatio ?? 100,
-        rsMomentum: h.rs_momentum ?? h.rsMomentum ?? 100,
+        rsMomentum: h.rs_momentum ?? h.rsMomentum ?? 0,
       })),
     })),
   };

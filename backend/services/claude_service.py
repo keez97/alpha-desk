@@ -7,8 +7,10 @@ from backend.config import (
     get_openrouter_model_id,
 )
 from backend.prompts.base import BASE_ANALYST_PERSONA
-from backend.prompts import morning_drivers, stock_grader, weekly_report, screener
+from backend.prompts import morning_drivers, stock_grader, weekly_report, screener, morning_report
 from backend.services import mock_data
+from backend.services.weight_calculator import get_weights
+from backend.services.yfinance_service import get_macro_data
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,26 @@ def _parse_json_from_text(text: str) -> dict | None:
     except (json.JSONDecodeError, ValueError):
         pass
     return None
+
+
+def _get_regime_context() -> tuple:
+    """Fetch current macro data and determine regime + weights."""
+    try:
+        macro = get_macro_data()
+        vix_data = macro.get("^VIX", {})
+        tnx_data = macro.get("^TNX", {})
+        irx_data = macro.get("^IRX", {})
+
+        vix = vix_data.get("price")
+        yield_10y = tnx_data.get("price")
+        # Use 3M yield as proxy for 2Y if 2Y not available
+        yield_2y = irx_data.get("price")
+
+        weights, regime = get_weights(vix=vix, yield_10y=yield_10y, yield_2y=yield_2y)
+        return weights, regime
+    except Exception as e:
+        logger.warning(f"Could not fetch macro data for regime detection: {e}")
+        return None, "neutral"
 
 
 async def generate_morning_drivers(date: str) -> Dict[str, Any]:
@@ -87,7 +109,7 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
 
 
 async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Grade a stock based on pre-fetched fundamental data."""
+    """Grade a stock with regime-adaptive institutional analysis."""
     if USE_MOCK:
         logger.info(f"Using mock grade for stock: {ticker}")
         if ticker in mock_data.MOCK_STOCK_GRADES:
@@ -96,20 +118,26 @@ async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
             "ticker": ticker,
             "name": data.get("name", ticker),
             "grade": "HOLD",
-            "overall_score": 6.5,
-            "metrics": {},
-            "recommendation": "Insufficient mock data available",
+            "composite_score": 5.0,
+            "dimensions": [],
         }
 
     try:
         company_name = data.get("name", ticker)
-        prompt = stock_grader.get_stock_grader_prompt(ticker, company_name, data)
+
+        # Get regime-adaptive weights
+        weights, regime = _get_regime_context()
+
+        prompt = stock_grader.get_stock_grader_prompt(
+            ticker, company_name, data,
+            weights=weights, regime=regime
+        )
         model_id = get_openrouter_model_id()
-        logger.info(f"Grading {ticker} with model: {model_id}")
+        logger.info(f"Grading {ticker} with model: {model_id} | regime: {regime}")
 
         response = client.chat.completions.create(
             model=model_id,
-            max_tokens=2000,
+            max_tokens=4000,
             messages=[
                 {"role": "system", "content": BASE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -126,6 +154,48 @@ async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error grading stock {ticker}: {e}")
         return {"ticker": ticker, "grade": "HOLD", "error": str(e)}
+
+
+async def generate_morning_report(date: str) -> Dict[str, Any]:
+    """Generate condensed morning market report (non-streaming)."""
+    if USE_MOCK:
+        logger.info("Using mock morning report")
+        return {
+            "date": date,
+            "market_snapshot": {"title": "Market Snapshot", "content": "Mock market data."},
+            "sector_rotation": {"title": "Sector Rotation", "content": "Mock sector data."},
+            "macro_pulse": {"title": "Macro Pulse", "content": "Mock macro data."},
+            "week_ahead": {"title": "Week Ahead", "content": "Mock outlook."},
+        }
+
+    try:
+        prompt = morning_report.get_morning_report_prompt(date)
+        model_id = get_openrouter_model_id()
+        logger.info(f"Generating morning report with model: {model_id}")
+
+        response = client.chat.completions.create(
+            model=model_id,
+            max_tokens=3000,
+            messages=[
+                {"role": "system", "content": BASE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        text_content = _extract_text(response)
+        parsed = _parse_json_from_text(text_content)
+        if parsed:
+            return parsed
+
+        return {
+            "date": date,
+            "error": "Could not parse report",
+            "raw_response": text_content,
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating morning report: {e}")
+        return {"date": date, "error": str(e)}
 
 
 async def generate_weekly_report(end_date: str) -> AsyncGenerator[str, None]:
