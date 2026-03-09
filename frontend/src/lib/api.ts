@@ -227,18 +227,34 @@ export async function fetchQuote(ticker: string): Promise<Quote> {
 }
 
 // ── Stock Grade ────────────────────────────────────────────
+function scoreToGrade(score: number | undefined): string {
+  if (!score) return 'N/A';
+  if (score >= 8) return 'STRONG BUY';
+  if (score >= 6) return 'BUY';
+  if (score >= 4) return 'HOLD';
+  if (score >= 2) return 'SELL';
+  return 'STRONG SELL';
+}
+
 export async function gradeStock(ticker: string): Promise<Grade> {
   const { data: raw } = await api.post(`/stock/${ticker}/grade`);
   const g = raw.grade || raw;
   return {
-    overall: g.overall || g.overall_grade || 'N/A',
-    metrics: (g.metrics || []).map((m: any) => ({
-      name: m.name || m.metric,
-      grade: m.grade,
-      value: m.value ?? 0,
-    })),
-    summary: g.summary || '',
-    risks: g.risks || [],
+    overall: g.overall || g.overall_grade || g.grade || 'N/A',
+    metrics: Array.isArray(g.metrics) && g.metrics.length > 0
+      ? g.metrics.map((m: any) => ({
+          name: m.name || m.metric,
+          grade: m.grade,
+          value: m.value ?? 0,
+        }))
+      : [
+          { name: 'Valuation', grade: scoreToGrade(g.valuation_score), value: g.valuation_score ?? 0 },
+          { name: 'Growth', grade: scoreToGrade(g.growth_score), value: g.growth_score ?? 0 },
+          { name: 'Quality', grade: scoreToGrade(g.quality_score), value: g.quality_score ?? 0 },
+          { name: 'Momentum', grade: scoreToGrade(g.momentum_score), value: g.momentum_score ?? 0 },
+        ].filter((m) => m.value > 0),
+    summary: g.summary || g.thesis || '',
+    risks: g.risks || g.key_risks || [],
     catalysts: g.catalysts || [],
   };
 }
@@ -475,3 +491,36 @@ export async function fetchRRG(benchmark: string = 'SPY', weeks: number = 52): P
 }
 
 export default api;
+
+// ── Model Settings ─────────────────────────────────────────
+export interface ModelInfo {
+  key: string;
+  openrouterId: string;
+}
+
+export interface ModelsResponse {
+  current: string;
+  currentId: string;
+  available: ModelInfo[];
+}
+
+export async function fetchModels(): Promise<ModelsResponse> {
+  const { data } = await api.get('/settings/models');
+  return {
+    current: data.current,
+    currentId: data.current_id,
+    available: (data.available || []).map((m: any) => ({
+      key: m.key,
+      openrouterId: m.openrouter_id,
+    })),
+  };
+}
+
+export async function switchModel(modelKey: string): Promise<ModelsResponse> {
+  const { data } = await api.post('/settings/models', { model: modelKey });
+  return {
+    current: data.current,
+    currentId: data.current_id,
+    available: [],
+  };
+}

@@ -9,7 +9,8 @@ from backend.routers import (
     screener,
     weekly_report,
     portfolio,
-    rrg
+    rrg,
+    settings
 )
 
 app = FastAPI(
@@ -35,6 +36,7 @@ app.include_router(screener.router)
 app.include_router(weekly_report.router)
 app.include_router(portfolio.router)
 app.include_router(rrg.router)
+app.include_router(settings.router)
 
 
 @app.on_event("startup")
