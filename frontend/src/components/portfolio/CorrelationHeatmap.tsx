@@ -9,8 +9,8 @@ export function CorrelationHeatmap({ analysis }: CorrelationHeatmapProps) {
   const tickers = Object.keys(analysis.maxSharpe.weights);
 
   return (
-    <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-      <h3 className="mb-4 font-semibold text-white">Correlation Matrix</h3>
+    <div className="border border-neutral-800 rounded p-4">
+      <span className="text-xs font-medium text-neutral-300 mb-3 block">Correlation Matrix</span>
       <Plotly
         data={[
           {
@@ -19,21 +19,22 @@ export function CorrelationHeatmap({ analysis }: CorrelationHeatmapProps) {
             y: tickers,
             type: 'heatmap' as const,
             colorscale: [
-              [0, '#3b82f6'],
-              [0.5, '#ffffff'],
+              [0, '#525252'],
+              [0.5, '#0a0a0a'],
               [1, '#ef4444'],
             ],
-            colorbar: { tickvals: [-1, 0, 1], ticktext: ['-1', '0', '1'] },
+            colorbar: { tickvals: [-1, 0, 1], ticktext: ['-1', '0', '1'], tickfont: { color: '#525252', size: 10 } },
           } as any,
         ]}
         layout={{
           width: 600,
           height: 600,
-          margin: { l: 100, r: 100, t: 50, b: 100 },
-          paper_bgcolor: '#1a1d27',
-          plot_bgcolor: '#252836',
-          font: { color: '#e5e7eb' },
-          xaxis: { side: 'bottom' },
+          margin: { l: 80, r: 80, t: 30, b: 80 },
+          paper_bgcolor: '#000000',
+          plot_bgcolor: '#0a0a0a',
+          font: { color: '#a3a3a3', size: 11, family: 'Inter, system-ui, sans-serif' },
+          xaxis: { side: 'bottom', gridcolor: '#1f1f1f' },
+          yaxis: { gridcolor: '#1f1f1f' },
         } as any}
         config={{ responsive: true }}
       />

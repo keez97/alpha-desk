@@ -56,75 +56,71 @@ export function PortfolioBuilder({ portfolio, onSuccess }: PortfolioBuilderProps
   const isPending = isCreating || isUpdating;
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6 rounded-lg border border-gray-700 bg-gray-800/30 p-6">
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">Portfolio Name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="My Growth Portfolio"
-          className="w-full rounded-lg border border-gray-700 bg-gray-800/50 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          required
-        />
+    <form onSubmit={handleSubmit} className="border border-neutral-800 rounded p-4 space-y-4">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="My Portfolio"
+            className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 focus:outline-none"
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Capital ($)</label>
+          <input
+            type="number"
+            value={capital}
+            onChange={(e) => setCapital(e.target.value)}
+            placeholder="100000"
+            step="100"
+            min="0"
+            className="w-full rounded border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 focus:outline-none"
+            required
+          />
+        </div>
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">Initial Capital ($)</label>
-        <input
-          type="number"
-          value={capital}
-          onChange={(e) => setCapital(e.target.value)}
-          placeholder="100000"
-          step="100"
-          min="0"
-          className="w-full rounded-lg border border-gray-700 bg-gray-800/50 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          required
-        />
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">Add Holdings</label>
+        <label className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-1">Add Holdings</label>
         <SearchBar onSelect={handleAddHolding} />
       </div>
 
       {holdings.length > 0 && (
-        <div className="rounded-lg bg-gray-700/20 p-4">
-          <h3 className="font-semibold text-white mb-3">Holdings</h3>
-          <div className="space-y-2">
-            {holdings.map((holding) => (
-              <div key={holding.ticker} className="flex items-center justify-between">
-                <div className="flex-1">
-                  <input
-                    type="number"
-                    value={holding.shares}
-                    onChange={(e) => handleUpdateShares(holding.ticker, parseFloat(e.target.value) || 0)}
-                    placeholder="Shares"
-                    step="0.01"
-                    min="0"
-                    className="w-full rounded-lg border border-gray-700 bg-gray-800/50 px-3 py-2 text-white text-sm placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-                <span className="mx-3 font-mono text-white font-semibold">{holding.ticker}</span>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveHolding(holding.ticker)}
-                  className="px-3 py-2 rounded-lg bg-red-500/20 text-red-400 text-sm hover:bg-red-500/30 transition-colors"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
+        <div className="space-y-1.5">
+          {holdings.map((holding) => (
+            <div key={holding.ticker} className="flex items-center gap-2">
+              <span className="font-mono text-xs text-neutral-200 w-14">{holding.ticker}</span>
+              <input
+                type="number"
+                value={holding.shares}
+                onChange={(e) => handleUpdateShares(holding.ticker, parseFloat(e.target.value) || 0)}
+                placeholder="Shares"
+                step="0.01"
+                min="0"
+                className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => handleRemoveHolding(holding.ticker)}
+                className="text-[10px] text-red-400/60 hover:text-red-400 transition-colors px-1"
+              >
+                ×
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
       <button
         type="submit"
         disabled={isPending || !name || !capital || holdings.length === 0}
-        className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="w-full rounded px-3 py-1.5 text-xs font-medium text-neutral-300 border border-neutral-700 hover:border-neutral-600 hover:text-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >
-        {isPending ? 'Saving...' : portfolio ? 'Update Portfolio' : 'Create Portfolio'}
+        {isPending ? 'Saving...' : portfolio ? 'Update' : 'Create Portfolio'}
       </button>
     </form>
   );

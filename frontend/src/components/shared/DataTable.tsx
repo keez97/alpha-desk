@@ -69,33 +69,33 @@ export function DataTable<T extends Record<string, any>>({
 
   const getValueColor = (value: any, format?: string): string => {
     if (format === 'delta' || format === 'percent') {
-      if (value > 0) return 'text-green-400';
+      if (value > 0) return 'text-emerald-400';
       if (value < 0) return 'text-red-400';
-      return 'text-gray-400';
+      return 'text-neutral-500';
     }
-    return 'text-gray-300';
+    return 'text-neutral-300';
   };
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-gray-700 bg-gray-800/50">
+          <tr className="border-b border-neutral-800">
             {columns.map((col) => (
               <th
                 key={String(col.accessor)}
                 onClick={() => handleSort(col.accessor)}
                 className={classNames(
-                  'px-4 py-3 font-semibold text-gray-300',
+                  'px-3 py-2 font-medium text-neutral-500 uppercase tracking-wider text-[10px]',
                   col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left',
-                  sortable && col.header ? 'cursor-pointer hover:bg-gray-700/50' : ''
+                  sortable && col.header ? 'cursor-pointer hover:text-neutral-300' : ''
                 )}
                 style={{ width: col.width }}
               >
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center gap-1">
                   <span>{col.header}</span>
                   {sortable && sortKey === col.accessor && (
-                    <span className="text-blue-400">{sortDirection === 'asc' ? '▲' : '▼'}</span>
+                    <span className="text-neutral-400">{sortDirection === 'asc' ? '▲' : '▼'}</span>
                   )}
                 </div>
               </th>
@@ -104,7 +104,7 @@ export function DataTable<T extends Record<string, any>>({
         </thead>
         <tbody>
           {sortedData.map((row, idx) => (
-            <tr key={idx} className="border-b border-gray-800 hover:bg-gray-800/30 transition-colors">
+            <tr key={idx} className="border-b border-neutral-900 hover:bg-neutral-900/50 transition-colors">
               {columns.map((col) => {
                 const value = row[col.accessor];
                 const formatted = formatValue(value, col.format);
@@ -114,7 +114,7 @@ export function DataTable<T extends Record<string, any>>({
                   <td
                     key={String(col.accessor)}
                     className={classNames(
-                      'px-4 py-3 font-mono text-gray-300',
+                      'px-3 py-2 font-mono',
                       col.accessor === 'ticker' ? '' : 'font-mono',
                       color,
                       col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'

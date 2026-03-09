@@ -45,12 +45,12 @@ export function MarketReportPanel() {
 
   if (loading) {
     return (
-      <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-6">
+      <div className="border border-neutral-800 rounded p-4">
         <div className="flex items-center gap-3">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-700 border-t-neutral-400" />
           <div>
-            <h3 className="text-sm font-semibold text-white">Generating Morning Report</h3>
-            <p className="text-xs text-gray-400">AI is analyzing current market conditions...</p>
+            <span className="text-xs text-neutral-400">Generating Morning Report</span>
+            <span className="text-[10px] text-neutral-600 ml-2">Analyzing market conditions...</span>
           </div>
         </div>
       </div>
@@ -59,8 +59,8 @@ export function MarketReportPanel() {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-800/50 bg-red-900/10 p-4">
-        <p className="text-sm text-red-400">Report unavailable: {error}</p>
+      <div className="border border-neutral-800 rounded px-4 py-3">
+        <span className="text-xs text-red-400/80">Report unavailable: {error}</span>
       </div>
     );
   }
@@ -68,47 +68,37 @@ export function MarketReportPanel() {
   if (!report) return null;
 
   const sectionKeys = ['market_snapshot', 'sector_rotation', 'macro_pulse', 'week_ahead'];
-  const sectionIcons: Record<string, string> = {
-    market_snapshot: '📊',
-    sector_rotation: '🔄',
-    macro_pulse: '📈',
-    week_ahead: '📅',
-  };
 
   return (
-    <div className="rounded-lg border border-gray-700 bg-gray-800/30 overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-white">Morning Market Report</h3>
-        <span className="text-xs text-gray-500">Auto-generated</span>
+    <div className="border border-neutral-800 rounded overflow-hidden">
+      <div className="px-4 py-2 border-b border-neutral-800 flex items-center justify-between">
+        <span className="text-xs font-medium text-neutral-300">Morning Report</span>
+        <span className="text-[10px] text-neutral-600">Auto-generated</span>
       </div>
 
-      <div className="divide-y divide-gray-700/50">
+      <div className="divide-y divide-neutral-800/50">
         {sectionKeys.map(key => {
           const section = report[key];
           if (!section) return null;
           const isExpanded = expandedSections.has(key);
-          const icon = sectionIcons[key] || '📋';
 
           return (
             <div key={key}>
               <button
                 onClick={() => toggleSection(key)}
-                className="flex w-full items-center justify-between px-4 py-3 hover:bg-gray-700/20 transition-colors"
+                className="flex w-full items-center justify-between px-4 py-2 hover:bg-neutral-900/50 transition-colors"
               >
-                <span className="flex items-center gap-2">
-                  <span className="text-sm">{icon}</span>
-                  <span className="text-sm font-medium text-white">{section.title}</span>
-                </span>
+                <span className="text-xs font-medium text-neutral-300">{section.title}</span>
                 <svg
-                  className={`w-4 h-4 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                  className={`w-3 h-3 text-neutral-600 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                   fill="none" stroke="currentColor" viewBox="0 0 24 24"
                 >
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
               </button>
               {isExpanded && (
-                <div className="px-4 pb-4 pt-0">
-                  <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-line">
+                <div className="px-4 pb-3 pt-0">
+                  <p className="text-xs text-neutral-400 leading-relaxed whitespace-pre-line">
                     {section.content}
                   </p>
                 </div>

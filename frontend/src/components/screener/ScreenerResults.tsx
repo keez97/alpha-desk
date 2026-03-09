@@ -29,55 +29,55 @@ export function ScreenerResults() {
     : (data?.momentumLeaders || []);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-white">Screener Results</h2>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-medium text-neutral-300">Screener</span>
           {data?.timestamp && <Timestamp date={data.timestamp} label="Generated" />}
         </div>
         <button
           onClick={() => runScreener()}
           disabled={isPending}
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          className="px-3 py-1 rounded text-xs font-medium text-neutral-400 border border-neutral-800 hover:text-neutral-200 hover:border-neutral-700 disabled:opacity-50 transition-colors"
         >
           {isPending ? 'Running...' : 'Run Screener'}
         </button>
       </div>
 
       {!hasResults ? (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-12 text-center">
-          <p className="text-gray-400 mb-4">No screener results yet. Run the screener to find value and momentum opportunities.</p>
+        <div className="border border-neutral-800 rounded p-8 text-center">
+          <p className="text-xs text-neutral-500 mb-3">No results. Run the screener to find opportunities.</p>
           <button
             onClick={() => runScreener()}
             disabled={isPending}
-            className="px-6 py-3 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="px-4 py-1.5 rounded text-xs font-medium text-neutral-300 border border-neutral-700 hover:border-neutral-600 disabled:opacity-50 transition-colors"
           >
             {isPending ? 'Running...' : 'Run Screener'}
           </button>
         </div>
       ) : (
         <>
-          <div className="flex space-x-2 border-b border-gray-700">
+          <div className="flex gap-0.5 border-b border-neutral-800">
             {(['value', 'momentum'] as const).map((tab) => {
               const count = tab === 'value' ? data!.valueOpportunities.length : data!.momentumLeaders.length;
               return (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
                     activeTab === tab
-                      ? 'text-blue-400 border-blue-500'
-                      : 'text-gray-400 border-transparent hover:text-gray-300'
+                      ? 'text-neutral-200 border-neutral-400'
+                      : 'text-neutral-500 border-transparent hover:text-neutral-300'
                   }`}
                 >
-                  {tab === 'value' ? 'Value Opportunities' : 'Momentum Leaders'}
-                  <span className="ml-2 text-xs">({count})</span>
+                  {tab === 'value' ? 'Value' : 'Momentum'}
+                  <span className="ml-1 text-neutral-600">({count})</span>
                 </button>
               );
             })}
           </div>
 
-          <div className="bg-gray-800/30 rounded-lg border border-gray-700 overflow-hidden">
+          <div className="border border-neutral-800 rounded overflow-hidden">
             <DataTable columns={columns} data={activeData} sortable={true} />
           </div>
         </>

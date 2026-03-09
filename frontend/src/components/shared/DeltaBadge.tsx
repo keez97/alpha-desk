@@ -14,10 +14,10 @@ export function DeltaBadge({ value, format = 'pct' }: DeltaBadgeProps) {
   return (
     <span
       className={classNames(
-        'inline-block rounded px-2 py-1 text-xs font-mono font-medium',
-        isPositive && 'bg-green-500/20 text-green-400',
-        isNegative && 'bg-red-500/20 text-red-400',
-        !isPositive && !isNegative && 'bg-gray-500/20 text-gray-400'
+        'inline-block text-[11px] font-mono font-medium',
+        isPositive && 'text-emerald-400',
+        isNegative && 'text-red-400',
+        !isPositive && !isNegative && 'text-neutral-500'
       )}
     >
       {displayValue}

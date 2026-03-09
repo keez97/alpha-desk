@@ -14,18 +14,18 @@ export function SectorPanel() {
   if (!data || data.length === 0) return null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-white">Sector Performance</h2>
-        <div className="flex space-x-1">
+        <span className="text-xs font-medium text-neutral-300">Sector Performance</span>
+        <div className="flex gap-0.5">
           {(['1D', '5D', '1M', '3M'] as const).map((p) => (
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
+              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
                 period === p
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-gray-400 hover:text-gray-300 border border-gray-700'
+                  ? 'bg-neutral-800 text-neutral-200'
+                  : 'text-neutral-500 hover:text-neutral-300'
               }`}
             >
               {p}
@@ -34,23 +34,23 @@ export function SectorPanel() {
         </div>
       </div>
 
-      <div className="bg-gray-800/30 rounded-lg border border-gray-700 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="border border-neutral-800 rounded overflow-hidden">
+        <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-gray-700 bg-gray-800/50">
-              <th className="px-4 py-3 text-left text-gray-300 font-semibold">Ticker</th>
-              <th className="px-4 py-3 text-left text-gray-300 font-semibold">Name</th>
-              <th className="px-4 py-3 text-right text-gray-300 font-semibold">Price</th>
-              <th className="px-4 py-3 text-right text-gray-300 font-semibold">Change</th>
+            <tr className="border-b border-neutral-800">
+              <th className="px-3 py-2 text-left text-[10px] text-neutral-500 font-medium uppercase tracking-wider">Ticker</th>
+              <th className="px-3 py-2 text-left text-[10px] text-neutral-500 font-medium uppercase tracking-wider">Name</th>
+              <th className="px-3 py-2 text-right text-[10px] text-neutral-500 font-medium uppercase tracking-wider">Price</th>
+              <th className="px-3 py-2 text-right text-[10px] text-neutral-500 font-medium uppercase tracking-wider">Change</th>
             </tr>
           </thead>
           <tbody>
             {data.map((sector: any) => (
-              <tr key={sector.ticker} className="border-b border-gray-800 hover:bg-gray-800/30">
-                <td className="px-4 py-3 font-mono text-white">{sector.ticker}</td>
-                <td className="px-4 py-3 text-gray-300">{sector.name}</td>
-                <td className="px-4 py-3 text-right font-mono text-white">{formatCurrency(sector.price)}</td>
-                <td className="px-4 py-3 text-right">
+              <tr key={sector.ticker} className="border-b border-neutral-900 hover:bg-neutral-900/50">
+                <td className="px-3 py-2 font-mono text-neutral-200">{sector.ticker}</td>
+                <td className="px-3 py-2 text-neutral-400">{sector.name}</td>
+                <td className="px-3 py-2 text-right font-mono text-neutral-200">{formatCurrency(sector.price)}</td>
+                <td className="px-3 py-2 text-right">
                   <DeltaBadge value={sector.changePercent} format="pct" />
                 </td>
               </tr>

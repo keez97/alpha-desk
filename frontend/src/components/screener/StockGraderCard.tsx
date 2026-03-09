@@ -7,18 +7,15 @@ interface StockGraderCardProps {
   grade: Grade;
 }
 
-// Simple radar chart using SVG
 function RadarChart({ dimensions }: { dimensions: Grade['dimensions'] }) {
   if (!dimensions || dimensions.length === 0) return null;
 
-  const size = 220;
+  const size = 200;
   const center = size / 2;
-  const radius = 85;
+  const radius = 75;
   const levels = 5;
-
   const angleStep = (2 * Math.PI) / dimensions.length;
 
-  // Draw concentric pentagons/polygons for grid
   const gridPaths = [];
   for (let l = 1; l <= levels; l++) {
     const r = (l / levels) * radius;
@@ -27,75 +24,38 @@ function RadarChart({ dimensions }: { dimensions: Grade['dimensions'] }) {
       return `${center + r * Math.cos(angle)},${center + r * Math.sin(angle)}`;
     }).join(' ');
     gridPaths.push(
-      <polygon
-        key={l}
-        points={points}
-        fill="none"
-        stroke="rgba(255,255,255,0.08)"
-        strokeWidth={1}
-      />
+      <polygon key={l} points={points} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth={1} />
     );
   }
 
-  // Axis lines
   const axisLines = dimensions.map((_, i) => {
     const angle = i * angleStep - Math.PI / 2;
     return (
-      <line
-        key={i}
-        x1={center}
-        y1={center}
-        x2={center + radius * Math.cos(angle)}
-        y2={center + radius * Math.sin(angle)}
-        stroke="rgba(255,255,255,0.08)"
-        strokeWidth={1}
-      />
+      <line key={i} x1={center} y1={center} x2={center + radius * Math.cos(angle)} y2={center + radius * Math.sin(angle)} stroke="rgba(255,255,255,0.05)" strokeWidth={1} />
     );
   });
 
-  // Data polygon
   const dataPoints = dimensions.map((dim, i) => {
     const angle = i * angleStep - Math.PI / 2;
     const r = (dim.score / 10) * radius;
     return `${center + r * Math.cos(angle)},${center + r * Math.sin(angle)}`;
   }).join(' ');
 
-  // Labels
   const labels = dimensions.map((dim, i) => {
     const angle = i * angleStep - Math.PI / 2;
-    const labelR = radius + 20;
-    const x = center + labelR * Math.cos(angle);
-    const y = center + labelR * Math.sin(angle);
+    const labelR = radius + 18;
     return (
-      <text
-        key={i}
-        x={x}
-        y={y}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill="#9ca3af"
-        fontSize={9}
-        fontFamily="Inter, system-ui, sans-serif"
-      >
+      <text key={i} x={center + labelR * Math.cos(angle)} y={center + labelR * Math.sin(angle)} textAnchor="middle" dominantBaseline="middle" fill="#525252" fontSize={8} fontFamily="Inter, system-ui, sans-serif">
         {dim.name}
       </text>
     );
   });
 
-  // Score dots
   const dots = dimensions.map((dim, i) => {
     const angle = i * angleStep - Math.PI / 2;
     const r = (dim.score / 10) * radius;
     return (
-      <circle
-        key={i}
-        cx={center + r * Math.cos(angle)}
-        cy={center + r * Math.sin(angle)}
-        r={3}
-        fill="#3b82f6"
-        stroke="#fff"
-        strokeWidth={1}
-      />
+      <circle key={i} cx={center + r * Math.cos(angle)} cy={center + r * Math.sin(angle)} r={2.5} fill="#a3a3a3" stroke="#000" strokeWidth={1} />
     );
   });
 
@@ -103,12 +63,7 @@ function RadarChart({ dimensions }: { dimensions: Grade['dimensions'] }) {
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="mx-auto">
       {gridPaths}
       {axisLines}
-      <polygon
-        points={dataPoints}
-        fill="rgba(59, 130, 246, 0.15)"
-        stroke="#3b82f6"
-        strokeWidth={2}
-      />
+      <polygon points={dataPoints} fill="rgba(163, 163, 163, 0.08)" stroke="#525252" strokeWidth={1.5} />
       {dots}
       {labels}
     </svg>
@@ -119,29 +74,29 @@ function ScenarioTable({ scenarios }: { scenarios: Grade['scenarios'] }) {
   if (!scenarios) return null;
 
   const rows = [
-    { label: 'Bull', data: scenarios.bull, color: 'text-green-400', bg: 'bg-green-900/20' },
-    { label: 'Base', data: scenarios.base, color: 'text-gray-300', bg: 'bg-gray-700/20' },
-    { label: 'Bear', data: scenarios.bear, color: 'text-red-400', bg: 'bg-red-900/20' },
+    { label: 'Bull', data: scenarios.bull, color: 'text-emerald-400', bg: 'bg-emerald-950/30' },
+    { label: 'Base', data: scenarios.base, color: 'text-neutral-300', bg: 'bg-neutral-900/30' },
+    { label: 'Bear', data: scenarios.bear, color: 'text-red-400', bg: 'bg-red-950/30' },
   ];
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {rows.map(({ label, data, color, bg }) => (
-        <div key={label} className={`rounded-md ${bg} px-4 py-3`}>
+        <div key={label} className={`rounded ${bg} px-3 py-2`}>
           <div className="flex items-center justify-between mb-1">
-            <span className={`text-sm font-semibold ${color}`}>{label} Case</span>
-            <div className="flex items-center gap-3">
-              <span className={`text-sm font-mono ${color}`}>
+            <span className={`text-xs font-medium ${color}`}>{label}</span>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs font-mono ${color}`}>
                 {(data.target_pct > 0 ? '+' : '')}{data.target_pct.toFixed(0)}%
               </span>
-              <span className="text-xs text-gray-500">
-                {(data.probability * 100).toFixed(0)}% prob
+              <span className="text-[10px] text-neutral-600">
+                {(data.probability * 100).toFixed(0)}%
               </span>
             </div>
           </div>
           <ul className="space-y-0.5">
             {data.drivers.map((d: string, i: number) => (
-              <li key={i} className="text-xs text-gray-400">• {d}</li>
+              <li key={i} className="text-[11px] text-neutral-500">• {d}</li>
             ))}
           </ul>
         </div>
@@ -152,91 +107,79 @@ function ScenarioTable({ scenarios }: { scenarios: Grade['scenarios'] }) {
 
 export function StockGraderCard({ ticker, grade }: StockGraderCardProps) {
   const [expandedSection, setExpandedSection] = useState<string | null>('dimensions');
-
   const toggle = (key: string) => setExpandedSection(prev => prev === key ? null : key);
-
   const compositeScore = grade.compositeScore ?? 0;
   const regime = grade.regime || 'neutral';
 
   return (
-    <div className="space-y-3">
-      {/* Header with score and grade */}
-      <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-6">
-        <div className="flex items-center justify-between mb-4">
+    <div className="space-y-2">
+      {/* Header */}
+      <div className="border border-neutral-800 rounded p-4">
+        <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 className="text-2xl font-bold text-white">{ticker}</h2>
-            <p className="text-xs text-gray-500 mt-1">
-              {grade.sector} · Regime: <span className="capitalize">{regime.replace('_', ' ')}</span>
-            </p>
+            <span className="text-lg font-bold text-neutral-100">{ticker}</span>
+            <span className="text-[10px] text-neutral-600 ml-2">
+              {grade.sector} · {regime.replace('_', ' ')}
+            </span>
           </div>
-          <div className="text-right">
+          <div className="text-right flex items-center gap-3">
+            <span className="text-xs font-mono text-neutral-400">{compositeScore.toFixed(1)}/10</span>
             <GradeBadge grade={grade.overall} size="lg" />
-            <p className="text-xs text-gray-500 mt-1">
-              Score: {compositeScore.toFixed(1)}/10
-            </p>
           </div>
         </div>
 
-        {/* Radar chart */}
         <RadarChart dimensions={grade.dimensions} />
 
-        {/* Dimension scores row */}
-        <div className="grid grid-cols-4 gap-2 mt-4">
+        <div className="grid grid-cols-4 gap-1.5 mt-3">
           {grade.dimensions.map(dim => (
             <div key={dim.name} className="text-center">
-              <div className="text-lg font-mono font-bold text-white">{dim.score.toFixed(1)}</div>
-              <div className="text-[10px] text-gray-400 leading-tight">{dim.name}</div>
-              <div className="text-[10px] text-gray-600">{(dim.weight * 100).toFixed(0)}%</div>
+              <div className="text-sm font-mono font-medium text-neutral-200">{dim.score.toFixed(1)}</div>
+              <div className="text-[9px] text-neutral-500 leading-tight">{dim.name}</div>
+              <div className="text-[9px] text-neutral-700">{(dim.weight * 100).toFixed(0)}%</div>
             </div>
           ))}
         </div>
       </div>
 
       {/* Thesis */}
-      <div className="rounded-lg border border-gray-700 bg-gray-800/30 px-5 py-4">
-        <p className="text-sm text-gray-300 leading-relaxed">{grade.summary}</p>
+      <div className="border border-neutral-800 rounded px-4 py-3">
+        <p className="text-xs text-neutral-400 leading-relaxed">{grade.summary}</p>
       </div>
 
       {/* Scenarios */}
       {grade.scenarios && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30">
-          <button
-            onClick={() => toggle('scenarios')}
-            className="flex w-full items-center justify-between px-5 py-3 hover:bg-gray-700/20 transition-colors"
-          >
-            <h3 className="text-sm font-semibold text-white">Scenario Analysis</h3>
-            <span className="text-gray-400 text-sm">{expandedSection === 'scenarios' ? '−' : '+'}</span>
+        <div className="border border-neutral-800 rounded">
+          <button onClick={() => toggle('scenarios')} className="flex w-full items-center justify-between px-4 py-2 hover:bg-neutral-900/50 transition-colors">
+            <span className="text-xs font-medium text-neutral-300">Scenarios</span>
+            <span className="text-neutral-600 text-xs">{expandedSection === 'scenarios' ? '−' : '+'}</span>
           </button>
           {expandedSection === 'scenarios' && (
-            <div className="border-t border-gray-700 px-5 py-4">
+            <div className="border-t border-neutral-800 px-4 py-3">
               <ScenarioTable scenarios={grade.scenarios} />
             </div>
           )}
         </div>
       )}
 
-      {/* Dimension Details */}
-      <div className="rounded-lg border border-gray-700 bg-gray-800/30">
-        <button
-          onClick={() => toggle('dimensions')}
-          className="flex w-full items-center justify-between px-5 py-3 hover:bg-gray-700/20 transition-colors"
-        >
-          <h3 className="text-sm font-semibold text-white">Dimension Breakdown</h3>
-          <span className="text-gray-400 text-sm">{expandedSection === 'dimensions' ? '−' : '+'}</span>
+      {/* Dimensions */}
+      <div className="border border-neutral-800 rounded">
+        <button onClick={() => toggle('dimensions')} className="flex w-full items-center justify-between px-4 py-2 hover:bg-neutral-900/50 transition-colors">
+          <span className="text-xs font-medium text-neutral-300">Dimensions</span>
+          <span className="text-neutral-600 text-xs">{expandedSection === 'dimensions' ? '−' : '+'}</span>
         </button>
         {expandedSection === 'dimensions' && (
-          <div className="border-t border-gray-700 divide-y divide-gray-700/50">
+          <div className="border-t border-neutral-800 divide-y divide-neutral-900">
             {grade.dimensions.map(dim => (
-              <div key={dim.name} className="px-5 py-3">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm font-medium text-white">{dim.name}</span>
-                  <span className="text-sm font-mono text-blue-400">{dim.score.toFixed(1)}</span>
+              <div key={dim.name} className="px-4 py-2">
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="text-xs font-medium text-neutral-300">{dim.name}</span>
+                  <span className="text-xs font-mono text-neutral-400">{dim.score.toFixed(1)}</span>
                 </div>
-                <p className="text-xs text-gray-400 leading-relaxed">{dim.assessment}</p>
+                <p className="text-[11px] text-neutral-500 leading-relaxed">{dim.assessment}</p>
                 {dim.data_points && dim.data_points.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mt-2">
+                  <div className="flex flex-wrap gap-1 mt-1.5">
                     {dim.data_points.map((dp: string, i: number) => (
-                      <span key={i} className="text-[10px] bg-gray-700/50 text-gray-300 px-2 py-0.5 rounded">
+                      <span key={i} className="text-[9px] bg-neutral-900 text-neutral-500 px-1.5 py-0.5 rounded">
                         {dp}
                       </span>
                     ))}
@@ -250,35 +193,30 @@ export function StockGraderCard({ ticker, grade }: StockGraderCardProps) {
 
       {/* Catalysts */}
       {grade.catalystEvents && grade.catalystEvents.length > 0 && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30">
-          <button
-            onClick={() => toggle('catalysts')}
-            className="flex w-full items-center justify-between px-5 py-3 hover:bg-gray-700/20 transition-colors"
-          >
-            <h3 className="text-sm font-semibold text-white">Catalyst Pipeline</h3>
-            <span className="text-gray-400 text-sm">{expandedSection === 'catalysts' ? '−' : '+'}</span>
+        <div className="border border-neutral-800 rounded">
+          <button onClick={() => toggle('catalysts')} className="flex w-full items-center justify-between px-4 py-2 hover:bg-neutral-900/50 transition-colors">
+            <span className="text-xs font-medium text-neutral-300">Catalysts</span>
+            <span className="text-neutral-600 text-xs">{expandedSection === 'catalysts' ? '−' : '+'}</span>
           </button>
           {expandedSection === 'catalysts' && (
-            <div className="border-t border-gray-700 px-5 py-4">
-              <div className="space-y-2">
-                {grade.catalystEvents.map((cat, i) => (
-                  <div key={i} className="flex items-start gap-3 text-sm">
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      cat.impact === 'positive' ? 'bg-green-900/30 text-green-400' :
-                      cat.impact === 'negative' ? 'bg-red-900/30 text-red-400' :
-                      'bg-gray-700/30 text-gray-400'
-                    }`}>
-                      {cat.impact}
+            <div className="border-t border-neutral-800 px-4 py-3 space-y-1.5">
+              {grade.catalystEvents.map((cat, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs">
+                  <span className={`text-[10px] px-1 py-0.5 rounded ${
+                    cat.impact === 'positive' ? 'text-emerald-400' :
+                    cat.impact === 'negative' ? 'text-red-400' :
+                    'text-neutral-500'
+                  }`}>
+                    {cat.impact}
+                  </span>
+                  <div className="flex-1">
+                    <span className="text-neutral-400">{cat.event}</span>
+                    <span className="text-neutral-600 text-[10px] ml-1">
+                      {cat.expected_date} · {(cat.probability * 100).toFixed(0)}%
                     </span>
-                    <div className="flex-1">
-                      <span className="text-gray-300">{cat.event}</span>
-                      <span className="text-gray-500 text-xs ml-2">
-                        {cat.expected_date} · {(cat.probability * 100).toFixed(0)}% prob
-                      </span>
-                    </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -286,20 +224,17 @@ export function StockGraderCard({ ticker, grade }: StockGraderCardProps) {
 
       {/* Risks */}
       {grade.risks.length > 0 && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30">
-          <button
-            onClick={() => toggle('risks')}
-            className="flex w-full items-center justify-between px-5 py-3 hover:bg-gray-700/20 transition-colors"
-          >
-            <h3 className="text-sm font-semibold text-white">Key Risks</h3>
-            <span className="text-gray-400 text-sm">{expandedSection === 'risks' ? '−' : '+'}</span>
+        <div className="border border-neutral-800 rounded">
+          <button onClick={() => toggle('risks')} className="flex w-full items-center justify-between px-4 py-2 hover:bg-neutral-900/50 transition-colors">
+            <span className="text-xs font-medium text-neutral-300">Risks</span>
+            <span className="text-neutral-600 text-xs">{expandedSection === 'risks' ? '−' : '+'}</span>
           </button>
           {expandedSection === 'risks' && (
-            <div className="border-t border-gray-700 px-5 py-4">
-              <ul className="space-y-1.5">
+            <div className="border-t border-neutral-800 px-4 py-3">
+              <ul className="space-y-1">
                 {grade.risks.map((risk, i) => (
-                  <li key={i} className="flex gap-2 text-sm text-gray-300">
-                    <span className="text-red-400 mt-0.5">•</span>
+                  <li key={i} className="flex gap-1.5 text-xs text-neutral-400">
+                    <span className="text-red-400/60">•</span>
                     <span>{risk}</span>
                   </li>
                 ))}
@@ -309,25 +244,19 @@ export function StockGraderCard({ ticker, grade }: StockGraderCardProps) {
         </div>
       )}
 
-      {/* Contrarian Signal */}
+      {/* Contrarian */}
       {grade.contrarianSignal && (
-        <div className="rounded-lg border border-amber-700/40 bg-amber-900/10 px-5 py-4">
-          <div className="flex items-start gap-2">
-            <span className="text-amber-400 text-sm mt-0.5">⚡</span>
-            <div>
-              <h4 className="text-sm font-semibold text-amber-300 mb-1">Contrarian Signal</h4>
-              <p className="text-sm text-gray-300">{grade.contrarianSignal}</p>
-            </div>
-          </div>
+        <div className="border border-yellow-900/30 rounded px-4 py-3">
+          <span className="text-[10px] text-yellow-500/70 font-medium">CONTRARIAN</span>
+          <p className="text-xs text-neutral-400 mt-0.5">{grade.contrarianSignal}</p>
         </div>
       )}
 
       {/* Data Gaps */}
       {grade.dataGaps && grade.dataGaps.length > 0 && (
-        <div className="rounded-lg border border-gray-700/50 bg-gray-800/20 px-5 py-3">
-          <p className="text-xs text-gray-500">
-            <span className="font-medium">Data gaps: </span>
-            {grade.dataGaps.join(' · ')}
+        <div className="px-4 py-2">
+          <p className="text-[10px] text-neutral-600">
+            Data gaps: {grade.dataGaps.join(' · ')}
           </p>
         </div>
       )}

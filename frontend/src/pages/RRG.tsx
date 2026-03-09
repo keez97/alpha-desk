@@ -11,33 +11,28 @@ export function RRG() {
   const { data, isLoading, error, refetch } = useRRG(benchmark, weeks);
 
   return (
-    <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white mb-2">Relative Rotation Graph</h1>
-        <p className="text-gray-400">Sector rotation analysis vs benchmark</p>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-4">
-        <div className="lg:col-span-1 space-y-4">
-          <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-6">
+    <div className="p-4 space-y-3">
+      <div className="grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-1 space-y-3">
+          <div className="border border-neutral-800 rounded p-3">
             <BenchmarkSelector value={benchmark} onChange={setBenchmark} />
 
-            <div className="mt-6">
-              <label className="block text-sm font-medium text-gray-300 mb-3">Time Period</label>
-              <div className="space-y-2">
+            <div className="mt-4">
+              <span className="block text-[10px] text-neutral-500 uppercase tracking-wider mb-2">Period</span>
+              <div className="space-y-1">
                 {[
-                  { label: '3 Months', value: 13 },
-                  { label: '6 Months', value: 26 },
-                  { label: '1 Year', value: 52 },
-                  { label: '2 Years', value: 104 },
+                  { label: '3M', value: 13 },
+                  { label: '6M', value: 26 },
+                  { label: '1Y', value: 52 },
+                  { label: '2Y', value: 104 },
                 ].map((option) => (
                   <button
                     key={option.value}
                     onClick={() => setWeeks(option.value)}
-                    className={`w-full rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                    className={`w-full rounded px-2 py-1 text-xs font-medium transition-colors ${
                       weeks === option.value
-                        ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                        : 'bg-gray-700/30 text-gray-400 hover:bg-gray-700/50 border border-gray-700'
+                        ? 'bg-neutral-800 text-neutral-200'
+                        : 'text-neutral-500 hover:text-neutral-300'
                     }`}
                   >
                     {option.label}
@@ -48,49 +43,13 @@ export function RRG() {
           </div>
         </div>
 
-        <div className="lg:col-span-3">
+        <div className="lg:col-span-4">
           {isLoading ? (
             <LoadingState message="Loading RRG data..." />
           ) : error ? (
             <ErrorState error={error} onRetry={() => refetch()} />
           ) : data ? (
-            <div className="space-y-6">
-              <RRGChart data={data} />
-
-              <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-6">
-                <h3 className="mb-4 font-semibold text-white">Quadrant Legend</h3>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="flex space-x-3">
-                    <div className="h-3 w-3 rounded-full bg-green-500 flex-shrink-0 mt-1"></div>
-                    <div>
-                      <p className="font-semibold text-white">Leading</p>
-                      <p className="text-xs text-gray-400">Strong momentum and strength</p>
-                    </div>
-                  </div>
-                  <div className="flex space-x-3">
-                    <div className="h-3 w-3 rounded-full bg-yellow-500 flex-shrink-0 mt-1"></div>
-                    <div>
-                      <p className="font-semibold text-white">Weakening</p>
-                      <p className="text-xs text-gray-400">Strong but losing momentum</p>
-                    </div>
-                  </div>
-                  <div className="flex space-x-3">
-                    <div className="h-3 w-3 rounded-full bg-red-500 flex-shrink-0 mt-1"></div>
-                    <div>
-                      <p className="font-semibold text-white">Lagging</p>
-                      <p className="text-xs text-gray-400">Weak and losing momentum</p>
-                    </div>
-                  </div>
-                  <div className="flex space-x-3">
-                    <div className="h-3 w-3 rounded-full bg-blue-500 flex-shrink-0 mt-1"></div>
-                    <div>
-                      <p className="font-semibold text-white">Improving</p>
-                      <p className="text-xs text-gray-400">Weak but gaining momentum</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <RRGChart data={data} />
           ) : null}
         </div>
       </div>

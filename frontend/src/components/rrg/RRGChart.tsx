@@ -22,10 +22,10 @@ const SECTOR_COLORS: Record<string, string> = {
 
 // Quadrant background colors
 const QUADRANTS = {
-  leading:    { color: 'rgba(34, 197, 94, 0.10)',  label: 'Leading',    labelColor: '#22c55e' },
-  improving:  { color: 'rgba(59, 130, 246, 0.10)', label: 'Improving',  labelColor: '#3b82f6' },
-  lagging:    { color: 'rgba(239, 68, 68, 0.10)',  label: 'Lagging',    labelColor: '#ef4444' },
-  weakening:  { color: 'rgba(234, 179, 8, 0.10)',  label: 'Weakening',  labelColor: '#eab308' },
+  leading:    { color: 'rgba(34, 197, 94, 0.06)',  label: 'Leading',    labelColor: '#22c55e' },
+  improving:  { color: 'rgba(59, 130, 246, 0.06)', label: 'Improving',  labelColor: '#3b82f6' },
+  lagging:    { color: 'rgba(239, 68, 68, 0.06)',  label: 'Lagging',    labelColor: '#ef4444' },
+  weakening:  { color: 'rgba(234, 179, 8, 0.06)',  label: 'Weakening',  labelColor: '#eab308' },
 };
 
 function catmullRomSpline(points: [number, number][], tension: number = 0.5): [number, number][] {
@@ -125,7 +125,7 @@ export function RRGChart({ data }: RRGChartProps) {
     const plotH = height - margin.top - margin.bottom;
 
     // Clear
-    ctx.fillStyle = '#111827';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, width, height);
 
     // Draw quadrant backgrounds
@@ -162,7 +162,7 @@ export function RRGChart({ data }: RRGChartProps) {
     ctx.globalAlpha = 1;
 
     // Grid lines
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
     ctx.lineWidth = 1;
     const xTicks = 8;
     const yTicks = 6;
@@ -184,8 +184,8 @@ export function RRGChart({ data }: RRGChartProps) {
     }
 
     // Reference lines at 100 (x) and 0 (y)
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
     // Vertical at RS-Ratio = 100
     ctx.beginPath();
@@ -200,8 +200,8 @@ export function RRGChart({ data }: RRGChartProps) {
     ctx.setLineDash([]);
 
     // Axis labels
-    ctx.fillStyle = '#9ca3af';
-    ctx.font = '12px Inter, system-ui, sans-serif';
+    ctx.fillStyle = '#525252';
+    ctx.font = '10px Inter, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('RS-Ratio', plotX + plotW / 2, height - 8);
     ctx.save();
@@ -213,7 +213,7 @@ export function RRGChart({ data }: RRGChartProps) {
     // Axis tick labels
     ctx.font = '10px Inter, system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#6b7280';
+    ctx.fillStyle = '#404040';
     for (let i = 0; i <= xTicks; i++) {
       const val = xMin + (i / xTicks) * (xMax - xMin);
       ctx.fillText(val.toFixed(1), toCanvasX(val), plotY + plotH + 18);
@@ -274,14 +274,14 @@ export function RRGChart({ data }: RRGChartProps) {
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fillStyle = color;
       ctx.fill();
-      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
       ctx.lineWidth = 1.5;
       ctx.stroke();
       ctx.globalAlpha = 1;
 
       // Ticker label
       ctx.globalAlpha = alphaMultiplier;
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = '#d4d4d4';
       ctx.font = `${isHovered ? 'bold ' : ''}11px Inter, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.fillText(sector.ticker, cx, cy - radius - 5);
@@ -358,21 +358,21 @@ export function RRGChart({ data }: RRGChartProps) {
   return (
     <div ref={containerRef} className="w-full">
       {/* Legend */}
-      <div className="flex flex-wrap gap-3 mb-3 px-2">
+      <div className="flex flex-wrap gap-2 mb-2">
         {data.sectors.map(sector => (
           <div
             key={sector.ticker}
-            className="flex items-center gap-1.5 cursor-pointer transition-opacity"
+            className="flex items-center gap-1 cursor-pointer transition-opacity"
             style={{ opacity: hoveredSector && hoveredSector !== sector.ticker ? 0.3 : 1 }}
             onMouseEnter={() => setHoveredSector(sector.ticker)}
             onMouseLeave={() => setHoveredSector(null)}
           >
             <div
-              className="w-3 h-3 rounded-full"
-              style={{ backgroundColor: SECTOR_COLORS[sector.ticker] || '#9ca3af' }}
+              className="w-2 h-2 rounded-full"
+              style={{ backgroundColor: SECTOR_COLORS[sector.ticker] || '#525252' }}
             />
-            <span className="text-xs text-gray-300">
-              {sector.ticker} — {sector.name}
+            <span className="text-[10px] text-neutral-500">
+              {sector.ticker}
             </span>
           </div>
         ))}
@@ -382,35 +382,20 @@ export function RRGChart({ data }: RRGChartProps) {
       <canvas
         ref={canvasRef}
         style={{ width: dimensions.width, height: dimensions.height }}
-        className="rounded-lg"
+        className="rounded"
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredSector(null)}
       />
 
       {/* Animation Controls */}
-      <div className="flex items-center gap-4 mt-3 px-2">
+      <div className="flex items-center gap-3 mt-2">
         <button
           onClick={togglePlay}
-          className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-gray-700 hover:bg-gray-600 text-white text-sm transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] text-neutral-400 hover:text-neutral-200 border border-neutral-800 hover:border-neutral-700 transition-colors"
         >
-          {isPlaying ? (
-            <>
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              Pause
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-              </svg>
-              Play
-            </>
-          )}
+          {isPlaying ? 'Pause' : 'Play'}
         </button>
 
-        {/* Timeline slider */}
         <input
           type="range"
           min={0}
@@ -420,18 +405,18 @@ export function RRGChart({ data }: RRGChartProps) {
             setIsPlaying(false);
             setAnimFrame(parseInt(e.target.value));
           }}
-          className="flex-1 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+          className="flex-1"
         />
 
         <button
           onClick={() => { setIsPlaying(false); setAnimFrame(-1); }}
-          className="px-3 py-1.5 rounded-md bg-gray-700 hover:bg-gray-600 text-white text-xs transition-colors"
+          className="px-2 py-1 rounded text-[11px] text-neutral-500 hover:text-neutral-300 transition-colors"
         >
-          Show All
+          All
         </button>
 
-        <span className="text-xs text-gray-500 min-w-[60px] text-right">
-          {animFrame === -1 ? 'All weeks' : `Week ${animFrame + 1}/${maxTrailLen}`}
+        <span className="text-[10px] text-neutral-600 min-w-[50px] text-right">
+          {animFrame === -1 ? 'All' : `${animFrame + 1}/${maxTrailLen}`}
         </span>
       </div>
     </div>

@@ -8,27 +8,29 @@ interface ReportViewerProps {
 
 export function ReportViewer({ report }: ReportViewerProps) {
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="mb-2 text-2xl font-bold text-white">{report.title}</h1>
-        <Timestamp date={report.date} label="Report Date" />
+    <div className="space-y-2">
+      <div className="px-1">
+        <span className="text-sm font-medium text-neutral-200">{report.title}</span>
+        <div className="mt-0.5">
+          <Timestamp date={report.date} label="Report Date" />
+        </div>
       </div>
 
       {report.sections.map((section, idx) => (
         <ReportSection key={idx} title={section.title} defaultOpen={idx === 0}>
-          <div className="space-y-4">
-            <p className="whitespace-pre-wrap text-sm text-gray-300">{section.content}</p>
+          <div className="space-y-3">
+            <p className="whitespace-pre-wrap text-xs text-neutral-400 leading-relaxed">{section.content}</p>
             {section.tables && section.tables.length > 0 && (
-              <div className="mt-4">
+              <div>
                 {section.tables.map((table: any, tableIdx: number) => (
-                  <div key={tableIdx} className="mt-4">
+                  <div key={tableIdx} className="mt-2">
                     {table.columns && table.rows && (
                       <div className="overflow-x-auto">
-                        <table className="w-full text-sm border-collapse">
+                        <table className="w-full text-xs border-collapse">
                           <thead>
-                            <tr className="border-b border-gray-700 bg-gray-700/20">
+                            <tr className="border-b border-neutral-800">
                               {table.columns.map((col: string, idx: number) => (
-                                <th key={idx} className="px-4 py-2 text-left text-gray-300 font-semibold">
+                                <th key={idx} className="px-3 py-1.5 text-left text-[10px] text-neutral-500 uppercase tracking-wider font-medium">
                                   {col}
                                 </th>
                               ))}
@@ -36,9 +38,9 @@ export function ReportViewer({ report }: ReportViewerProps) {
                           </thead>
                           <tbody>
                             {table.rows.map((row: any, ridx: number) => (
-                              <tr key={ridx} className="border-b border-gray-800 hover:bg-gray-800/30">
+                              <tr key={ridx} className="border-b border-neutral-900 hover:bg-neutral-900/50">
                                 {row.map((cell: any, cidx: number) => (
-                                  <td key={cidx} className="px-4 py-2 text-gray-300 font-mono">
+                                  <td key={cidx} className="px-3 py-1.5 text-neutral-300 font-mono">
                                     {cell}
                                   </td>
                                 ))}

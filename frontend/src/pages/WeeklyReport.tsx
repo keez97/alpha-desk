@@ -11,14 +11,9 @@ export function WeeklyReport() {
   const { data: report, isLoading, error, refetch } = useReport(selectedReportId);
 
   return (
-    <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white mb-2">Weekly Report</h1>
-        <p className="text-gray-400">AI-powered market analysis and insights</p>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-4">
-        <div className="lg:col-span-3">
+    <div className="p-4 space-y-3">
+      <div className="grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-4">
           {!selectedReportId ? (
             <ReportGenerator />
           ) : isLoading ? (

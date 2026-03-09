@@ -17,9 +17,7 @@ export function SectorChart() {
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (!sectors || sectors.length === 0) return null;
 
-  // Use real chart_data from the API if available
   const sectorsWithData = sectors.filter((s: any) => s.chartData && s.chartData.length > 0);
-
   if (sectorsWithData.length === 0) return null;
 
   const maxLen = Math.max(...sectorsWithData.map((s: any) => s.chartData.length));
@@ -34,28 +32,28 @@ export function SectorChart() {
   const displaySectors = sectorsWithData.slice(0, 6);
 
   return (
-    <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-      <h3 className="mb-4 font-semibold text-white">1-Month Sector Performance (Normalized)</h3>
-      <div className="h-80 w-full">
+    <div className="border border-neutral-800 rounded p-3">
+      <span className="text-xs font-medium text-neutral-300 mb-3 block">1M Sector Performance</span>
+      <div className="h-64 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="day" stroke="#9ca3af" style={{ fontSize: '11px' }} />
-            <YAxis stroke="#9ca3af" style={{ fontSize: '11px' }} domain={['auto', 'auto']} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f1f1f" />
+            <XAxis dataKey="day" stroke="#525252" style={{ fontSize: '10px' }} />
+            <YAxis stroke="#525252" style={{ fontSize: '10px' }} domain={['auto', 'auto']} />
             <Tooltip
-              contentStyle={{ backgroundColor: '#1a1d27', border: '1px solid #2d3148', borderRadius: '8px' }}
-              labelStyle={{ color: '#e5e7eb' }}
+              contentStyle={{ backgroundColor: '#0a0a0a', border: '1px solid #262626', borderRadius: '4px', fontSize: '11px' }}
+              labelStyle={{ color: '#a3a3a3' }}
               formatter={(value: number) => [`${value.toFixed(2)}%`, '']}
             />
-            <Legend wrapperStyle={{ paddingTop: '12px' }} />
+            <Legend wrapperStyle={{ paddingTop: '8px', fontSize: '10px' }} />
             {displaySectors.map((sector: any) => (
               <Line
                 key={sector.ticker}
                 type="monotone"
                 dataKey={sector.ticker}
-                stroke={sectorColors[sector.ticker] || '#9ca3af'}
+                stroke={sectorColors[sector.ticker] || '#525252'}
                 dot={false}
-                strokeWidth={2}
+                strokeWidth={1.5}
                 isAnimationActive={false}
                 name={sector.name}
               />

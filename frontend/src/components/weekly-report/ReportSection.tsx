@@ -10,17 +10,17 @@ export function ReportSection({ title, children, defaultOpen = true }: ReportSec
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   return (
-    <div className="rounded-lg border border-gray-700 bg-gray-800/30">
+    <div className="border border-neutral-800 rounded">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex w-full items-center justify-between px-6 py-4 hover:bg-gray-700/20 transition-colors"
+        className="flex w-full items-center justify-between px-4 py-2 hover:bg-neutral-900/50 transition-colors"
       >
-        <h3 className="font-semibold text-white">{title}</h3>
-        <span className="text-gray-400 text-xl">{isOpen ? '−' : '+'}</span>
+        <span className="text-xs font-medium text-neutral-300">{title}</span>
+        <span className="text-neutral-600 text-xs">{isOpen ? '−' : '+'}</span>
       </button>
 
       {isOpen && (
-        <div className="border-t border-gray-700 px-6 py-4">
+        <div className="border-t border-neutral-800 px-4 py-3">
           {children}
         </div>
       )}

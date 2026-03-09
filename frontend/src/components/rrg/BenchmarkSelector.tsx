@@ -11,30 +11,28 @@ export function BenchmarkSelector({ value, onChange }: BenchmarkSelectorProps) {
   const [isCustom, setIsCustom] = useState(!defaultBenchmarks.includes(value));
 
   return (
-    <div className="space-y-3">
-      <label className="block text-sm font-medium text-gray-300">Benchmark</label>
-      <div className="flex space-x-2">
-        <div className="flex-1 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {defaultBenchmarks.map((bench) => (
-            <button
-              key={bench}
-              onClick={() => {
-                onChange(bench);
-                setIsCustom(false);
-              }}
-              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                value === bench && !isCustom
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'bg-gray-700/30 text-gray-400 hover:bg-gray-700/50 border border-gray-700'
-              }`}
-            >
-              {bench}
-            </button>
-          ))}
-        </div>
+    <div className="space-y-2">
+      <span className="block text-[10px] text-neutral-500 uppercase tracking-wider">Benchmark</span>
+      <div className="grid grid-cols-2 gap-1">
+        {defaultBenchmarks.map((bench) => (
+          <button
+            key={bench}
+            onClick={() => {
+              onChange(bench);
+              setIsCustom(false);
+            }}
+            className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+              value === bench && !isCustom
+                ? 'bg-neutral-800 text-neutral-200'
+                : 'text-neutral-500 hover:text-neutral-300'
+            }`}
+          >
+            {bench}
+          </button>
+        ))}
       </div>
 
-      <div className="flex items-center space-x-2">
+      <div className="flex items-center gap-1.5">
         <input
           type="checkbox"
           id="custom"
@@ -45,9 +43,9 @@ export function BenchmarkSelector({ value, onChange }: BenchmarkSelectorProps) {
               onChange('SPY');
             }
           }}
-          className="rounded cursor-pointer"
+          className="rounded cursor-pointer w-3 h-3"
         />
-        <label htmlFor="custom" className="text-sm text-gray-400 cursor-pointer">
+        <label htmlFor="custom" className="text-[11px] text-neutral-500 cursor-pointer">
           Custom
         </label>
       </div>
@@ -57,8 +55,8 @@ export function BenchmarkSelector({ value, onChange }: BenchmarkSelectorProps) {
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value.toUpperCase())}
-          placeholder="Enter ticker..."
-          className="w-full rounded-lg border border-gray-700 bg-gray-800/50 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          placeholder="Ticker..."
+          className="w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 placeholder-neutral-600 focus:border-neutral-600 focus:outline-none"
         />
       )}
     </div>

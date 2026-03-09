@@ -19,35 +19,35 @@ export function WatchlistSidebar({ selectedTicker, onSelect }: WatchlistSidebarP
   if (!data) return null;
 
   return (
-    <div className="h-full flex flex-col rounded-lg border border-gray-700 bg-gray-800/30">
-      <div className="border-b border-gray-700 px-4 py-3">
-        <h3 className="font-semibold text-white">Watchlist</h3>
-        <p className="text-xs text-gray-500 mt-1">{data.length} items</p>
+    <div className="h-full flex flex-col border border-neutral-800 rounded">
+      <div className="border-b border-neutral-800 px-3 py-2 flex items-center justify-between">
+        <span className="text-xs font-medium text-neutral-300">Watchlist</span>
+        <span className="text-[10px] text-neutral-600">{data.length}</span>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {data.length === 0 ? (
-          <div className="flex items-center justify-center h-32 text-gray-500">
-            <p className="text-sm">No items in watchlist</p>
+          <div className="flex items-center justify-center h-24 text-neutral-600">
+            <p className="text-xs">Empty</p>
           </div>
         ) : (
-          <div className="divide-y divide-gray-700">
+          <div className="divide-y divide-neutral-900">
             {data.map((item: any) => (
               <button
                 key={item.id}
                 onClick={() => onSelect(item.ticker)}
-                className={`w-full px-4 py-3 text-left hover:bg-gray-700/30 transition-colors border-l-2 ${
+                className={`w-full px-3 py-2 text-left hover:bg-neutral-900/50 transition-colors border-l-2 ${
                   selectedTicker === item.ticker
-                    ? 'border-blue-500 bg-gray-700/20'
+                    ? 'border-neutral-400 bg-neutral-900/30'
                     : 'border-transparent'
                 }`}
               >
                 <div className="flex items-start justify-between">
                   <div>
-                    <p className="font-mono font-semibold text-white">{item.ticker}</p>
-                    <p className="text-xs text-gray-400 mt-1">{formatCurrency(item.price)}</p>
+                    <p className="font-mono text-xs font-medium text-neutral-200">{item.ticker}</p>
+                    <p className="text-[10px] text-neutral-500 mt-0.5">{formatCurrency(item.price)}</p>
                   </div>
-                  <div className="flex flex-col items-end space-y-1">
+                  <div className="flex flex-col items-end gap-0.5">
                     <DeltaBadge value={item.changePercent} format="pct" />
                     {(item as any).grade && <GradeBadge grade={(item as any).grade} size="sm" />}
                   </div>
@@ -59,15 +59,15 @@ export function WatchlistSidebar({ selectedTicker, onSelect }: WatchlistSidebarP
       </div>
 
       {selectedTicker && (
-        <div className="border-t border-gray-700 px-4 py-3">
+        <div className="border-t border-neutral-800 px-3 py-2">
           <button
             onClick={() => {
               const item = data.find((i) => i.ticker === selectedTicker);
               if (item) remove(item.id);
             }}
-            className="w-full rounded-lg bg-red-500/20 px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/30 transition-colors"
+            className="w-full rounded px-2 py-1 text-[10px] font-medium text-red-400/70 hover:text-red-400 transition-colors"
           >
-            Remove from Watchlist
+            Remove
           </button>
         </div>
       )}

@@ -1,16 +1,17 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-primary: #0f1117;
-  --color-bg-secondary: #1a1d27;
-  --color-bg-tertiary: #252836;
-  --color-text-primary: #e5e7eb;
-  --color-text-secondary: #9ca3af;
-  --color-accent-blue: #3b82f6;
-  --color-success: #10b981;
+  --color-bg-primary: #000000;
+  --color-bg-secondary: #0a0a0a;
+  --color-bg-tertiary: #141414;
+  --color-text-primary: #d4d4d4;
+  --color-text-secondary: #737373;
+  --color-accent: #a3a3a3;
+  --color-accent-hover: #d4d4d4;
+  --color-success: #22c55e;
   --color-danger: #ef4444;
-  --color-warning: #f59e0b;
-  --color-border: #2d3148;
+  --color-warning: #eab308;
+  --color-border: #1f1f1f;
 }
 
 body {
@@ -19,6 +20,8 @@ body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   margin: 0;
   padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 html {
@@ -27,24 +30,45 @@ html {
 
 /* Financial number formatting */
 .font-mono {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
 }
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-bg-primary);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-bg-tertiary);
-  border-radius: 3px;
+  background: #262626;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border);
+  background: #404040;
+}
+
+/* Range slider for RRG */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #262626;
+  border-radius: 2px;
+  height: 3px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #737373;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: #a3a3a3;
 }

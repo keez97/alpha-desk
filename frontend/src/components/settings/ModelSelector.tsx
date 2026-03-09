@@ -51,9 +51,9 @@ export function ModelSelector() {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-md border border-gray-600 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 hover:border-blue-500 hover:text-white transition-colors"
+        className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium text-neutral-500 hover:text-neutral-300 transition-colors"
       >
-        <span className="inline-block h-2 w-2 rounded-full bg-green-400" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
         {loading ? 'Switching…' : MODEL_LABELS[current] || current}
         <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -61,18 +61,18 @@ export function ModelSelector() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl">
-          <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-            LLM Model
+        <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded border border-neutral-800 bg-neutral-950 py-1 shadow-xl">
+          <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-neutral-600">
+            Model
           </div>
           {available.map((key) => (
             <button
               key={key}
               onClick={() => handleSwitch(key)}
-              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
                 key === current
-                  ? 'bg-blue-600/20 text-blue-400'
-                  : 'text-gray-300 hover:bg-gray-700'
+                  ? 'bg-neutral-800 text-neutral-200'
+                  : 'text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200'
               }`}
             >
               {key === current && (

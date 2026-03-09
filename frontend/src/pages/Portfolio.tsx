@@ -20,71 +20,65 @@ export function Portfolio() {
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
 
   return (
-    <div className="space-y-6 p-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white mb-2">Portfolio Analysis</h1>
-        <p className="text-gray-400">Build and optimize your investment portfolios</p>
-      </div>
-
-      <div className="grid gap-6">
-        {/* Portfolio Creation/Selection */}
-        <div className="lg:grid lg:grid-cols-4 gap-6">
-          <div className="lg:col-span-1 space-y-4">
-            <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-4 max-h-96 overflow-y-auto">
-              <h3 className="font-semibold text-white mb-4">Portfolios</h3>
-              {portfolios && portfolios.length === 0 ? (
-                <p className="text-sm text-gray-500">No portfolios yet</p>
-              ) : (
-                <div className="space-y-2">
-                  {portfolios?.map((portfolio: any) => (
-                    <button
-                      key={portfolio.id}
-                      onClick={() => setSelectedPortfolioId(portfolio.id)}
-                      className={`w-full text-left p-3 rounded-lg transition-colors border-l-2 ${
-                        selectedPortfolioId === portfolio.id
-                          ? 'border-blue-500 bg-gray-700/20'
-                          : 'border-transparent hover:bg-gray-700/20'
-                      }`}
-                    >
-                      <p className="font-semibold text-white text-sm">{portfolio.name}</p>
-                      <p className="text-xs text-gray-400 mt-1">{formatCurrency(portfolio.capital)}</p>
-                    </button>
-                  ))}
-                </div>
-              )}
+    <div className="p-4 space-y-4">
+      <div className="lg:grid lg:grid-cols-4 gap-4">
+        <div className="lg:col-span-1 space-y-3">
+          <div className="border border-neutral-800 rounded p-3 max-h-96 overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-medium text-neutral-300">Portfolios</span>
+              <span className="text-[10px] text-neutral-600">{portfolios?.length || 0}</span>
             </div>
-          </div>
-
-          <div className="lg:col-span-3">
-            <PortfolioBuilder />
+            {portfolios && portfolios.length === 0 ? (
+              <p className="text-[11px] text-neutral-600">No portfolios yet</p>
+            ) : (
+              <div className="space-y-1">
+                {portfolios?.map((portfolio: any) => (
+                  <button
+                    key={portfolio.id}
+                    onClick={() => setSelectedPortfolioId(portfolio.id)}
+                    className={`w-full text-left p-2 rounded transition-colors border-l-2 ${
+                      selectedPortfolioId === portfolio.id
+                        ? 'border-neutral-400 bg-neutral-900/50'
+                        : 'border-transparent hover:bg-neutral-900/30'
+                    }`}
+                  >
+                    <p className="text-xs font-medium text-neutral-200">{portfolio.name}</p>
+                    <p className="text-[10px] text-neutral-500 mt-0.5">{formatCurrency(portfolio.capital)}</p>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Analysis */}
-        {selectedPortfolio && (
-          <div className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-bold text-white mb-4">{selectedPortfolio.name} Analysis</h2>
-              <button
-                onClick={() => deletePortfolio(selectedPortfolioId!)}
-                className="px-4 py-2 rounded-lg bg-red-500/20 text-red-400 text-sm font-medium hover:bg-red-500/30 transition-colors"
-              >
-                Delete Portfolio
-              </button>
-            </div>
-
-            {analysisLoading ? (
-              <LoadingState message="Analyzing portfolio..." />
-            ) : analysis ? (
-              <div className="space-y-6">
-                <CorrelationHeatmap analysis={analysis} />
-                <OptimisationTable analysis={analysis} />
-                <MonteCarloChart analysis={analysis} />
-              </div>
-            ) : null}
-          </div>
-        )}
+        <div className="lg:col-span-3">
+          <PortfolioBuilder />
+        </div>
       </div>
+
+      {selectedPortfolio && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-neutral-300">{selectedPortfolio.name} Analysis</span>
+            <button
+              onClick={() => deletePortfolio(selectedPortfolioId!)}
+              className="px-2 py-1 rounded text-[10px] text-red-400/70 hover:text-red-400 transition-colors"
+            >
+              Delete
+            </button>
+          </div>
+
+          {analysisLoading ? (
+            <LoadingState message="Analyzing portfolio..." />
+          ) : analysis ? (
+            <div className="space-y-4">
+              <CorrelationHeatmap analysis={analysis} />
+              <OptimisationTable analysis={analysis} />
+              <MonteCarloChart analysis={analysis} />
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

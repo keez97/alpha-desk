@@ -1,0 +1,13 @@
+{
+  "feature": "AlphaDesk V2 Phase 1: Factor Backtester — Walk-forward backtesting engine with PiT data, Fama-French 5-factor framework, survivorship-bias-free universe, rolling factor regressions, and institutional-grade statistical output",
+  "status": "in_progress",
+  "stack": "fastapi-react-ts",
+  "api_style": "rest",
+  "complexity": "complex",
+  "current_step": 1,
+  "current_phase": 1,
+  "completed_steps": [],
+  "files_created": [],
+  "started_at": "2026-03-10T21:40:00Z",
+  "last_updated": "2026-03-10T21:40:00Z"
+}

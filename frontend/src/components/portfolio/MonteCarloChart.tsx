@@ -8,7 +8,6 @@ interface MonteCarloChartProps {
 export function MonteCarloChart({ analysis }: MonteCarloChartProps) {
   const { paths, stats } = analysis.monteCarlo;
 
-  // Create data for percentile bands
   const maxPath = Math.max(...paths.map(p => p.length));
   const data = Array.from({ length: maxPath }, (_, i) => {
     const values = paths
@@ -34,83 +33,91 @@ export function MonteCarloChart({ analysis }: MonteCarloChartProps) {
   });
 
   return (
-    <div className="space-y-4">
-      <div className="h-96 w-full rounded-lg border border-gray-700 bg-gray-800/30 p-4">
+    <div className="space-y-2">
+      <div className="h-80 w-full border border-neutral-800 rounded p-3">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="day" stroke="#9ca3af" style={{ fontSize: '12px' }} />
-            <YAxis stroke="#9ca3af" style={{ fontSize: '12px' }} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f1f1f" />
+            <XAxis dataKey="day" stroke="#404040" style={{ fontSize: '10px' }} />
+            <YAxis stroke="#404040" style={{ fontSize: '10px' }} />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#1a1d27',
-                border: '1px solid #2d3148',
-                borderRadius: '8px',
+                backgroundColor: '#0a0a0a',
+                border: '1px solid #262626',
+                borderRadius: '4px',
+                fontSize: '11px',
               }}
-              labelStyle={{ color: '#e5e7eb' }}
+              labelStyle={{ color: '#a3a3a3' }}
             />
-            <Legend />
+            <Legend
+              wrapperStyle={{ fontSize: '10px', color: '#525252' }}
+            />
             <Area
               type="monotone"
               dataKey="p5"
               fill="#ef4444"
               stroke="#ef4444"
-              fillOpacity={0.1}
-              name="5th Percentile"
+              fillOpacity={0.05}
+              strokeWidth={1}
+              name="5th"
               isAnimationActive={false}
             />
             <Area
               type="monotone"
               dataKey="p25"
-              fill="#f59e0b"
-              stroke="#f59e0b"
-              fillOpacity={0.2}
-              name="25th Percentile"
+              fill="#a3a3a3"
+              stroke="#a3a3a3"
+              fillOpacity={0.08}
+              strokeWidth={1}
+              name="25th"
               isAnimationActive={false}
             />
             <Area
               type="monotone"
               dataKey="p50"
-              fill="#3b82f6"
-              stroke="#3b82f6"
-              fillOpacity={0.3}
+              fill="#d4d4d4"
+              stroke="#d4d4d4"
+              fillOpacity={0.1}
+              strokeWidth={1.5}
               name="Median"
               isAnimationActive={false}
             />
             <Area
               type="monotone"
               dataKey="p75"
-              fill="#10b981"
-              stroke="#10b981"
-              fillOpacity={0.2}
-              name="75th Percentile"
+              fill="#a3a3a3"
+              stroke="#a3a3a3"
+              fillOpacity={0.08}
+              strokeWidth={1}
+              name="75th"
               isAnimationActive={false}
             />
             <Area
               type="monotone"
               dataKey="p95"
-              fill="#10b981"
-              stroke="#10b981"
-              fillOpacity={0.1}
-              name="95th Percentile"
+              fill="#22c55e"
+              stroke="#22c55e"
+              fillOpacity={0.05}
+              strokeWidth={1}
+              name="95th"
               isAnimationActive={false}
             />
           </AreaChart>
         </ResponsiveContainer>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-          <p className="text-xs text-gray-500 mb-2">Mean Final Value</p>
-          <p className="text-2xl font-semibold text-green-400 font-mono">${stats.mean.toFixed(0)}</p>
+      <div className="grid gap-2 grid-cols-3">
+        <div className="border border-neutral-800 rounded px-3 py-2">
+          <p className="text-[10px] text-neutral-600 uppercase tracking-wider">Mean</p>
+          <p className="text-sm font-mono text-emerald-400">${stats.mean.toFixed(0)}</p>
         </div>
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-          <p className="text-xs text-gray-500 mb-2">Median Final Value</p>
-          <p className="text-2xl font-semibold text-blue-400 font-mono">${stats.median.toFixed(0)}</p>
+        <div className="border border-neutral-800 rounded px-3 py-2">
+          <p className="text-[10px] text-neutral-600 uppercase tracking-wider">Median</p>
+          <p className="text-sm font-mono text-neutral-200">${stats.median.toFixed(0)}</p>
         </div>
-        <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-4">
-          <p className="text-xs text-gray-500 mb-2">Standard Deviation</p>
-          <p className="text-2xl font-semibold text-yellow-400 font-mono">${stats.std.toFixed(0)}</p>
+        <div className="border border-neutral-800 rounded px-3 py-2">
+          <p className="text-[10px] text-neutral-600 uppercase tracking-wider">Std Dev</p>
+          <p className="text-sm font-mono text-neutral-400">${stats.std.toFixed(0)}</p>
         </div>
       </div>
     </div>
