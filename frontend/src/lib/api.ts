@@ -6,7 +6,6 @@ const api: AxiosInstance = axios.create({
   timeout: 30000,
 });
 
-// Response interceptor for error handling
 api.interceptors.response.use(
   (response: any) => response,
   (error: AxiosError) => {
@@ -15,14 +14,10 @@ api.interceptors.response.use(
   }
 );
 
-// Types
+// ── Types ──────────────────────────────────────────────────
 export interface MacroData {
   timestamp: string;
-  indicators: {
-    name: string;
-    value: number;
-    change: number;
-  }[];
+  indicators: { name: string; value: number; change: number }[];
 }
 
 export interface SectorData {
@@ -31,12 +26,15 @@ export interface SectorData {
   price: number;
   change: number;
   changePercent: number;
+  chartData?: number[];
 }
 
 export interface Driver {
   headline: string;
   explanation: string;
   sources: string[];
+  sentiment?: string;
+  impactScore?: number;
 }
 
 export interface DriverResponse {
@@ -55,11 +53,7 @@ export interface Quote {
 
 export interface Grade {
   overall: string;
-  metrics: {
-    name: string;
-    grade: string;
-    value: number;
-  }[];
+  metrics: { name: string; grade: string; value: number }[];
   summary: string;
   risks: string[];
   catalysts: string[];
@@ -110,11 +104,7 @@ export interface Portfolio {
   id: string;
   name: string;
   capital: number;
-  holdings: {
-    ticker: string;
-    shares: number;
-    weight?: number;
-  }[];
+  holdings: { ticker: string; shares: number; weight?: number }[];
   createdAt: string;
 }
 
@@ -135,11 +125,7 @@ export interface PortfolioAnalysis {
   monteCarlo: {
     paths: number[][];
     percentiles: Record<string, number[]>;
-    stats: {
-      mean: number;
-      median: number;
-      std: number;
-    };
+    stats: { mean: number; median: number; std: number };
   };
 }
 
@@ -152,107 +138,225 @@ export interface RRGData {
     rsRatio: number;
     rsMomentum: number;
     volume: number;
-    history: {
-      date: string;
-      rsRatio: number;
-      rsMomentum: number;
-    }[];
+    quadrant: string;
+    history: { date: string; rsRatio: number; rsMomentum: number }[];
   }[];
 }
 
-// Macro APIs
+// ── Macro ──────────────────────────────────────────────────
+const MACRO_NAMES: Record<string, string> = {
+  '^TNX': '10Y Yield', '^IRX': '3M Yield', '^VIX': 'VIX',
+  'DX-Y.NYB': 'Dollar', 'GC=F': 'Gold', 'CL=F': 'Crude Oil',
+  'BTC-USD': 'Bitcoin', 'SPY': 'S&P 500', 'QQQ': 'Nasdaq', 'IWM': 'Russell 2000',
+};
+
 export async function fetchMacro(): Promise<MacroData> {
-  const response = await api.get<MacroData>('/morning-brief/macro');
-  return response.data;
+  const { data: raw } = await api.get('/morning-brief/macro');
+  const indicators = Object.entries(raw.data || {}).map(([ticker, info]: [string, any]) => ({
+    name: MACRO_NAMES[ticker] || ticker,
+    value: info.price ?? 0,
+    change: info.pct_change ?? 0,
+  }));
+  return { timestamp: raw.timestamp, indicators };
 }
 
-// Sector APIs
+// ── Sectors ────────────────────────────────────────────────
 export async function fetchSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Promise<SectorData[]> {
-  const response = await api.get<SectorData[]>('/morning-brief/sectors', {
-    params: { period },
-  });
-  return response.data;
+  const { data: raw } = await api.get('/morning-brief/sectors', { params: { period } });
+  return (raw.sectors || []).map((s: any) => ({
+    ticker: s.ticker,
+    name: s.sector || s.name || s.ticker,
+    price: s.price ?? 0,
+    change: s.daily_change ?? s.change ?? 0,
+    changePercent: s.daily_pct_change ?? s.changePercent ?? 0,
+    chartData: s.chart_data || [],
+  }));
 }
 
-// Driver APIs
+// ── Drivers ────────────────────────────────────────────────
 export async function fetchDrivers(): Promise<DriverResponse> {
-  const response = await api.get<DriverResponse>('/morning-brief/drivers');
-  return response.data;
+  const { data: raw } = await api.get('/morning-brief/drivers');
+  const driversData = raw.data || raw;
+  const drivers = Array.isArray(driversData) ? driversData : (driversData.drivers || []);
+  return {
+    drivers: drivers.map((d: any) => ({
+      headline: d.headline || d.title || 'Untitled',
+      explanation: d.explanation || '',
+      sources: d.sources || (d.url ? [d.url] : []),
+      sentiment: d.sentiment,
+      impactScore: d.impact_score,
+      sourceName: d.source,
+    })),
+    timestamp: raw.timestamp,
+  };
 }
 
 export async function refreshDrivers(): Promise<DriverResponse> {
-  const response = await api.post<DriverResponse>('/morning-brief/drivers/refresh');
-  return response.data;
+  const { data: raw } = await api.post('/morning-brief/drivers/refresh');
+  const driversData = raw.data || raw;
+  const drivers = Array.isArray(driversData) ? driversData : (driversData.drivers || []);
+  return {
+    drivers: drivers.map((d: any) => ({
+      headline: d.headline || d.title || 'Untitled',
+      explanation: d.explanation || '',
+      sources: d.sources || (d.url ? [d.url] : []),
+      sentiment: d.sentiment,
+      impactScore: d.impact_score,
+    })),
+    timestamp: raw.timestamp,
+  };
 }
 
-// Stock Quote APIs
+// ── Stock Search & Quote ───────────────────────────────────
 export async function searchTicker(query: string): Promise<{ ticker: string; name: string; sector: string }[]> {
-  const response = await api.get('/stock/search', {
-    params: { q: query },
-  });
-  return response.data;
+  const { data: raw } = await api.get('/search', { params: { q: query } });
+  return raw.results || raw || [];
 }
 
 export async function fetchQuote(ticker: string): Promise<Quote> {
-  const response = await api.get<Quote>(`/stock/${ticker}/quote`);
-  return response.data;
+  const { data: raw } = await api.get(`/stock/${ticker}/quote`);
+  const q = raw.quote || raw;
+  return {
+    ticker: q.ticker || ticker,
+    price: q.price ?? q.regularMarketPrice ?? 0,
+    change: q.change ?? q.regularMarketChange ?? 0,
+    changePercent: q.pct_change ?? q.changePercent ?? q.regularMarketChangePercent ?? 0,
+    volume: q.volume ?? q.regularMarketVolume ?? 0,
+    marketCap: q.market_cap ?? q.marketCap ?? 0,
+  };
 }
 
-// Stock Grade APIs
+// ── Stock Grade ────────────────────────────────────────────
 export async function gradeStock(ticker: string): Promise<Grade> {
-  const response = await api.post<Grade>(`/stock/${ticker}/grade`);
-  return response.data;
+  const { data: raw } = await api.post(`/stock/${ticker}/grade`);
+  const g = raw.grade || raw;
+  return {
+    overall: g.overall || g.overall_grade || 'N/A',
+    metrics: (g.metrics || []).map((m: any) => ({
+      name: m.name || m.metric,
+      grade: m.grade,
+      value: m.value ?? 0,
+    })),
+    summary: g.summary || '',
+    risks: g.risks || [],
+    catalysts: g.catalysts || [],
+  };
 }
 
-// Watchlist APIs
+// ── Watchlist ──────────────────────────────────────────────
 export async function fetchWatchlist(): Promise<WatchlistItem[]> {
-  const response = await api.get<WatchlistItem[]>('/watchlist');
-  return response.data;
+  const { data: raw } = await api.get('/watchlist');
+  return (raw.items || raw || []).map((item: any) => ({
+    id: item.id?.toString() || item.ticker,
+    ticker: item.ticker,
+    price: item.price ?? 0,
+    change: item.change ?? 0,
+    changePercent: item.pct_change ?? item.changePercent ?? 0,
+    addedAt: item.added_at || item.addedAt || '',
+    grade: item.last_grade || item.grade,
+  }));
 }
 
 export async function addToWatchlist(ticker: string): Promise<WatchlistItem> {
-  const response = await api.post<WatchlistItem>('/watchlist', { ticker });
-  return response.data;
+  const { data: raw } = await api.post('/watchlist', { ticker });
+  return {
+    id: raw.id?.toString() || raw.ticker || ticker,
+    ticker: raw.ticker || ticker,
+    price: raw.price ?? 0,
+    change: raw.change ?? 0,
+    changePercent: raw.pct_change ?? raw.changePercent ?? 0,
+    addedAt: raw.added_at || raw.addedAt || new Date().toISOString(),
+  };
 }
 
 export async function removeFromWatchlist(id: string): Promise<void> {
+  // Backend uses ticker as the path param for delete
   await api.delete(`/watchlist/${id}`);
 }
 
-// Screener APIs
+// ── Screener ───────────────────────────────────────────────
 export async function runScreener(): Promise<ScreenerResponse> {
-  const response = await api.post<ScreenerResponse>('/screener/run');
-  return response.data;
+  const { data: raw } = await api.post('/screener/run');
+  const results = raw.results || {};
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    valueOpportunities: results.value_opportunities || results.valueOpportunities || [],
+    momentumLeaders: results.momentum_leaders || results.momentumLeaders || [],
+  };
 }
 
 export async function fetchLatestScreener(): Promise<ScreenerResponse> {
-  const response = await api.get<ScreenerResponse>('/screener/latest');
-  return response.data;
+  const { data: raw } = await api.get('/screener/latest');
+  const results = raw.results || {};
+  if (!results || typeof results !== 'object') {
+    return { timestamp: raw.timestamp, valueOpportunities: [], momentumLeaders: [] };
+  }
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    valueOpportunities: results.value_opportunities || results.valueOpportunities || [],
+    momentumLeaders: results.momentum_leaders || results.momentumLeaders || [],
+  };
 }
 
-// Weekly Report APIs
+// ── Weekly Report ──────────────────────────────────────────
 export function generateWeeklyReportSSE(): string {
   return '/api/weekly-report/generate';
 }
 
 export async function fetchReportList(): Promise<{ id: string; date: string; title: string }[]> {
-  const response = await api.get('/weekly-report/list');
-  return response.data;
+  const { data: raw } = await api.get('/weekly-report/list');
+  return (raw.reports || []).map((r: any) => ({
+    id: r.id?.toString() || '',
+    date: r.generated_at || r.data_as_of || r.date || '',
+    title: r.summary || r.title || `Report ${r.id}`,
+  }));
 }
 
 export async function fetchReport(id: string): Promise<Report> {
-  const response = await api.get<Report>(`/weekly-report/${id}`);
-  return response.data;
+  const { data: raw } = await api.get(`/weekly-report/${id}`);
+  const reportData = raw.report || {};
+  // Build sections from the report JSON
+  const sections: ReportSection[] = [];
+  if (typeof reportData === 'object') {
+    for (const [key, value] of Object.entries(reportData)) {
+      if (typeof value === 'object' && value !== null) {
+        const v = value as any;
+        sections.push({
+          title: v.title || key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+          content: v.summary || v.content || v.analysis || JSON.stringify(v, null, 2),
+          tables: v.tables || v.data || undefined,
+        });
+      } else if (typeof value === 'string') {
+        sections.push({ title: key.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()), content: value });
+      }
+    }
+  }
+  return {
+    id: raw.id?.toString() || id,
+    date: raw.data_as_of || raw.generated_at || raw.date || '',
+    title: raw.summary || raw.title || `Weekly Report`,
+    sections: sections.length > 0 ? sections : [{ title: 'Report', content: typeof reportData === 'string' ? reportData : JSON.stringify(reportData, null, 2) }],
+  };
 }
 
 export async function deleteReport(id: string): Promise<void> {
   await api.delete(`/weekly-report/${id}`);
 }
 
-// Portfolio APIs
+// ── Portfolio ──────────────────────────────────────────────
 export async function fetchPortfolios(): Promise<Portfolio[]> {
-  const response = await api.get<Portfolio[]>('/portfolio');
-  return response.data;
+  const { data: raw } = await api.get('/portfolio');
+  return (raw.portfolios || []).map((p: any) => ({
+    id: p.id?.toString() || '',
+    name: p.name,
+    capital: p.capital ?? 100000,
+    holdings: (p.holdings || []).map((h: any) => ({
+      ticker: h.ticker,
+      shares: h.shares ?? h.weight ?? 0,
+      weight: h.weight,
+    })),
+    createdAt: p.created_at || p.createdAt || '',
+  }));
 }
 
 export async function createPortfolio(data: {
@@ -260,21 +364,55 @@ export async function createPortfolio(data: {
   capital: number;
   holdings: { ticker: string; shares: number }[];
 }): Promise<Portfolio> {
-  const response = await api.post<Portfolio>('/portfolio', data);
-  return response.data;
+  const { data: raw } = await api.post('/portfolio', {
+    name: data.name,
+    capital: data.capital,
+    holdings: data.holdings.map(h => ({ ticker: h.ticker, weight: h.shares })),
+  });
+  return {
+    id: raw.id?.toString() || '',
+    name: raw.name,
+    capital: raw.capital ?? data.capital,
+    holdings: (raw.holdings || []).map((h: any) => ({
+      ticker: h.ticker,
+      shares: h.shares ?? h.weight ?? 0,
+      weight: h.weight,
+    })),
+    createdAt: raw.created_at || raw.createdAt || new Date().toISOString(),
+  };
 }
 
 export async function fetchPortfolio(id: string): Promise<Portfolio> {
-  const response = await api.get<Portfolio>(`/portfolio/${id}`);
-  return response.data;
+  const { data: raw } = await api.get(`/portfolio/${id}`);
+  return {
+    id: raw.id?.toString() || id,
+    name: raw.name,
+    capital: raw.capital ?? 100000,
+    holdings: (raw.holdings || []).map((h: any) => ({
+      ticker: h.ticker,
+      shares: h.shares ?? h.weight ?? 0,
+      weight: h.weight,
+    })),
+    createdAt: raw.created_at || raw.createdAt || '',
+  };
 }
 
 export async function updatePortfolio(
   id: string,
   data: Partial<{ name: string; capital: number; holdings: { ticker: string; shares: number }[] }>
 ): Promise<Portfolio> {
-  const response = await api.put<Portfolio>(`/portfolio/${id}`, data);
-  return response.data;
+  const { data: raw } = await api.put(`/portfolio/${id}`, data);
+  return {
+    id: raw.id?.toString() || id,
+    name: raw.name,
+    capital: raw.capital,
+    holdings: (raw.holdings || []).map((h: any) => ({
+      ticker: h.ticker,
+      shares: h.shares ?? h.weight ?? 0,
+      weight: h.weight,
+    })),
+    createdAt: raw.created_at || raw.createdAt || '',
+  };
 }
 
 export async function deletePortfolio(id: string): Promise<void> {
@@ -282,16 +420,58 @@ export async function deletePortfolio(id: string): Promise<void> {
 }
 
 export async function analyzePortfolio(id: string): Promise<PortfolioAnalysis> {
-  const response = await api.get<PortfolioAnalysis>(`/portfolio/${id}/analysis`);
-  return response.data;
+  const { data: raw } = await api.post(`/portfolio/${id}/analysis`);
+  const corr = raw.correlation_matrix || raw.correlation || [];
+  const sharpe = raw.max_sharpe_optimization || raw.maxSharpe || {};
+  const variance = raw.max_variance_optimization || raw.maxVariance || {};
+  const mc = raw.monte_carlo_simulation || raw.monteCarlo || {};
+  return {
+    correlation: corr.matrix || corr || [],
+    maxSharpe: {
+      weights: sharpe.weights || {},
+      return: sharpe.expected_return ?? sharpe.return ?? 0,
+      volatility: sharpe.volatility ?? 0,
+      sharpeRatio: sharpe.sharpe_ratio ?? sharpe.sharpeRatio ?? 0,
+    },
+    maxVariance: {
+      weights: variance.weights || {},
+      return: variance.expected_return ?? variance.return ?? 0,
+      volatility: variance.volatility ?? 0,
+      sharpeRatio: variance.sharpe_ratio ?? variance.sharpeRatio ?? 0,
+    },
+    monteCarlo: {
+      paths: mc.paths || [],
+      percentiles: mc.percentiles || {},
+      stats: {
+        mean: mc.stats?.mean ?? mc.mean ?? 0,
+        median: mc.stats?.median ?? mc.median ?? 0,
+        std: mc.stats?.std ?? mc.std ?? 0,
+      },
+    },
+  };
 }
 
-// RRG APIs
+// ── RRG ────────────────────────────────────────────────────
 export async function fetchRRG(benchmark: string = 'SPY', weeks: number = 52): Promise<RRGData> {
-  const response = await api.get<RRGData>('/rrg', {
-    params: { benchmark, weeks },
-  });
-  return response.data;
+  const { data: raw } = await api.get('/rrg', { params: { benchmark, weeks } });
+  const rrg = raw.data || raw;
+  return {
+    benchmark: rrg.benchmark || benchmark,
+    weeks: rrg.weeks || weeks,
+    sectors: (rrg.sectors || []).map((s: any) => ({
+      ticker: s.ticker,
+      name: s.sector || s.name || s.ticker,
+      rsRatio: s.rs_ratio ?? s.rsRatio ?? 100,
+      rsMomentum: s.rs_momentum ?? s.rsMomentum ?? 100,
+      volume: s.volume ?? 0,
+      quadrant: s.quadrant || 'Unknown',
+      history: (s.trail || s.history || []).map((h: any) => ({
+        date: h.date,
+        rsRatio: h.rs_ratio ?? h.rsRatio ?? 100,
+        rsMomentum: h.rs_momentum ?? h.rsMomentum ?? 100,
+      })),
+    })),
+  };
 }
 
 export default api;

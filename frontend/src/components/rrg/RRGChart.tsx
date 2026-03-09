@@ -15,76 +15,71 @@ export function RRGChart({ data }: RRGChartProps) {
     return chartColors.improving;
   };
 
+  // Calculate dynamic axis ranges from data
+  const allX = data.sectors.map((s) => s.rsRatio);
+  const allY = data.sectors.map((s) => s.rsMomentum);
+  const padX = Math.max(5, (Math.max(...allX) - Math.min(...allX)) * 0.15);
+  const padY = Math.max(5, (Math.max(...allY) - Math.min(...allY)) * 0.15);
+  const xMin = Math.min(Math.min(...allX) - padX, 95);
+  const xMax = Math.max(Math.max(...allX) + padX, 105);
+  const yMin = Math.min(Math.min(...allY) - padY, 95);
+  const yMax = Math.max(Math.max(...allY) + padY, 105);
+
   const plotData = data.sectors.map((sector) => ({
     name: sector.name,
     x: [sector.rsRatio],
     y: [sector.rsMomentum],
     mode: 'markers+text' as const,
     marker: {
-      size: Math.max(10, Math.min(30, Math.sqrt(sector.volume) / 100)),
+      size: 14,
       color: getQuadrantColor(sector.rsRatio, sector.rsMomentum),
-      opacity: 0.7,
+      opacity: 0.85,
       line: { color: 'white', width: 1 },
     },
     text: [sector.ticker],
-    textposition: 'middle center' as const,
+    textposition: 'top center' as const,
     textfont: { color: 'white', size: 10 },
-    hovertemplate: `${sector.name}<br>RS-Ratio: %{x:.2f}<br>RS-Momentum: %{y:.2f}<br>Volume: ${(sector.volume / 1e6).toFixed(1)}M<extra></extra>`,
+    hovertemplate: `${sector.name}<br>RS-Ratio: %{x:.2f}<br>RS-Momentum: %{y:.2f}<extra></extra>`,
+  }));
+
+  // Add trail lines for each sector
+  const trailTraces = data.sectors.map((sector) => ({
+    x: sector.history.slice(-10).map((h) => h.rsRatio),
+    y: sector.history.slice(-10).map((h) => h.rsMomentum),
+    mode: 'lines' as const,
+    line: {
+      color: getQuadrantColor(sector.rsRatio, sector.rsMomentum),
+      width: 1.5,
+      dash: 'dot' as const,
+    },
+    showlegend: false,
+    hoverinfo: 'skip' as const,
   }));
 
   const shapes = [
-    // Center lines
     {
       type: 'line' as const,
-      x0: 100,
-      x1: 100,
-      y0: 50,
-      y1: 150,
+      x0: 100, x1: 100, y0: yMin, y1: yMax,
       line: { color: '#9ca3af', width: 1, dash: 'dash' as const },
     },
     {
       type: 'line' as const,
-      x0: 50,
-      x1: 150,
-      y0: 100,
-      y1: 100,
+      x0: xMin, x1: xMax, y0: 100, y1: 100,
       line: { color: '#9ca3af', width: 1, dash: 'dash' as const },
     },
   ];
 
+  // Place labels in the center of each visible quadrant
+  const midXRight = (100 + xMax) / 2;
+  const midXLeft = (xMin + 100) / 2;
+  const midYTop = (100 + yMax) / 2;
+  const midYBot = (yMin + 100) / 2;
+
   const annotations = [
-    {
-      text: 'Leading',
-      x: 120,
-      y: 120,
-      showarrow: false,
-      font: { color: chartColors.leading, size: 14 },
-      opacity: 0.5,
-    },
-    {
-      text: 'Weakening',
-      x: 120,
-      y: 80,
-      showarrow: false,
-      font: { color: chartColors.weakening, size: 14 },
-      opacity: 0.5,
-    },
-    {
-      text: 'Lagging',
-      x: 80,
-      y: 80,
-      showarrow: false,
-      font: { color: chartColors.lagging, size: 14 },
-      opacity: 0.5,
-    },
-    {
-      text: 'Improving',
-      x: 80,
-      y: 120,
-      showarrow: false,
-      font: { color: chartColors.improving, size: 14 },
-      opacity: 0.5,
-    },
+    { text: 'Leading', x: midXRight, y: midYTop, showarrow: false, font: { color: chartColors.leading, size: 14 }, opacity: 0.4 },
+    { text: 'Weakening', x: midXRight, y: midYBot, showarrow: false, font: { color: chartColors.weakening, size: 14 }, opacity: 0.4 },
+    { text: 'Lagging', x: midXLeft, y: midYBot, showarrow: false, font: { color: chartColors.lagging, size: 14 }, opacity: 0.4 },
+    { text: 'Improving', x: midXLeft, y: midYTop, showarrow: false, font: { color: chartColors.improving, size: 14 }, opacity: 0.4 },
   ];
 
   return (
@@ -94,19 +89,19 @@ export function RRGChart({ data }: RRGChartProps) {
       className="rounded-lg border border-gray-700 bg-gray-800/30 p-4"
     >
       <Plotly
-        data={plotData as any}
+        data={[...plotData, ...trailTraces] as any}
         layout={{
-          width: 800,
+          autosize: true,
           height: 600,
           xaxis: {
             title: 'RS-Ratio',
             zeroline: false,
-            range: [50, 150],
+            range: [xMin, xMax],
           },
           yaxis: {
             title: 'RS-Momentum',
             zeroline: false,
-            range: [50, 150],
+            range: [yMin, yMax],
           },
           shapes,
           annotations,
@@ -118,6 +113,7 @@ export function RRGChart({ data }: RRGChartProps) {
           hovermode: 'closest',
         } as any}
         config={{ responsive: true }}
+        style={{ width: '100%' }}
       />
     </motion.div>
   );

@@ -1,35 +1,31 @@
 import { useState } from 'react';
-import { DataTable } from '../shared/DataTable';
+import { DeltaBadge } from '../shared/DeltaBadge';
 import { LoadingState } from '../shared/LoadingState';
 import { ErrorState } from '../shared/ErrorState';
 import { useSectors } from '../../hooks/useSectors';
-
-type Period = '1D' | '5D' | '1M' | '3M';
+import { formatCurrency } from '../../lib/utils';
 
 export function SectorPanel() {
-  const [period, setPeriod] = useState<Period>('1D');
+  const [period, setPeriod] = useState<'1D' | '5D' | '1M' | '3M'>('1D');
   const { data, isLoading, error, refetch } = useSectors(period);
 
-  const columns = [
-    { accessor: 'ticker' as const, header: 'Ticker', width: '80px' },
-    { accessor: 'name' as const, header: 'Name', width: '200px' },
-    { accessor: 'price' as const, header: 'Price', align: 'right' as const, format: 'currency' as const, width: '100px' },
-    { accessor: 'changePercent' as const, header: 'Change', align: 'right' as const, format: 'delta' as const, width: '80px' },
-  ];
+  if (isLoading) return <LoadingState message="Loading sectors..." />;
+  if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
+  if (!data || data.length === 0) return null;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-white">Sector Performance</h2>
-        <div className="flex space-x-2">
+        <div className="flex space-x-1">
           {(['1D', '5D', '1M', '3M'] as const).map((p) => (
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+              className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
                 period === p
                   ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'bg-gray-700/30 text-gray-400 hover:bg-gray-700/50'
+                  : 'text-gray-400 hover:text-gray-300 border border-gray-700'
               }`}
             >
               {p}
@@ -38,15 +34,30 @@ export function SectorPanel() {
         </div>
       </div>
 
-      {isLoading ? (
-        <LoadingState message="Loading sectors..." />
-      ) : error ? (
-        <ErrorState error={error} onRetry={() => refetch()} />
-      ) : data ? (
-        <div className="bg-gray-800/30 rounded-lg border border-gray-700 overflow-hidden">
-          <DataTable columns={columns} data={data} sortable={true} />
-        </div>
-      ) : null}
+      <div className="bg-gray-800/30 rounded-lg border border-gray-700 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-700 bg-gray-800/50">
+              <th className="px-4 py-3 text-left text-gray-300 font-semibold">Ticker</th>
+              <th className="px-4 py-3 text-left text-gray-300 font-semibold">Name</th>
+              <th className="px-4 py-3 text-right text-gray-300 font-semibold">Price</th>
+              <th className="px-4 py-3 text-right text-gray-300 font-semibold">Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((sector: any) => (
+              <tr key={sector.ticker} className="border-b border-gray-800 hover:bg-gray-800/30">
+                <td className="px-4 py-3 font-mono text-white">{sector.ticker}</td>
+                <td className="px-4 py-3 text-gray-300">{sector.name}</td>
+                <td className="px-4 py-3 text-right font-mono text-white">{formatCurrency(sector.price)}</td>
+                <td className="px-4 py-3 text-right">
+                  <DeltaBadge value={sector.changePercent} format="pct" />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -22,16 +22,18 @@ export function ScreenerResults() {
 
   if (isLoading) return <LoadingState message="Loading screener results..." />;
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
-  if (!data) return null;
 
-  const activeData = activeTab === 'value' ? data.valueOpportunities : data.momentumLeaders;
+  const hasResults = data && (data.valueOpportunities.length > 0 || data.momentumLeaders.length > 0);
+  const activeData = activeTab === 'value'
+    ? (data?.valueOpportunities || [])
+    : (data?.momentumLeaders || []);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-white">Screener Results</h2>
-          <Timestamp date={data.timestamp} label="Generated" />
+          {data?.timestamp && <Timestamp date={data.timestamp} label="Generated" />}
         </div>
         <button
           onClick={() => runScreener()}
@@ -42,26 +44,44 @@ export function ScreenerResults() {
         </button>
       </div>
 
-      <div className="flex space-x-2 border-b border-gray-700">
-        {(['value', 'momentum'] as const).map((tab) => (
+      {!hasResults ? (
+        <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-12 text-center">
+          <p className="text-gray-400 mb-4">No screener results yet. Run the screener to find value and momentum opportunities.</p>
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 font-medium transition-colors border-b-2 ${
-              activeTab === tab
-                ? 'text-blue-400 border-blue-500'
-                : 'text-gray-400 border-transparent hover:text-gray-300'
-            }`}
+            onClick={() => runScreener()}
+            disabled={isPending}
+            className="px-6 py-3 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {tab === 'value' ? 'Value Opportunities' : 'Momentum Leaders'}
-            <span className="ml-2 text-xs">({activeData.length})</span>
+            {isPending ? 'Running...' : 'Run Screener'}
           </button>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex space-x-2 border-b border-gray-700">
+            {(['value', 'momentum'] as const).map((tab) => {
+              const count = tab === 'value' ? data!.valueOpportunities.length : data!.momentumLeaders.length;
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-2 font-medium transition-colors border-b-2 ${
+                    activeTab === tab
+                      ? 'text-blue-400 border-blue-500'
+                      : 'text-gray-400 border-transparent hover:text-gray-300'
+                  }`}
+                >
+                  {tab === 'value' ? 'Value Opportunities' : 'Momentum Leaders'}
+                  <span className="ml-2 text-xs">({count})</span>
+                </button>
+              );
+            })}
+          </div>
 
-      <div className="bg-gray-800/30 rounded-lg border border-gray-700 overflow-hidden">
-        <DataTable columns={columns} data={activeData} sortable={true} />
-      </div>
+          <div className="bg-gray-800/30 rounded-lg border border-gray-700 overflow-hidden">
+            <DataTable columns={columns} data={activeData} sortable={true} />
+          </div>
+        </>
+      )}
     </div>
   );
 }
