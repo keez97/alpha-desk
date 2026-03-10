@@ -1,82 +1,79 @@
-# Requirements: Event Scanner (AlphaDesk V2 Phase 2)
+# Requirements: Earnings Surprise Predictor (AlphaDesk V2 Phase 3)
 
 ## Problem Statement
 
-Investors miss alpha-generating corporate events because they lack systematic event detection and classification. Events like SEC filings, earnings surprises, M&A announcements, insider transactions, and dividend changes create predictable short-term alpha windows (research shows alpha concentrates in the first month post-event, decaying ~50% thereafter). AlphaDesk's Factor Backtester provides factor-level research, but events — which are the discrete catalysts that drive factor returns — are invisible to users.
+Standard Wall Street consensus estimates (simple average of analyst forecasts) are a poor predictor of actual earnings. All analysts are weighted equally regardless of their track record, recency of estimate, or broker size. This means a stale estimate from 90 days ago by a historically inaccurate analyst carries the same weight as a fresh estimate from yesterday by a top-ranked analyst.
 
-The Event Scanner solves this by providing a Complex Event Processing (CEP) system that automatically detects, classifies, and scores corporate events from free data sources, measures their historical alpha decay windows, and feeds event signals into the existing Factor Backtester as backtestable factors.
+The Earnings Surprise Predictor implements a SmartEstimate methodology — a weighted analyst consensus that applies recency decay, accuracy-tier weighting, and broker-size adjustment. Research shows this approach achieves ~70% directional accuracy when the SmartEstimate diverges ≥2% from simple consensus. Combined with Post-Earnings Announcement Drift (PEAD) — the well-documented phenomenon where stock prices drift in the direction of earnings surprises for 60+ days (Bernard & Thomas 1989) — this creates a systematic alpha signal.
 
-Primary user: self-directed investor or small fund analyst who wants real-time awareness of market-moving events with quantified alpha expectations.
+Primary user: investor who wants to know BEFORE earnings whether consensus is likely too high or too low, and how to position for the post-announcement drift.
 
 ## Acceptance Criteria
 
-- [ ] Three-layer CEP architecture: Event Producers → Processing Engine → Event Consumers
-- [ ] Event detection from SEC EDGAR RSS feeds (8-K, 10-K, 10-Q, SC 13D/G, Form 4)
-- [ ] Event detection from yfinance calendar (earnings dates, ex-dividend dates)
-- [ ] Event classification taxonomy: earnings, M&A, insider_trade, dividend_change, SEC_filing, management_change, guidance_revision, share_repurchase
-- [ ] Event severity scoring (1-5 scale based on historical impact magnitude)
-- [ ] Alpha decay tracking per event type: measure abnormal returns in windows [0, +1d], [0, +5d], [0, +21d], [0, +63d]
-- [ ] Event timeline visualization: chronological feed showing events for watchlist/universe
-- [ ] Event detail view: event metadata, historical alpha window chart, related securities
-- [ ] Event-based factor generation: event signals become backtestable factors in Factor Backtester
-- [ ] Screener integration: "Recent Events" column with severity badges
-- [ ] PiT enforcement: events timestamped at detection time, not retroactively backdated
-- [ ] Configurable alerts: user sets event type + severity threshold filters
-- [ ] Event correlation analysis: which event types cluster together (e.g., insider buying before M&A)
-- [ ] Historical event database: store all detected events with full metadata for backtesting
-- [ ] Batch and near-real-time modes: scheduled polling (every 15 min) + manual refresh
+- [ ] SmartEstimate calculation: weighted consensus using recency decay (exponential, half-life ~30 days), analyst accuracy tier (based on historical hit rate), and broker size adjustment
+- [ ] Consensus vs SmartEstimate divergence metric: flag stocks where divergence ≥2% (high-conviction signal)
+- [ ] 70%+ directional accuracy target when divergence ≥2% (validated via backtesting)
+- [ ] Upcoming earnings calendar: shows next earnings date, consensus EPS, SmartEstimate EPS, divergence %, directional signal
+- [ ] Historical earnings surprise tracking: actual vs consensus vs SmartEstimate for past quarters
+- [ ] PEAD drift visualization: cumulative abnormal return post-earnings for past surprises (0 to +60 days)
+- [ ] Analyst scorecard: track individual analyst accuracy over time (for weighting)
+- [ ] Pre-earnings signal generation: 1-5 days before earnings, generate buy/sell/hold signal based on SmartEstimate direction
+- [ ] Integration with Factor Backtester: earnings surprise as a backtestable factor
+- [ ] Integration with Screener: "Earnings Signal" column with divergence % and direction
+- [ ] Integration with Event Scanner: earnings events feed into the event timeline
+- [ ] PiT enforcement: analyst estimates timestamped at publication, not retroactively adjusted
+- [ ] Free data sources only (yfinance analyst estimates, SEC EDGAR for actuals)
 
 ## Scope
 
 ### In Scope
 
-- SEC EDGAR RSS feed parsing (8-K, 10-K, 10-Q, insider filings, 13D/G)
-- yfinance earnings calendar and dividend calendar integration
-- Event classification engine (rule-based + keyword matching)
-- Event severity scoring based on historical price impact analysis
-- Alpha decay window measurement (abnormal returns post-event)
-- CEP three-layer architecture (producers, processing engine, consumers)
-- New /events page with timeline feed and event detail panels
-- Integration with Factor Backtester (events as backtestable factors)
-- Integration with Screener (event badges on stock rows)
-- PiT-safe event storage using existing PostgreSQL infrastructure
-- Background polling service (configurable interval, default 15 min)
+- SmartEstimate engine: recency decay, accuracy tiers, broker size weighting
+- Analyst estimate storage with PiT timestamps (when estimate was published)
+- Analyst scorecard tracking (historical accuracy by analyst/broker)
+- Earnings calendar dashboard showing upcoming earnings with signals
+- Historical earnings surprise comparison (actual vs consensus vs SmartEstimate)
+- PEAD drift chart (cumulative abnormal return post-earnings, 0-60 days)
+- Pre-earnings directional signals (buy/sell/hold based on SmartEstimate)
+- Backtester integration (earnings surprise as factor)
+- Screener integration (earnings signal column)
+- Event Scanner integration (earnings events)
+- New /earnings page with earnings calendar + surprise analysis
 
 ### Out of Scope
 
-- Paid data APIs (Polygon, Benzinga, Bloomberg)
-- Natural language processing of filing text (that's Phase 4: News Sentiment)
-- Real-time WebSocket streaming (batch polling only)
-- Options-based event trading strategies
-- Cross-asset event analysis (equities only)
-- Automated trading or order generation
+- Paid analyst estimate APIs (Bloomberg, FactSet, Refinitiv)
+- Revenue surprise prediction (EPS only for MVP)
+- Whisper numbers or social media sentiment
+- Options-based earnings strategies
+- Intraday earnings reaction analysis
+- Multi-quarter estimate revisions tracking
 
 ## Technical Constraints
 
-- **Existing infrastructure**: PostgreSQL with PiT enforcement, SQLModel ORM, Alembic migrations (from Phase 1)
-- **Existing stack**: FastAPI (Python) backend, React 18 + TypeScript + Vite frontend, TanStack React Query
-- **Shared data layer**: Must use existing securities, price_history, and fundamentals_snapshot tables from Phase 1
-- **Data sources**: SEC EDGAR RSS (free, no API key), yfinance (already integrated, free)
+- **Existing infrastructure**: PostgreSQL with PiT, SQLModel, Alembic, FastAPI, React 18 + TS + Vite
+- **Data sources**: yfinance analyst estimates (free), SEC EDGAR for actuals, existing price_history for PEAD
+- **Shared tables**: securities, price_history, factor_definitions, events (from Phase 2)
 - **Styling**: Pure black Tailwind CSS theme, text-xs/text-[10px] compact institutional aesthetic
-- **API conventions**: RESTful, JSON responses, /api/ prefix, FastAPI router pattern
-- **Background tasks**: FastAPI BackgroundTasks (from Phase 1 pattern)
-- **SEC EDGAR**: RSS feeds at https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=8-K&dateb=&owner=include&count=40&search_text=&action=getcompany — rate limit: 10 requests/sec with User-Agent header
+- **API conventions**: RESTful, /api/ prefix, FastAPI router pattern, BackgroundTasks for async
+- **yfinance limitations**: Provides consensus EPS but limited individual analyst data. For MVP, derive accuracy tiers from consensus revision patterns rather than individual analyst tracking.
 
 ## Technology Stack
 
-- **Frontend**: React 18 + TypeScript + Vite, Tailwind CSS v4, TanStack React Query, Recharts
-- **Backend**: FastAPI (Python), SQLModel ORM, Pydantic schemas, Alembic migrations
-- **Database**: PostgreSQL (shared with Phase 1)
-- **Data sources**: SEC EDGAR RSS, yfinance earnings/dividend calendars
-- **Infrastructure**: localhost development, git via GitHub (keez97/alpha-desk)
+- Frontend: React 18 + TypeScript + Vite, Tailwind CSS v4, TanStack React Query, Recharts
+- Backend: FastAPI, SQLModel ORM, Pydantic schemas, Alembic migrations
+- Database: PostgreSQL (shared with Phases 1-2)
+- Data sources: yfinance (analyst estimates, earnings dates), SEC EDGAR (actual EPS)
+- Infrastructure: localhost development, git via GitHub
 
 ## Dependencies
 
-- **Depends on Phase 1**: Uses existing securities table, PiT infrastructure, PostgreSQL setup, price_history for alpha decay calculation
-- **Affects Factor Backtester**: Event signals become new backtestable factors
-- **Affects Screener**: Event badges appear on screener results
-- **Foundation for Phase 3 (Earnings Predictor)**: Earnings event detection feeds into earnings surprise tracking
-- **Foundation for Phase 4 (News Sentiment)**: Event timestamps provide anchoring for sentiment analysis windows
+- **Depends on Phase 1**: Factor Backtester for earnings surprise factor integration, PiT infrastructure, price_history for PEAD
+- **Depends on Phase 2**: Event Scanner for earnings event detection (earnings dates already captured)
+- **Affects Factor Backtester**: Earnings surprise becomes a backtestable factor
+- **Affects Screener**: Earnings signal column
+- **Affects Event Scanner**: Enriches earnings events with surprise magnitude
+- **Foundation for Phase 4**: Earnings dates provide temporal anchors for news sentiment analysis
 
 ## Configuration
 
@@ -86,8 +83,8 @@ Primary user: self-directed investor or small fund analyst who wants real-time a
 
 ## Key Academic References
 
-- Alpha decay research (Dec 2025): ~50% post-publication alpha decay; alpha concentrates in first month
-- Complex Event Processing literature: three-layer producer/engine/consumer architecture
-- Post-Earnings Announcement Drift (Bernard & Thomas 1989): 60+ day drift after earnings surprises
-- Insider trading predictive power: Form 4 filings predict 3-6 month returns
-- SEC filing impact studies: 8-K filings create 1-5 day alpha windows depending on content
+- Bernard & Thomas (1989): Post-Earnings Announcement Drift — prices drift 60+ days in surprise direction
+- SmartEstimate methodology: Recency decay (exponential, ~30-day half-life), accuracy-weighted consensus
+- FactSet research: SmartEstimate divergence ≥2% from consensus achieves ~70% directional accuracy
+- Jegadeesh & Livnat (2006): Revenue and earnings surprises predict future returns
+- Chan, Jegadeesh & Lakonishok (1996): Momentum and analyst estimate revisions

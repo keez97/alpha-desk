@@ -34,6 +34,16 @@ from backend.models.events import (
     EventCorrelationAnalysis,
 )
 
+# Earnings Surprise Predictor models
+from backend.models.earnings import (
+    EarningsEstimate,
+    EarningsActual,
+    SmartEstimateWeights,
+    AnalystScorecard,
+    PEADMeasurement,
+    EarningsSignal,
+)
+
 __all__ = [
     # Existing models
     "Watchlist",
@@ -71,4 +81,11 @@ __all__ = [
     "EventSourceMapping",
     "EventAlertConfiguration",
     "EventCorrelationAnalysis",
+    # Earnings Surprise Predictor
+    "EarningsEstimate",
+    "EarningsActual",
+    "SmartEstimateWeights",
+    "AnalystScorecard",
+    "PEADMeasurement",
+    "EarningsSignal",
 ]

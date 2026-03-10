@@ -27,6 +27,14 @@ from backend.models.events import (
     AlphaDecayWindow,
     EventAlertConfiguration,
 )
+from backend.models.earnings import (
+    EarningsEstimate,
+    EarningsActual,
+    SmartEstimateWeights,
+    AnalystScorecard,
+    PEADMeasurement,
+    EarningsSignal,
+)
 
 
 @pytest.fixture(name="session")
@@ -489,3 +497,219 @@ def sample_alert_configuration_fixture(session: Session):
     session.commit()
 
     return config
+
+
+# ==================== Earnings-Related Fixtures ====================
+
+
+@pytest.fixture(name="sample_earnings_estimates")
+def sample_earnings_estimates_fixture(session: Session):
+    """
+    Create sample earnings estimates for testing.
+    """
+    now = datetime.now(timezone.utc)
+    estimates = []
+
+    # Create consensus and individual estimates for multiple tickers and quarters
+    tickers = ["AAPL", "MSFT", "GOOGL"]
+    for ticker in tickers:
+        for quarter in ["2024Q1", "2024Q2"]:
+            # Consensus estimate
+            consensus = EarningsEstimate(
+                ticker=ticker,
+                fiscal_quarter=quarter,
+                estimate_type="consensus",
+                eps_estimate=Decimal(str(5.0 + hash(ticker) % 3)),
+                estimate_date=now - timedelta(days=20),
+                analyst_broker=None,
+            )
+            estimates.append(consensus)
+            session.add(consensus)
+
+            # Individual estimates
+            for i in range(3):
+                individual = EarningsEstimate(
+                    ticker=ticker,
+                    fiscal_quarter=quarter,
+                    estimate_type="individual",
+                    eps_estimate=Decimal(str(5.0 + hash(ticker + str(i)) % 5 * 0.1)),
+                    estimate_date=now - timedelta(days=20 - i * 5),
+                    analyst_broker=f"Analyst_{i}",
+                )
+                estimates.append(individual)
+                session.add(individual)
+
+    session.commit()
+    return estimates
+
+
+@pytest.fixture(name="sample_earnings_actuals")
+def sample_earnings_actuals_fixture(session: Session):
+    """
+    Create sample actual earnings for testing.
+    """
+    actuals = []
+
+    tickers = ["AAPL", "MSFT", "GOOGL"]
+    for ticker in tickers:
+        for quarter_idx, quarter in enumerate(["2024Q1", "2024Q2"]):
+            actual = EarningsActual(
+                ticker=ticker,
+                fiscal_quarter=quarter,
+                actual_eps=Decimal(str(5.0 + hash(ticker) % 3 + 0.1 * quarter_idx)),
+                report_date=date(2024, 1, 15) + timedelta(days=90 * quarter_idx),
+                report_time="post_market",
+                surprise_vs_consensus=Decimal(str(1.5 + quarter_idx * 0.5)),
+                source="yfinance",
+            )
+            actuals.append(actual)
+            session.add(actual)
+
+    session.commit()
+    return actuals
+
+
+@pytest.fixture(name="sample_smart_estimate_weights")
+def sample_smart_estimate_weights_fixture(session: Session):
+    """
+    Create sample SmartEstimate weight configurations.
+    """
+    weights = [
+        SmartEstimateWeights(
+            weight_type="recency_decay",
+            parameter_name="half_life_days",
+            parameter_value=Decimal("30"),
+            description="30-day half-life for recency decay",
+        ),
+        SmartEstimateWeights(
+            weight_type="accuracy_tier",
+            parameter_name="tier_a_weight",
+            parameter_value=Decimal("1.5"),
+            description="Tier A analyst weight (top quartile)",
+        ),
+        SmartEstimateWeights(
+            weight_type="accuracy_tier",
+            parameter_name="tier_b_weight",
+            parameter_value=Decimal("1.0"),
+            description="Tier B analyst weight (mid tier)",
+        ),
+        SmartEstimateWeights(
+            weight_type="accuracy_tier",
+            parameter_name="tier_c_weight",
+            parameter_value=Decimal("0.5"),
+            description="Tier C analyst weight (bottom quartile)",
+        ),
+    ]
+
+    for w in weights:
+        session.add(w)
+
+    session.commit()
+    return weights
+
+
+@pytest.fixture(name="sample_analyst_scorecards")
+def sample_analyst_scorecards_fixture(session: Session):
+    """
+    Create sample analyst accuracy scorecards.
+    """
+    scorecards = [
+        AnalystScorecard(
+            analyst_broker="Goldman Sachs",
+            ticker="AAPL",
+            total_estimates=100,
+            accurate_count=95,
+            directional_accuracy=Decimal("92.0"),
+            avg_error_pct=Decimal("2.5"),
+            period_start=date(2023, 1, 1),
+            period_end=date(2024, 1, 1),
+        ),
+        AnalystScorecard(
+            analyst_broker="JP Morgan",
+            ticker="MSFT",
+            total_estimates=80,
+            accurate_count=65,
+            directional_accuracy=Decimal("85.0"),
+            avg_error_pct=Decimal("4.2"),
+            period_start=date(2023, 1, 1),
+            period_end=date(2024, 1, 1),
+        ),
+        AnalystScorecard(
+            analyst_broker="Morgan Stanley",
+            ticker="GOOGL",
+            total_estimates=60,
+            accurate_count=30,
+            directional_accuracy=Decimal("70.0"),
+            avg_error_pct=Decimal("8.5"),
+            period_start=date(2023, 1, 1),
+            period_end=date(2024, 1, 1),
+        ),
+    ]
+
+    for scorecard in scorecards:
+        session.add(scorecard)
+
+    session.commit()
+    return scorecards
+
+
+@pytest.fixture(name="sample_pead_measurements")
+def sample_pead_measurements_fixture(session: Session):
+    """
+    Create sample PEAD measurements for testing.
+    """
+    measurements = []
+
+    tickers = ["AAPL", "MSFT", "GOOGL"]
+    for ticker_idx, ticker in enumerate(tickers):
+        for quarter_idx, quarter in enumerate(["2024Q1", "2024Q2"]):
+            direction = "positive" if ticker_idx % 2 == 0 else "negative"
+            pead = PEADMeasurement(
+                ticker=ticker,
+                fiscal_quarter=quarter,
+                earnings_date=date(2024, 1, 15) + timedelta(days=90 * quarter_idx),
+                surprise_direction=direction,
+                surprise_magnitude=Decimal(str(2.0 + ticker_idx * 0.5)),
+                car_1d=Decimal(str(0.5 + ticker_idx * 0.1)),
+                car_5d=Decimal(str(1.0 + ticker_idx * 0.2)),
+                car_21d=Decimal(str(2.0 + ticker_idx * 0.3)),
+                car_60d=Decimal(str(3.5 + ticker_idx * 0.5)),
+                benchmark_ticker="SPY",
+                measured_at=datetime.now(timezone.utc),
+            )
+            measurements.append(pead)
+            session.add(pead)
+
+    session.commit()
+    return measurements
+
+
+@pytest.fixture(name="sample_earnings_signals")
+def sample_earnings_signals_fixture(session: Session):
+    """
+    Create sample earnings signals for testing.
+    """
+    signals = []
+    now = datetime.now(timezone.utc)
+
+    tickers = ["AAPL", "MSFT", "GOOGL"]
+    for ticker_idx, ticker in enumerate(tickers):
+        for quarter_idx, quarter in enumerate(["2024Q1", "2024Q2"]):
+            signal_type = "buy" if ticker_idx % 2 == 0 else "sell"
+            signal = EarningsSignal(
+                ticker=ticker,
+                fiscal_quarter=quarter,
+                signal_date=now - timedelta(days=5),
+                signal_type=signal_type,
+                confidence=70 + ticker_idx * 5,
+                smart_estimate_eps=Decimal(str(5.0 + ticker_idx * 0.1)),
+                consensus_eps=Decimal(str(5.0 + ticker_idx * 0.05)),
+                divergence_pct=Decimal(str(2.0 + quarter_idx * 0.5)),
+                days_to_earnings=5 - quarter_idx,
+                valid_until=now + timedelta(days=5),
+            )
+            signals.append(signal)
+            session.add(signal)
+
+    session.commit()
+    return signals

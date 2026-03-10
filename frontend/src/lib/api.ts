@@ -777,3 +777,78 @@ export const getScreenerBadges = (tickers: string[]) =>
 
 export const deleteEvent = (id: number) =>
   api.delete(`/events/${id}`).then((r) => r.data);
+
+// ── Earnings ────────────────────────────────────────────────
+export interface EarningsCalendarItem {
+  ticker: string;
+  earnings_date: string;
+  days_to_earnings: number;
+  consensus_eps: number;
+  smart_estimate_eps: number;
+  divergence_pct: number;
+  signal: 'buy' | 'sell' | 'hold';
+  confidence: number;
+}
+
+export interface EarningsHistory {
+  fiscal_quarter: string;
+  actual_eps: number;
+  consensus_eps: number;
+  smart_estimate_eps: number;
+  surprise_pct: number;
+  report_date: string;
+}
+
+export interface PEADData {
+  fiscal_quarter: string;
+  surprise_direction: string;
+  car_1d: number;
+  car_5d: number;
+  car_21d: number;
+  car_60d: number;
+}
+
+export interface EarningsSignal {
+  ticker: string;
+  signal: string;
+  confidence: number;
+  smart_eps: number;
+  consensus_eps: number;
+  divergence_pct: number;
+  days_to_earnings: number;
+}
+
+export interface EarningsCalendarResponse {
+  items: EarningsCalendarItem[];
+  total: number;
+}
+
+export interface EarningsHistoryResponse {
+  quarters: EarningsHistory[];
+}
+
+export interface EarningsPEADResponse {
+  quarters: PEADData[];
+}
+
+export interface ScreenerEarningsSignalsResponse {
+  signals: Array<{ ticker: string; signal: string; divergence_pct: number; days_to_earnings: number }>;
+}
+
+export const getEarningsCalendar = (params?: any) =>
+  api.get('/earnings/calendar', { params }).then((r) => r.data as EarningsCalendarResponse);
+
+export const getEarningsHistory = (ticker: string) =>
+  api.get(`/earnings/${ticker}/history`).then((r) => r.data as EarningsHistoryResponse);
+
+export const getEarningsSignal = (ticker: string) =>
+  api.get(`/earnings/${ticker}/signal`).then((r) => r.data as EarningsSignal);
+
+export const getEarningsPEAD = (ticker: string) =>
+  api.get(`/earnings/${ticker}/pead`).then((r) => r.data as EarningsPEADResponse);
+
+export const refreshEarnings = () =>
+  api.post('/earnings/refresh').then((r) => r.data);
+
+export const getScreenerEarningsSignals = (tickers: string[]) =>
+  api.get('/earnings/screener-signals', { params: { tickers: tickers.join(',') } }).then((r) => r.data as ScreenerEarningsSignalsResponse);
