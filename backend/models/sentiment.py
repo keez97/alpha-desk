@@ -5,8 +5,8 @@ Provides FinBERT + Loughran-McDonald sentiment analysis with velocity tracking
 and contrarian divergence alerts.
 """
 
-from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import UniqueConstraint, Index
+from sqlmodel import SQLModel, Field, Relationship, Column
+from sqlalchemy import UniqueConstraint, Index, JSON
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List, Dict
@@ -49,7 +49,8 @@ class NewsArticle(SQLModel, table=True):
     )
     tickers_mentioned: Optional[Dict[str, float]] = Field(
         default=None,
-        description="JSON dict of all tickers mentioned with sentiment contribution weight"
+        description="JSON dict of all tickers mentioned with sentiment contribution weight",
+        sa_column=Column(JSON, nullable=True)
     )
     sentiment_score: Decimal = Field(
         ge=Decimal("-1"),
@@ -77,7 +78,8 @@ class NewsArticle(SQLModel, table=True):
     )
     lm_categories: Optional[Dict[str, int]] = Field(
         default=None,
-        description="Loughran-McDonald word counts: uncertainty, litigious, constraining, positive, negative"
+        description="Loughran-McDonald word counts: uncertainty, litigious, constraining, positive, negative",
+        sa_column=Column(JSON, nullable=True)
     )
     source_url: Optional[str] = Field(
         default=None,
@@ -242,7 +244,8 @@ class SentimentHeatmapCache(SQLModel, table=True):
     )
     top_movers: Optional[Dict[str, float]] = Field(
         default=None,
-        description="JSON: top 5 tickers by velocity magnitude with values"
+        description="JSON: top 5 tickers by velocity magnitude with values",
+        sa_column=Column(JSON, nullable=True)
     )
     computed_at: datetime = Field(
         description="When this cache was computed"

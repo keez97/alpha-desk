@@ -1,4 +1,4 @@
-import { BacktestResult } from '../../lib/api';
+import type { BacktestResult } from '../../lib/api';
 
 interface AlphaDecayPanelProps {
   results: BacktestResult;

@@ -5,8 +5,8 @@ These tables track corporate events, factor signals, and alpha decay windows
 for integration with the Factor Backtester.
 """
 
-from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import UniqueConstraint, Index
+from sqlmodel import SQLModel, Field, Relationship, Column
+from sqlalchemy import UniqueConstraint, Index, JSON
 from datetime import datetime, timezone
 from datetime import date as DateType
 from decimal import Decimal
@@ -51,7 +51,7 @@ class Event(SQLModel, table=True):
     source: str = Field(index=True)  # SEC_EDGAR, YFINANCE, MANUAL
     headline: str
     description: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None  # JSON for source-specific data
+    extra_data: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column("metadata", JSON, nullable=True))  # JSON for source-specific data
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Relationships
@@ -76,7 +76,7 @@ class EventClassificationRule(SQLModel, table=True):
     rule_id: Optional[int] = Field(default=None, primary_key=True)
     classification: str  # Event type or category name
     pattern_type: str  # keyword, filing_form, calendar_event
-    pattern_value: Dict[str, Any] = Field(default={})  # JSON pattern definition
+    pattern_value: Dict[str, Any] = Field(default={}, sa_column=Column(JSON, nullable=False))  # JSON pattern definition
     confidence_score: int = Field(ge=0, le=100)  # 0-100 confidence
     enabled: bool = Field(default=True, index=True)
     description: Optional[str] = None
@@ -175,7 +175,7 @@ class EventSourceMapping(SQLModel, table=True):
     source_type: str  # SEC_EDGAR, YFINANCE, INSIDER_TRADING, etc.
     source_url: Optional[str] = None
     source_id: str  # Accession number, filing ID, trade ID, etc.
-    extracted_data: Optional[Dict[str, Any]] = None  # JSON from source
+    extracted_data: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))  # JSON from source
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Relationships
@@ -194,10 +194,10 @@ class EventAlertConfiguration(SQLModel, table=True):
     )
 
     config_id: Optional[int] = Field(default=None, primary_key=True)
-    event_type_filter: List[str] = Field(default=[])  # JSON array of event types
+    event_type_filter: List[str] = Field(default=[], sa_column=Column(JSON, nullable=False))  # JSON array of event types
     severity_threshold: int = Field(ge=1, le=5, default=1)  # Min severity (1-5)
     enabled: bool = Field(default=True, index=True)
-    tickers_filter: Optional[List[str]] = None  # JSON array of tickers or null for all
+    tickers_filter: Optional[List[str]] = Field(default=None, sa_column=Column(JSON, nullable=True))  # JSON array of tickers or null for all
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

@@ -1,4 +1,5 @@
-export function formatCurrency(value: number): string {
+export function formatCurrency(value: number | undefined | null): string {
+  if (value == null || isNaN(value)) return '—';
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -7,12 +8,14 @@ export function formatCurrency(value: number): string {
   }).format(value);
 }
 
-export function formatPercent(value: number): string {
+export function formatPercent(value: number | undefined | null): string {
+  if (value == null || isNaN(value)) return '—';
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(2)}%`;
 }
 
-export function formatLargeNumber(value: number): string {
+export function formatLargeNumber(value: number | undefined | null): string {
+  if (value == null || isNaN(value)) return '—';
   if (Math.abs(value) >= 1e9) {
     return (value / 1e9).toFixed(1) + 'B';
   }

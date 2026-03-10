@@ -1,3 +1,4 @@
+// AlphaDesk API client - v2 cache bust
 import axios, { AxiosError } from 'axios';
 import type { AxiosInstance } from 'axios';
 
@@ -910,10 +911,16 @@ export const getSentimentHistory = (ticker: string, days: number = 30) =>
   api.get(`/sentiment/${ticker}/history`, { params: { days } }).then(r => r.data as SentimentHistoryPoint[]);
 
 export const getSentimentAlerts = () =>
-  api.get('/sentiment/alerts').then(r => r.data as SentimentAlert[]);
+  api.get('/sentiment/alerts').then(r => {
+    const d = r.data;
+    return Array.isArray(d) ? d as SentimentAlert[] : [];
+  });
 
 export const getSentimentMovers = (limit: number = 20) =>
-  api.get('/sentiment/movers', { params: { limit } }).then(r => r.data as SentimentMover[]);
+  api.get('/sentiment/movers', { params: { limit } }).then(r => {
+    const d = r.data;
+    return Array.isArray(d) ? d as SentimentMover[] : [];
+  });
 
 export const getSentimentNews = (ticker: string, limit: number = 20) =>
   api.get(`/sentiment/news/${ticker}`, { params: { limit } }).then(r => r.data as NewsArticle[]);
@@ -923,3 +930,111 @@ export const getSentimentHeatmap = () =>
 
 export const refreshSentiment = () =>
   api.post('/sentiment/refresh').then(r => r.data);
+
+// ── Quantitative Screener ──────────────────────────
+export interface QuantScreenResult {
+  ticker: string;
+  name: string;
+  price: number;
+  change_1d: number;
+  change_1d_pct: number;
+  rs_ratio: number;
+  rs_momentum: number;
+  quadrant: string;
+}
+
+export interface QuantScreenResponse {
+  timestamp: string;
+  data: {
+    results: QuantScreenResult[];
+    total: number;
+    filters_applied: Record<string, any>;
+  };
+}
+
+export interface ScreenPreset {
+  id: string;
+  name: string;
+  description: string;
+  filters: Record<string, any>;
+}
+
+export interface ScreenPresetsResponse {
+  timestamp: string;
+  presets: ScreenPreset[];
+}
+
+export interface QuantFilter {
+  rrg_quadrant?: string[];
+  rrg_momentum_min?: number;
+  rrg_momentum_max?: number;
+  rrg_ratio_min?: number;
+  rrg_ratio_max?: number;
+  change_1d_min?: number;
+  change_1d_max?: number;
+  sector?: string;
+  sort_by?: string;
+  sort_desc?: boolean;
+}
+
+export async function runQuantScreen(filters: QuantFilter): Promise<QuantScreenResponse> {
+  const params: Record<string, any> = {};
+  if (filters.rrg_quadrant) params.rrg_quadrant = filters.rrg_quadrant;
+  if (filters.rrg_momentum_min !== undefined) params.rrg_momentum_min = filters.rrg_momentum_min;
+  if (filters.rrg_momentum_max !== undefined) params.rrg_momentum_max = filters.rrg_momentum_max;
+  if (filters.rrg_ratio_min !== undefined) params.rrg_ratio_min = filters.rrg_ratio_min;
+  if (filters.rrg_ratio_max !== undefined) params.rrg_ratio_max = filters.rrg_ratio_max;
+  if (filters.change_1d_min !== undefined) params.change_1d_min = filters.change_1d_min;
+  if (filters.change_1d_max !== undefined) params.change_1d_max = filters.change_1d_max;
+  if (filters.sector) params.sector = filters.sector;
+  if (filters.sort_by) params.sort_by = filters.sort_by;
+  if (filters.sort_desc !== undefined) params.sort_desc = filters.sort_desc;
+
+  const { data } = await api.get('/quant-screener/screen', { params });
+  return data;
+}
+
+export async function getScreenPresets(): Promise<ScreenPresetsResponse> {
+  const { data } = await api.get('/quant-screener/presets');
+  return data;
+}
+
+// ── Enhanced Sectors ────────────────────────────────────────
+export interface EnhancedSectorData extends SectorData {
+  rsRatio: number;
+  rsMomentum: number;
+  quadrant: string;
+}
+
+export async function fetchEnhancedSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Promise<EnhancedSectorData[]> {
+  const { data: raw } = await api.get('/enhanced-sectors', { params: { period } });
+  return (raw.sectors || []).map((s: any) => ({
+    ticker: s.ticker,
+    name: s.name || s.sector || s.ticker,
+    price: s.price ?? 0,
+    change: s.change ?? 0,
+    changePercent: s.pct_change ?? 0,
+    rsRatio: s.rs_ratio ?? 100,
+    rsMomentum: s.rs_momentum ?? 0,
+    quadrant: s.quadrant || 'Unknown',
+    chartData: s.chart_data || [],
+  }));
+}
+
+// ── Stock Factors ──────────────────────────────────────────
+export interface StockFactorData {
+  name: string;
+  value: number;
+  percentile: number;
+  signal: 'strong' | 'neutral' | 'weak';
+}
+
+export async function fetchStockFactors(ticker: string): Promise<StockFactorData[]> {
+  const { data: raw } = await api.get(`/stock/${ticker}/factors`);
+  return (raw.factors || []).map((f: any) => ({
+    name: f.name,
+    value: f.value ?? 0,
+    percentile: f.percentile ?? 50,
+    signal: f.signal || 'neutral',
+  }));
+}

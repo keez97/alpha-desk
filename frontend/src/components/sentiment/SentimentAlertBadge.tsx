@@ -1,4 +1,4 @@
-import { SentimentAlert } from '../../lib/api';
+import type { SentimentAlert } from '../../lib/api';
 import { classNames } from '../../lib/utils';
 
 interface SentimentAlertBadgeProps {

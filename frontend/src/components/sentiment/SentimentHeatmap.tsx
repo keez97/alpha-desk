@@ -1,4 +1,4 @@
-import { SentimentHeatmapSector } from '../../lib/api';
+import type { SentimentHeatmapSector } from '../../lib/api';
 import { SentimentScore } from './SentimentScore';
 import { classNames } from '../../lib/utils';
 

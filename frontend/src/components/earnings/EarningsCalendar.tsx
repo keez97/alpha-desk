@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { EarningsCalendarItem } from '../../lib/api';
+import type { EarningsCalendarItem } from '../../lib/api';
 import { EarningsSignalBadge } from './EarningsSignalBadge';
 import { classNames } from '../../lib/utils';
 

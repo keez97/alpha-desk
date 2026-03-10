@@ -3,7 +3,7 @@ import numpy as np
 from scipy.optimize import minimize
 from typing import Dict, List, Any
 import logging
-from backend.services.yfinance_service import get_history
+from backend.services.data_provider import get_history
 
 logger = logging.getLogger(__name__)
 

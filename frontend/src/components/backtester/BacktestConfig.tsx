@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useFactors, useCreateBacktest, useRunBacktest } from '../../hooks/useBacktester';
-import { CreateBacktestRequest, Factor } from '../../lib/api';
+import type { CreateBacktestRequest, Factor } from '../../lib/api';
 import { LoadingState } from '../shared/LoadingState';
 
 interface BacktestConfigProps {

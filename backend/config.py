@@ -43,5 +43,13 @@ def get_openrouter_model_id() -> str:
 
 
 FDS_API_KEY = os.getenv("FDS_API_KEY", "")
+FRED_API_KEY = os.getenv("FRED_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost:5432/alphadesk")
+
+# Cache TTL settings (seconds)
 CACHE_TTL_HOURS = int(os.getenv("CACHE_TTL_HOURS", "4"))
+CACHE_TTL_QUOTE = int(os.getenv("CACHE_TTL_QUOTE", "60"))           # 1 min for live quotes
+CACHE_TTL_HISTORY = int(os.getenv("CACHE_TTL_HISTORY", "3600"))     # 1 hour for daily bars
+CACHE_TTL_MACRO = int(os.getenv("CACHE_TTL_MACRO", "900"))          # 15 min for macro data
+CACHE_TTL_FUNDAMENTALS = int(os.getenv("CACHE_TTL_FUNDAMENTALS", "14400"))  # 4 hours for fundamentals
+CACHE_TTL_SECTOR = int(os.getenv("CACHE_TTL_SECTOR", "300"))        # 5 min for sector data

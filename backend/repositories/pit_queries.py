@@ -8,7 +8,7 @@ at a specific point in time, which is critical for backtesting accuracy.
 from datetime import datetime, date, timezone
 from typing import List, Optional, Dict, Any
 from sqlmodel import Session, select
-from backend.models.securities import Security, SecurityStatus, SecurityLifecycleEvent
+from backend.models.securities import Security, SecurityLifecycleEvent
 from backend.models.market_data import PriceHistory, FundamentalsSnapshot
 from backend.models.factors import CustomFactorScore
 from backend.models.events import Event

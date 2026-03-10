@@ -11,7 +11,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { BacktestResult } from '../../lib/api';
+import type { BacktestResult } from '../../lib/api';
 
 interface EquityCurveChartProps {
   results: BacktestResult;

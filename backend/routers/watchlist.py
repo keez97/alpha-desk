@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel
 from backend.database import get_session
 from backend.models.watchlist import Watchlist
-from backend.services.yfinance_service import get_quote
+from backend.services.data_provider import get_quote
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 

@@ -10,6 +10,8 @@ import { Backtester } from './pages/Backtester';
 import { Events } from './pages/Events';
 import { Earnings } from './pages/Earnings';
 import { Sentiment } from './pages/Sentiment';
+import { Confluence } from './pages/Confluence';
+import { Correlation } from './pages/Correlation';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,6 +37,8 @@ function App() {
             <Route path="/events" element={<Events />} />
             <Route path="/earnings" element={<Earnings />} />
             <Route path="/sentiment" element={<Sentiment />} />
+            <Route path="/confluence" element={<Confluence />} />
+            <Route path="/correlation" element={<Correlation />} />
           </Route>
         </Routes>
       </BrowserRouter>

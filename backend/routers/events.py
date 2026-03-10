@@ -15,7 +15,7 @@ Endpoints:
 import logging
 from typing import List, Optional
 from datetime import datetime, date, timezone
-from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, Path, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from sqlmodel import Session
@@ -218,7 +218,7 @@ def list_events(
 
 @router.get("/{event_id}", response_model=EventDetailResponse)
 def get_event_detail(
-    event_id: int = Query(..., gt=0, description="Event ID (must be > 0)"),
+    event_id: int = Path(..., gt=0, description="Event ID (must be > 0)"),
     session: Session = Depends(get_session),
 ):
     """
@@ -269,7 +269,7 @@ def get_event_detail(
 
 @router.get("/{event_id}/alpha-decay", response_model=List[AlphaDecayResponse])
 def get_alpha_decay(
-    event_id: int = Query(..., gt=0, description="Event ID (must be > 0)"),
+    event_id: int = Path(..., gt=0, description="Event ID (must be > 0)"),
     window_type: Optional[str] = Query(None, description="Filter by window type (1d, 5d, 21d, 63d)"),
     session: Session = Depends(get_session),
 ):
@@ -519,7 +519,7 @@ def get_screener_badges(
 
 @router.delete("/{event_id}")
 def delete_event(
-    event_id: int = Query(..., gt=0, description="Event ID (must be > 0)"),
+    event_id: int = Path(..., gt=0, description="Event ID (must be > 0)"),
     session: Session = Depends(get_session),
 ):
     """

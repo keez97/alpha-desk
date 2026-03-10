@@ -6,7 +6,7 @@ from typing import List, Optional
 import pandas as pd
 from backend.database import get_session
 from backend.models.portfolio import Portfolio, PortfolioHolding
-from backend.services.yfinance_service import get_history
+from backend.services.data_provider import get_history
 from backend.services.portfolio_math import (
     compute_correlation_matrix,
     optimize_max_sharpe,

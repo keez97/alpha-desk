@@ -13,7 +13,7 @@ import logging
 from sqlmodel import Session
 
 from backend.repositories.earnings_repo import EarningsRepository
-from backend.services.yfinance_service import get_stock_fundamentals
+from backend.services.data_provider import get_fundamentals as get_stock_fundamentals
 
 logger = logging.getLogger(__name__)
 

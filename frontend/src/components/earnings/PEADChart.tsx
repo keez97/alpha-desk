@@ -8,7 +8,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { PEADData } from '../../lib/api';
+import type { PEADData } from '../../lib/api';
 
 interface PEADChartProps {
   data: PEADData[];

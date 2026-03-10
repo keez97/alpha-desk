@@ -8,7 +8,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { EarningsHistory } from '../../lib/api';
+import type { EarningsHistory } from '../../lib/api';
 
 interface SmartEstimateChartProps {
   data: EarningsHistory[];

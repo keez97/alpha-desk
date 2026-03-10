@@ -4,7 +4,7 @@ import { BacktestProgress } from '../components/backtester/BacktestProgress';
 import { BacktestResults } from '../components/backtester/BacktestResults';
 import { BacktestHistory } from '../components/backtester/BacktestHistory';
 import { useBacktestStatus, useBacktestResults } from '../hooks/useBacktester';
-import { Backtest } from '../lib/api';
+import type { Backtest } from '../lib/api';
 
 export function Backtester() {
   const [selectedBacktest, setSelectedBacktest] = useState<Backtest | null>(null);

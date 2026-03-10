@@ -17,7 +17,6 @@ from backend.models.backtests import (
     BacktestFactorAllocation,
     BacktestResult,
     BacktestStatistic,
-    BacktestStatus,
     FactorCorrelation,
     AlphaDecayAnalysis,
     ScreenerFactorScore,
@@ -52,6 +51,12 @@ from backend.models.earnings import (
     EarningsSignal,
 )
 
+# RRG Rotation Alerts models
+from backend.models.rotation_alerts import RotationAlert
+
+# Alert Notification Pipeline models
+from backend.models.notifications import Notification, NotificationConfig
+
 __all__ = [
     # Existing models
     "Watchlist",
@@ -77,7 +82,6 @@ __all__ = [
     "BacktestFactorAllocation",
     "BacktestResult",
     "BacktestStatistic",
-    "BacktestStatus",
     "FactorCorrelation",
     "AlphaDecayAnalysis",
     "ScreenerFactorScore",
@@ -101,4 +105,9 @@ __all__ = [
     "TickerSentiment",
     "SentimentAlert",
     "SentimentHeatmapCache",
+    # RRG Rotation Alerts
+    "RotationAlert",
+    # Alert Notification Pipeline
+    "Notification",
+    "NotificationConfig",
 ]

@@ -1,5 +1,5 @@
-from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import UniqueConstraint, Index
+from sqlmodel import SQLModel, Field, Relationship, Column
+from sqlalchemy import UniqueConstraint, Index, JSON
 from datetime import datetime, timezone
 from datetime import date as DateType
 from decimal import Decimal
@@ -27,7 +27,7 @@ class Backtest(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    extra_data: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column("metadata", JSON, nullable=True))
 
     # Relationships
     configuration: Optional["BacktestConfiguration"] = Relationship(back_populates="backtest")
@@ -100,7 +100,7 @@ class BacktestResult(SQLModel, table=True):
     daily_return: Decimal
     benchmark_return: Optional[Decimal] = None
     turnover: Optional[Decimal] = None
-    factor_exposures: Optional[Dict[str, Any]] = None
+    factor_exposures: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))
     holdings_count: Optional[int] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -154,8 +154,14 @@ class FactorCorrelation(SQLModel, table=True):
 
     # Relationships
     backtest: Optional[Backtest] = Relationship(back_populates="factor_correlations")
-    factor_definition_1: Optional[FactorDefinition] = Relationship(back_populates="factor_correlations_1")
-    factor_definition_2: Optional[FactorDefinition] = Relationship(back_populates="factor_correlations_2")
+    factor_definition_1: Optional[FactorDefinition] = Relationship(
+        back_populates="factor_correlations_1",
+        sa_relationship_kwargs={"foreign_keys": "[FactorCorrelation.factor_1_id]"},
+    )
+    factor_definition_2: Optional[FactorDefinition] = Relationship(
+        back_populates="factor_correlations_2",
+        sa_relationship_kwargs={"foreign_keys": "[FactorCorrelation.factor_2_id]"},
+    )
 
 
 class AlphaDecayAnalysis(SQLModel, table=True):

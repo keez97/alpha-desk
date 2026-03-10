@@ -1,4 +1,4 @@
-import { SentimentMover } from '../../lib/api';
+import type { SentimentMover } from '../../lib/api';
 import { SentimentScore } from './SentimentScore';
 import { classNames } from '../../lib/utils';
 

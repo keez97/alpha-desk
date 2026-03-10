@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { BenchmarkSelector } from '../components/rrg/BenchmarkSelector';
 import { RRGChart } from '../components/rrg/RRGChart';
+import { TradeIdeaPanel } from '../components/rrg/TradeIdeaPanel';
+import { RotationAlerts } from '../components/rrg/RotationAlerts';
+import { AlertBadge } from '../components/rrg/AlertBadge';
+import { IntradayMomentum } from '../components/rrg/IntradayMomentum';
 import { useRRG } from '../hooks/useRRG';
 import { LoadingState } from '../components/shared/LoadingState';
 import { ErrorState } from '../components/shared/ErrorState';
@@ -12,6 +16,10 @@ export function RRG() {
 
   return (
     <div className="p-4 space-y-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-xs font-medium text-neutral-300">Relative Rotation Graph</span>
+        <AlertBadge />
+      </div>
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="lg:col-span-1 space-y-3">
           <div className="border border-neutral-800 rounded p-3">
@@ -41,6 +49,8 @@ export function RRG() {
               </div>
             </div>
           </div>
+
+          <TradeIdeaPanel benchmark={benchmark} weeks={weeks} />
         </div>
 
         <div className="lg:col-span-4">
@@ -53,6 +63,9 @@ export function RRG() {
           ) : null}
         </div>
       </div>
+
+      <RotationAlerts />
+      <IntradayMomentum />
     </div>
   );
 }

@@ -12,7 +12,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { SentimentHistoryPoint } from '../../lib/api';
+import type { SentimentHistoryPoint } from '../../lib/api';
 import { classNames } from '../../lib/utils';
 
 interface SentimentChartProps {

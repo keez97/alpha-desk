@@ -29,6 +29,13 @@ class Security(SQLModel, table=True):
     fundamentals: List["FundamentalsSnapshot"] = Relationship(back_populates="security")
     custom_factor_scores: List["CustomFactorScore"] = Relationship(back_populates="security")
     screener_scores: List["ScreenerFactorScore"] = Relationship(back_populates="security")
+    earnings_estimates: List["EarningsEstimate"] = Relationship(back_populates="security")
+    earnings_actuals: List["EarningsActual"] = Relationship(back_populates="security")
+    pead_measurements: List["PEADMeasurement"] = Relationship(back_populates="security")
+    earnings_signals: List["EarningsSignal"] = Relationship(back_populates="security")
+    news_articles: List["NewsArticle"] = Relationship(back_populates="security")
+    ticker_sentiments: List["TickerSentiment"] = Relationship(back_populates="security")
+    sentiment_alerts: List["SentimentAlert"] = Relationship(back_populates="security")
 
 
 class SecurityLifecycleEvent(SQLModel, table=True):

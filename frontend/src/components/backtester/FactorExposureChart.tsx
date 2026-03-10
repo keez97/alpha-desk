@@ -8,7 +8,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import { BacktestResult } from '../../lib/api';
+import type { BacktestResult } from '../../lib/api';
 
 interface FactorExposureChartProps {
   results: BacktestResult;

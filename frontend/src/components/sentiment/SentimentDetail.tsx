@@ -1,6 +1,6 @@
 import { useSentimentHistory, useSentimentNews } from '../../hooks/useSentiment';
 import { useSentimentAlerts } from '../../hooks/useSentiment';
-import { SentimentData, SentimentAlert } from '../../lib/api';
+import type { SentimentData, SentimentAlert } from '../../lib/api';
 import { SentimentScore } from './SentimentScore';
 import { SentimentChart } from './SentimentChart';
 import { SentimentAlertBadge } from './SentimentAlertBadge';

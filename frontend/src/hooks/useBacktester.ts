@@ -9,6 +9,8 @@ import {
   deleteBacktest,
   getFactors,
   createFactor,
+} from '../lib/api';
+import type {
   CreateBacktestRequest,
   Backtest,
   BacktestStatus,

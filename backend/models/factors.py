@@ -1,5 +1,5 @@
-from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import UniqueConstraint, Index
+from sqlmodel import SQLModel, Field, Relationship, Column
+from sqlalchemy import UniqueConstraint, Index, JSON
 from datetime import datetime, timezone
 from datetime import date as DateType
 from decimal import Decimal
@@ -28,7 +28,7 @@ class FactorDefinition(SQLModel, table=True):
     is_published: bool = Field(default=False, index=True)
     publication_date: Optional[DateType] = None
     calculation_formula: Optional[str] = None
-    data_requirements: Optional[Dict[str, Any]] = None
+    data_requirements: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -36,8 +36,14 @@ class FactorDefinition(SQLModel, table=True):
     fama_french_factors: List["FamaFrenchFactor"] = Relationship(back_populates="factor_definition")
     custom_factor_scores: List["CustomFactorScore"] = Relationship(back_populates="factor_definition")
     backtest_allocations: List["BacktestFactorAllocation"] = Relationship(back_populates="factor_definition")
-    factor_correlations_1: List["FactorCorrelation"] = Relationship(back_populates="factor_definition_1")
-    factor_correlations_2: List["FactorCorrelation"] = Relationship(back_populates="factor_definition_2")
+    factor_correlations_1: List["FactorCorrelation"] = Relationship(
+        back_populates="factor_definition_1",
+        sa_relationship_kwargs={"foreign_keys": "FactorCorrelation.factor_1_id"},
+    )
+    factor_correlations_2: List["FactorCorrelation"] = Relationship(
+        back_populates="factor_definition_2",
+        sa_relationship_kwargs={"foreign_keys": "FactorCorrelation.factor_2_id"},
+    )
     alpha_decay_analysis: List["AlphaDecayAnalysis"] = Relationship(back_populates="factor_definition")
     screener_scores: List["ScreenerFactorScore"] = Relationship(back_populates="factor_definition")
 

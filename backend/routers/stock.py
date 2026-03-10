@@ -4,10 +4,10 @@ from datetime import datetime
 import json
 from backend.database import get_session
 from backend.models.cache import StockGradeCache
-from backend.services.yfinance_service import (
+from backend.services.data_provider import (
     search_ticker,
     get_quote,
-    get_stock_fundamentals
+    get_fundamentals as get_stock_fundamentals,
 )
 from backend.services.fds_service import (
     get_income_statements,

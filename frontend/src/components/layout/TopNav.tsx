@@ -1,15 +1,20 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ModelSelector } from '../settings/ModelSelector';
+import { NotificationBell } from '../shared/NotificationBell';
+import { NotificationPanel } from '../shared/NotificationPanel';
 import { classNames } from '../../lib/utils';
+import { useState } from 'react';
 
 const navItems = [
   { label: 'Morning Brief', path: '/' },
   { label: 'Screener', path: '/screener' },
+  { label: 'Confluence', path: '/confluence' },
   { label: 'Events', path: '/events' },
   { label: 'Earnings', path: '/earnings' },
   { label: 'Sentiment', path: '/sentiment' },
   { label: 'Weekly Report', path: '/weekly-report' },
   { label: 'Portfolio', path: '/portfolio' },
+  { label: 'Correlation', path: '/correlation' },
   { label: 'RRG', path: '/rrg' },
   { label: 'Backtester', path: '/backtester' },
 ];
@@ -17,6 +22,7 @@ const navItems = [
 export function TopNav() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [showNotifications, setShowNotifications] = useState(false);
 
   return (
     <nav className="border-b border-neutral-800 bg-black">
@@ -42,7 +48,13 @@ export function TopNav() {
             );
           })}
           </div>
-          <div className="ml-2 border-l border-neutral-800 pl-2">
+          <div className="ml-2 border-l border-neutral-800 pl-2 flex items-center gap-2">
+            <div className="relative">
+              <NotificationBell onClick={() => setShowNotifications(!showNotifications)} isOpen={showNotifications} />
+              <div className="absolute right-0 top-8 z-50">
+                <NotificationPanel isOpen={showNotifications} onClose={() => setShowNotifications(false)} />
+              </div>
+            </div>
             <ModelSelector />
           </div>
         </div>

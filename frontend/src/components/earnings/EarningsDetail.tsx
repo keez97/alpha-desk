@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { EarningsSignal, EarningsHistory, PEADData } from '../../lib/api';
+import type { EarningsSignal, EarningsHistory, PEADData } from '../../lib/api';
 import { EarningsSignalBadge } from './EarningsSignalBadge';
 import { DivergenceIndicator } from './DivergenceIndicator';
 import { SmartEstimateChart } from './SmartEstimateChart';

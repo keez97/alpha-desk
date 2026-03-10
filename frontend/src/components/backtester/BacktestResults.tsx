@@ -1,4 +1,4 @@
-import { Backtest, BacktestResult } from '../../lib/api';
+import type { Backtest, BacktestResult } from '../../lib/api';
 import { StatisticsPanel } from './StatisticsPanel';
 import { EquityCurveChart } from './EquityCurveChart';
 import { FactorExposureChart } from './FactorExposureChart';

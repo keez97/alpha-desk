@@ -1,11 +1,14 @@
 import { classNames, formatPercent } from '../../lib/utils';
 
 interface DeltaBadgeProps {
-  value: number;
+  value: number | undefined | null;
   format?: 'pct' | 'abs';
 }
 
 export function DeltaBadge({ value, format = 'pct' }: DeltaBadgeProps) {
+  if (value == null || isNaN(value)) {
+    return <span className="inline-block text-[11px] font-mono text-neutral-500">—</span>;
+  }
   const isPositive = value > 0;
   const isNegative = value < 0;
 

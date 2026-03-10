@@ -1,4 +1,4 @@
-import { BacktestStatus } from '../../lib/api';
+import type { BacktestStatus } from '../../lib/api';
 
 interface BacktestProgressProps {
   status: BacktestStatus | undefined;

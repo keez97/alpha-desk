@@ -5,7 +5,7 @@ import json
 from backend.database import get_session
 from backend.models.cache import MorningBriefCache, MorningReportCache
 from backend.config import CACHE_TTL_HOURS
-from backend.services.yfinance_service import get_macro_data, get_sector_data
+from backend.services.data_provider import get_macro_data, get_sector_data
 from backend.services.claude_service import generate_morning_drivers, generate_morning_report
 
 router = APIRouter(prefix="/api/morning-brief", tags=["morning-brief"])

@@ -1,4 +1,4 @@
-import { Backtest } from '../../lib/api';
+import type { Backtest } from '../../lib/api';
 import { useBacktestList, useDeleteBacktest } from '../../hooks/useBacktester';
 import { LoadingState } from '../shared/LoadingState';
 

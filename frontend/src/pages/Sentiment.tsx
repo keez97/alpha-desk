@@ -12,8 +12,8 @@ export function Sentiment() {
   const { data: alertsData, isLoading: alertsLoading } = useSentimentAlerts();
   const { mutate: refreshSentiment, isPending: isRefreshing } = useRefreshSentiment();
 
-  const movers = useMemo(() => moversData || [], [moversData]);
-  const alerts = useMemo(() => alertsData || [], [alertsData]);
+  const movers = useMemo(() => Array.isArray(moversData) ? moversData : [], [moversData]);
+  const alerts = useMemo(() => Array.isArray(alertsData) ? alertsData : [], [alertsData]);
   const activeAlerts = useMemo(() => alerts.filter(a => !a.resolved_at), [alerts]);
 
   const handleSelectTicker = (ticker: string) => {
