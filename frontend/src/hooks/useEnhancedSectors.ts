@@ -8,5 +8,7 @@ export function useEnhancedSectors(period: string = '1D') {
     queryKey: ['enhanced-sectors', period],
     queryFn: () => fetchEnhancedSectors(period as any),
     staleTime: 5 * 60 * 1000,
+    retry: 2,
+    retryDelay: 1000,
   });
 }

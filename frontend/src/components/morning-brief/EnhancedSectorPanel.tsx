@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { EnhancedSectorData } from '../../lib/api';
 import { useEnhancedSectors } from '../../hooks/useEnhancedSectors';
 import { DeltaBadge } from '../shared/DeltaBadge';
@@ -37,9 +37,41 @@ function getMomentumColor(value: number): string {
 
 export function EnhancedSectorPanel() {
   const [period, setPeriod] = useState<'1D' | '5D' | '1M' | '3M'>('1D');
+  const [timedOut, setTimedOut] = useState(false);
   const { data, isLoading, error, refetch } = useEnhancedSectors(period);
 
-  if (isLoading) return <LoadingState message="Loading enhanced sectors..." />;
+  // Timeout after 8 seconds
+  useEffect(() => {
+    if (!isLoading) {
+      setTimedOut(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setTimedOut(true);
+    }, 8000);
+
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  if (timedOut) {
+    return (
+      <div className="flex items-center gap-3 py-4 px-4 bg-amber-950/30 rounded border border-amber-900/50">
+        <span className="text-xs text-amber-400">⏱️ Request timed out</span>
+        <button
+          onClick={() => {
+            setTimedOut(false);
+            refetch();
+          }}
+          className="ml-auto rounded px-3 py-1 text-xs font-medium text-neutral-400 border border-neutral-800 hover:text-neutral-200 hover:border-neutral-700 transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (isLoading) return <LoadingState message="Loading sectors..." />;
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (!data || data.length === 0) return null;
 

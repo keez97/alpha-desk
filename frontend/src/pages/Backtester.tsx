@@ -60,8 +60,8 @@ export function Backtester() {
         ) : (
           <div className="border border-neutral-800 rounded p-4 bg-black h-full flex items-center justify-center">
             <div className="text-center">
-              <p className="text-sm text-neutral-400">No backtest selected</p>
-              <p className="text-xs text-neutral-600 mt-1">Create a new backtest or select one from history</p>
+              <p className="text-sm text-neutral-300 font-medium">No backtests yet</p>
+              <p className="text-xs text-neutral-600 mt-1">Create your first strategy to see results here.</p>
             </div>
           </div>
         )}

@@ -40,7 +40,8 @@ export function EventTimeline({
   if (!events.length && !isLoading) {
     return (
       <div className="border border-neutral-800 rounded p-8 text-center">
-        <p className="text-xs text-neutral-500">No events found. Try adjusting your filters.</p>
+        <p className="text-sm text-neutral-300 font-medium mb-2">No events found</p>
+        <p className="text-xs text-neutral-500">Use the scan button to detect upcoming events, or events will populate automatically as market data is collected.</p>
       </div>
     );
   }

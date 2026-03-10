@@ -1,7 +1,7 @@
 from backend.models.watchlist import Watchlist
 from backend.models.portfolio import Portfolio, PortfolioHolding
 from backend.models.report import WeeklyReport
-from backend.models.cache import MorningBriefCache, StockGradeCache, ScreenerCache
+from backend.models.cache import MorningBriefCache, MorningReportCache, StockGradeCache, ScreenerCache
 
 # Factor Backtester models
 from backend.models.securities import Security, SecurityLifecycleEvent

@@ -71,43 +71,55 @@ def _get_regime_context() -> tuple:
 
 
 async def generate_morning_drivers(date: str) -> Dict[str, Any]:
-    """Generate 5 market drivers for the given date."""
-    if USE_MOCK:
-        logger.info("Using mock morning drivers")
-        result = mock_data.MOCK_MORNING_DRIVERS.copy()
-        result["date"] = date
-        return result
+    """Generate 5 market drivers for the given date.
 
+    Strategy: Always try data-driven analysis first (works without LLM).
+    Only call OpenRouter if USE_LLM_ENHANCED is True and key is valid.
+    """
+    from backend.services.smart_analysis import generate_smart_drivers
+
+    # Step 1: Get real market data for data-driven analysis
     try:
-        prompt = morning_drivers.get_morning_drivers_prompt(date)
-        model_id = get_openrouter_model_id()
-        logger.info(f"Generating morning drivers with model: {model_id}")
-
-        response = client.chat.completions.create(
-            model=model_id,
-            max_tokens=2000,
-            messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        text_content = _extract_text(response)
-        parsed = _parse_json_from_text(text_content)
-        if parsed:
-            return parsed
-
-        return {
-            "date": date,
-            "drivers": [],
-            "raw_response": text_content,
-        }
-
+        macro = get_macro_data()
+        from backend.services.data_provider import get_sector_data
+        sectors = get_sector_data(period="1D")
     except Exception as e:
-        logger.warning(f"Error generating morning drivers, falling back to mock: {e}")
-        result = mock_data.MOCK_MORNING_DRIVERS.copy()
-        result["date"] = date
-        return result
+        logger.warning(f"Could not fetch market data: {e}")
+        macro, sectors = {}, []
+
+    # Step 2: Try LLM-enhanced generation if API key is available
+    if not USE_MOCK and client:
+        try:
+            prompt = morning_drivers.get_morning_drivers_prompt(date)
+            model_id = get_openrouter_model_id()
+            logger.info(f"Generating morning drivers with model: {model_id}")
+
+            response = client.chat.completions.create(
+                model=model_id,
+                max_tokens=2000,
+                messages=[
+                    {"role": "system", "content": BASE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+
+            text_content = _extract_text(response)
+            parsed = _parse_json_from_text(text_content)
+            if parsed:
+                return parsed
+        except Exception as e:
+            logger.warning(f"LLM generation failed, using data-driven analysis: {e}")
+
+    # Step 3: Data-driven analysis (always works, uses real market data)
+    if macro or sectors:
+        logger.info("Using data-driven smart analysis for morning drivers")
+        return generate_smart_drivers(date, macro, sectors)
+
+    # Step 4: Static mock as last resort
+    logger.info("Using static mock morning drivers")
+    result = mock_data.MOCK_MORNING_DRIVERS.copy()
+    result["date"] = date
+    return result
 
 
 def _generate_ticker_aware_grade(ticker: str, company_name: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -273,10 +285,11 @@ def _generate_ticker_aware_grade(ticker: str, company_name: str, data: Dict[str,
 
 async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Grade a stock with regime-adaptive institutional analysis."""
+    from backend.services.quant_grader import grade_stock_quantitative
+
     if USE_MOCK:
-        logger.info(f"Using mock grade for stock: {ticker}")
-        company_name = data.get("name", ticker)
-        return _generate_ticker_aware_grade(ticker, company_name, data)
+        logger.info(f"Using quantitative grader for stock: {ticker}")
+        return grade_stock_quantitative(ticker, data)
 
     try:
         company_name = data.get("name", ticker)
@@ -308,112 +321,72 @@ async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
         return {"ticker": ticker, "grade": "HOLD", "raw_response": text_content}
 
     except Exception as e:
-        logger.warning(f"Error grading stock {ticker}, falling back to mock: {e}")
-        company_name = data.get("name", ticker)
-        return _generate_ticker_aware_grade(ticker, company_name, data)
+        logger.warning(f"Error grading stock {ticker}, falling back to quantitative grader: {e}")
+        from backend.services.quant_grader import grade_stock_quantitative
+        return grade_stock_quantitative(ticker, data)
 
 
 async def generate_morning_report(date: str) -> Dict[str, Any]:
-    """Generate condensed morning market report (non-streaming)."""
-    if USE_MOCK:
-        logger.info("Using mock morning report")
-        return {
-            "date": date,
-            "market_snapshot": {
-                "title": "Market Snapshot",
-                "content": "U.S. equities are poised for a constructive open as investors digest stronger-than-expected manufacturing data from the ISM PMI released yesterday. The S&P 500 closed at 575.82, up 1.49% for the week, with technology and industrials leading the charge. Futures are modestly positive, indicating a continuation of the risk-on tone from last week. The VIX remains elevated but stable at 15.45, suggesting cautious optimism rather than complacency. Bond markets are pricing in a data-dependent Fed approach, with 10-year yields at 4.25% after ticking up on stronger economic data."
-            },
-            "sector_rotation": {
-                "title": "Sector Rotation",
-                "content": "Technology and Industrials maintain their leadership amid the ongoing AI infrastructure rally and economic resilience. The Information Technology sector is up 2.13% for the week, driven by semiconductor strength and cloud computing plays. Industrials are up 1.83%, benefiting from increased capital expenditures by corporations. Healthcare and Financials are showing modest strength, up 0.93% and 1.56% respectively. Energy is the clear laggard, down 1.63% on weaker crude prices as demand concerns resurface. Consumer Staples and Utilities remain defensive, up only 0.49% and 0.29%. Momentum favors cyclicals and growth; defensive positioning is being tested."
-            },
-            "macro_pulse": {
-                "title": "Macro Pulse",
-                "content": "Economic data continues to signal resilience despite some mixed signals. ISM Manufacturing PMI improved to 52.8, beating expectations and indicating accelerating manufacturing activity. Jobless claims remain near 40-year lows, supporting the labor market narrative. However, consumer confidence is showing slight cracks, with credit card spending moderating in the latest weekly data. The Fed's recent communications emphasize patience and data dependency; March FOMC minutes revealed more hawkish bias than expected, pushing back against rate-cut expectations. International concerns persist with geopolitical tensions, but haven't derailed U.S. equities. Oil prices are under pressure from demand concerns, down 2.25% this week to $67.45/bbl."
-            },
-            "week_ahead": {
-                "title": "Week Ahead",
-                "content": "The coming week is light on macro events until Thursday's Producer Price Index data, which could inform Fed expectations. Multiple earnings reports are scheduled, particularly in the Technology and Healthcare sectors. Investors should watch for any guidance changes on capital expenditure (particularly AI-related) and margin trends. Treasury auctions for 5-year and 7-year notes will set the tone for the longer end of the curve. The week's biggest catalyst will be Fed Chair Powell's testimony to Congress on Wednesday, where he's likely to reiterate data dependency and market participants will parse every word for rate-cut clues. Technicians note that the S&P 500 is approaching resistance at 580; a break above that could trigger further momentum-driven buying. Conversely, a pullback through the 50-day moving average around 565 would warrant closer scrutiny of the rally's durability."
-            }
-        }
+    """Generate condensed morning market report (non-streaming).
 
+    Strategy: Always try data-driven analysis first (works without LLM).
+    Only call OpenRouter if key is valid and available.
+    """
+    from backend.services.smart_analysis import generate_smart_report
+
+    # Step 1: Get real market data
     try:
-        prompt = morning_report.get_morning_report_prompt(date)
-        model_id = get_openrouter_model_id()
-        logger.info(f"Generating morning report with model: {model_id}")
-
-        response = client.chat.completions.create(
-            model=model_id,
-            max_tokens=3000,
-            messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        text_content = _extract_text(response)
-        parsed = _parse_json_from_text(text_content)
-        if parsed:
-            return parsed
-
-        return {
-            "date": date,
-            "error": "Could not parse report",
-            "raw_response": text_content,
-        }
-
+        macro = get_macro_data()
+        from backend.services.data_provider import get_sector_data
+        sectors = get_sector_data(period="1D")
     except Exception as e:
-        logger.warning(f"Error generating morning report, falling back to mock: {e}")
-        return {
-            "date": date,
-            "market_snapshot": {
-                "title": "Market Snapshot",
-                "content": "U.S. equities are poised for a constructive open as investors digest stronger-than-expected manufacturing data from the ISM PMI released yesterday. The S&P 500 closed at 575.82, up 1.49% for the week, with technology and industrials leading the charge. Futures are modestly positive, indicating a continuation of the risk-on tone from last week. The VIX remains elevated but stable at 15.45, suggesting cautious optimism rather than complacency. Bond markets are pricing in a data-dependent Fed approach, with 10-year yields at 4.25% after ticking up on stronger economic data."
-            },
-            "sector_rotation": {
-                "title": "Sector Rotation",
-                "content": "Technology and Industrials maintain their leadership amid the ongoing AI infrastructure rally and economic resilience. The Information Technology sector is up 2.13% for the week, driven by semiconductor strength and cloud computing plays. Industrials are up 1.83%, benefiting from increased capital expenditures by corporations. Healthcare and Financials are showing modest strength, up 0.93% and 1.56% respectively. Energy is the clear laggard, down 1.63% on weaker crude prices as demand concerns resurface. Consumer Staples and Utilities remain defensive, up only 0.49% and 0.29%. Momentum favors cyclicals and growth; defensive positioning is being tested."
-            },
-            "macro_pulse": {
-                "title": "Macro Pulse",
-                "content": "Economic data continues to signal resilience despite some mixed signals. ISM Manufacturing PMI improved to 52.8, beating expectations and indicating accelerating manufacturing activity. Jobless claims remain near 40-year lows, supporting the labor market narrative. However, consumer confidence is showing slight cracks, with credit card spending moderating in the latest weekly data. The Fed's recent communications emphasize patience and data dependency; March FOMC minutes revealed more hawkish bias than expected, pushing back against rate-cut expectations. International concerns persist with geopolitical tensions, but haven't derailed U.S. equities. Oil prices are under pressure from demand concerns, down 2.25% this week to $67.45/bbl."
-            },
-            "week_ahead": {
-                "title": "Week Ahead",
-                "content": "The coming week is light on macro events until Thursday's Producer Price Index data, which could inform Fed expectations. Multiple earnings reports are scheduled, particularly in the Technology and Healthcare sectors. Investors should watch for any guidance changes on capital expenditure (particularly AI-related) and margin trends. Treasury auctions for 5-year and 7-year notes will set the tone for the longer end of the curve. The week's biggest catalyst will be Fed Chair Powell's testimony to Congress on Wednesday, where he's likely to reiterate data dependency and market participants will parse every word for rate-cut clues. Technicians note that the S&P 500 is approaching resistance at 580; a break above that could trigger further momentum-driven buying. Conversely, a pullback through the 50-day moving average around 565 would warrant closer scrutiny of the rally's durability."
-            }
-        }
+        logger.warning(f"Could not fetch market data for report: {e}")
+        macro, sectors = {}, []
+
+    # Step 2: Try LLM-enhanced generation if available
+    if not USE_MOCK and client:
+        try:
+            prompt = morning_report.get_morning_report_prompt(date)
+            model_id = get_openrouter_model_id()
+            logger.info(f"Generating morning report with model: {model_id}")
+            response = client.chat.completions.create(
+                model=model_id, max_tokens=3000,
+                messages=[
+                    {"role": "system", "content": BASE_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            text_content = _extract_text(response)
+            parsed = _parse_json_from_text(text_content)
+            if parsed:
+                return parsed
+        except Exception as e:
+            logger.warning(f"LLM report failed, using data-driven analysis: {e}")
+
+    # Step 3: Data-driven analysis (always works, uses real market data)
+    if macro or sectors:
+        logger.info("Using data-driven smart analysis for morning report")
+        return generate_smart_report(date, macro, sectors)
+
+    # Step 4: Static fallback
+    logger.info("Using static mock morning report (no data available)")
+    result = mock_data.MOCK_MORNING_DRIVERS.copy()
+    result["date"] = date
+    return result
 
 
 async def generate_weekly_report(end_date: str) -> AsyncGenerator[str, None]:
-    """Generate weekly report with streaming response."""
-    if USE_MOCK:
-        logger.info("Using mock weekly report")
-        report = mock_data.MOCK_WEEKLY_REPORT.copy()
-        yield json.dumps(report)
-        return
+    """Generate weekly report — data-driven, no LLM needed."""
+    from backend.services.smart_analysis import generate_smart_weekly_report
 
     try:
-        prompt = weekly_report.get_weekly_report_prompt(end_date)
-        model_id = get_openrouter_model_id()
-        logger.info(f"Generating weekly report with model: {model_id}")
-
-        stream = client.chat.completions.create(
-            model=model_id,
-            max_tokens=4000,
-            stream=True,
-            messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-
+        macro = get_macro_data()
+        from backend.services.data_provider import get_sector_data
+        sectors = get_sector_data(period="5D")
+        report = generate_smart_weekly_report(end_date, macro, sectors)
+        yield json.dumps(report)
     except Exception as e:
-        logger.warning(f"Error generating weekly report, falling back to mock: {e}")
+        logger.warning(f"Error generating weekly report: {e}")
         report = mock_data.MOCK_WEEKLY_REPORT.copy()
         yield json.dumps(report)
 

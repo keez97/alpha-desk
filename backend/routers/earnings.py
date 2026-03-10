@@ -132,13 +132,17 @@ def get_earnings_calendar(
 
     Returns list of upcoming earnings with consensus, SmartEstimate, signals, etc.
     """
-    repo = EarningsRepository(session)
-    calendar = repo.get_earnings_calendar(
-        days_ahead=days_ahead,
-        limit=limit,
-        offset=offset,
-    )
-    return calendar
+    try:
+        repo = EarningsRepository(session)
+        calendar = repo.get_earnings_calendar(
+            days_ahead=days_ahead,
+            limit=limit,
+            offset=offset,
+        )
+        return calendar
+    except Exception as e:
+        logger.error(f"Error getting earnings calendar: {e}")
+        return []
 
 
 @router.get("/{ticker}/history", response_model=List[HistoryResponse])
@@ -152,44 +156,48 @@ def get_earnings_history(
 
     Returns actual EPS, consensus, SmartEstimate, surprise %, and PEAD data.
     """
-    repo = EarningsRepository(session)
-    analyzer = PEADAnalyzer(session)
+    try:
+        repo = EarningsRepository(session)
+        analyzer = PEADAnalyzer(session)
 
-    actuals = repo.get_actuals_history(ticker, n_quarters=quarters)
+        actuals = repo.get_actuals_history(ticker, n_quarters=quarters)
 
-    result = []
-    for actual in actuals:
-        # Get estimates for this quarter
-        consensus = repo.get_latest_consensus(ticker, actual.fiscal_quarter)
-        smart_estimate = repo.get_estimates(
-            ticker,
-            actual.fiscal_quarter,
-            estimate_type="smart_estimate",
-        )
-
-        # Get PEAD if available
-        pead = repo.get_pead(ticker, actual.fiscal_quarter)
-
-        result.append(
-            HistoryResponse(
-                ticker=ticker,
-                fiscal_quarter=actual.fiscal_quarter,
-                actual_eps=float(actual.actual_eps),
-                consensus_eps=float(consensus.eps_estimate) if consensus else None,
-                smart_estimate_eps=float(smart_estimate[0].eps_estimate) if smart_estimate else None,
-                surprise_pct=float(actual.surprise_vs_consensus) if actual.surprise_vs_consensus else None,
-                report_date=actual.report_date,
-                pead_data={
-                    "surprise_direction": pead.surprise_direction,
-                    "car_1d": float(pead.car_1d) if pead.car_1d else None,
-                    "car_5d": float(pead.car_5d) if pead.car_5d else None,
-                    "car_21d": float(pead.car_21d) if pead.car_21d else None,
-                    "car_60d": float(pead.car_60d) if pead.car_60d else None,
-                } if pead else None,
+        result = []
+        for actual in actuals:
+            # Get estimates for this quarter
+            consensus = repo.get_latest_consensus(ticker, actual.fiscal_quarter)
+            smart_estimate = repo.get_estimates(
+                ticker,
+                actual.fiscal_quarter,
+                estimate_type="smart_estimate",
             )
-        )
 
-    return result
+            # Get PEAD if available
+            pead = repo.get_pead(ticker, actual.fiscal_quarter)
+
+            result.append(
+                HistoryResponse(
+                    ticker=ticker,
+                    fiscal_quarter=actual.fiscal_quarter,
+                    actual_eps=float(actual.actual_eps),
+                    consensus_eps=float(consensus.eps_estimate) if consensus else None,
+                    smart_estimate_eps=float(smart_estimate[0].eps_estimate) if smart_estimate else None,
+                    surprise_pct=float(actual.surprise_vs_consensus) if actual.surprise_vs_consensus else None,
+                    report_date=actual.report_date,
+                    pead_data={
+                        "surprise_direction": pead.surprise_direction,
+                        "car_1d": float(pead.car_1d) if pead.car_1d else None,
+                        "car_5d": float(pead.car_5d) if pead.car_5d else None,
+                        "car_21d": float(pead.car_21d) if pead.car_21d else None,
+                        "car_60d": float(pead.car_60d) if pead.car_60d else None,
+                    } if pead else None,
+                )
+            )
+
+        return result
+    except Exception as e:
+        logger.error(f"Error getting earnings history for {ticker}: {e}")
+        return []
 
 
 @router.get("/{ticker}/signal", response_model=Optional[EarningsSignalResponse])
@@ -203,29 +211,33 @@ def get_earnings_signal(
     Returns the most recent signal with confidence and reasoning.
     Only returns active signals (days_to_earnings >= 0).
     """
-    repo = EarningsRepository(session)
+    try:
+        repo = EarningsRepository(session)
 
-    # Get active signals for this ticker
-    active_signals = repo.get_active_signals(days_to_earnings_max=30)
-    ticker_signals = [s for s in active_signals if s.ticker == ticker]
+        # Get active signals for this ticker
+        active_signals = repo.get_active_signals(days_to_earnings_max=30)
+        ticker_signals = [s for s in active_signals if s.ticker == ticker]
 
-    if not ticker_signals:
+        if not ticker_signals:
+            return None
+
+        # Return most recent
+        signal = ticker_signals[0]
+        return EarningsSignalResponse(
+            ticker=signal.ticker,
+            fiscal_quarter=signal.fiscal_quarter,
+            signal_date=signal.signal_date,
+            signal_type=signal.signal_type,
+            confidence=signal.confidence,
+            smart_estimate_eps=float(signal.smart_estimate_eps),
+            consensus_eps=float(signal.consensus_eps),
+            divergence_pct=float(signal.divergence_pct),
+            days_to_earnings=signal.days_to_earnings,
+            valid_until=signal.valid_until,
+        )
+    except Exception as e:
+        logger.error(f"Error getting earnings signal for {ticker}: {e}")
         return None
-
-    # Return most recent
-    signal = ticker_signals[0]
-    return EarningsSignalResponse(
-        ticker=signal.ticker,
-        fiscal_quarter=signal.fiscal_quarter,
-        signal_date=signal.signal_date,
-        signal_type=signal.signal_type,
-        confidence=signal.confidence,
-        smart_estimate_eps=float(signal.smart_estimate_eps),
-        consensus_eps=float(signal.consensus_eps),
-        divergence_pct=float(signal.divergence_pct),
-        days_to_earnings=signal.days_to_earnings,
-        valid_until=signal.valid_until,
-    )
 
 
 @router.get("/{ticker}/pead", response_model=List[PEADResponse])
@@ -240,30 +252,34 @@ def get_pead_data(
     Returns cumulative abnormal returns at 1d, 5d, 21d, and 60d windows
     for each reported earnings.
     """
-    repo = EarningsRepository(session)
+    try:
+        repo = EarningsRepository(session)
 
-    # Get actuals for this ticker
-    actuals = repo.get_actuals_history(ticker, n_quarters=quarters)
+        # Get actuals for this ticker
+        actuals = repo.get_actuals_history(ticker, n_quarters=quarters)
 
-    result = []
-    for actual in actuals:
-        pead = repo.get_pead(ticker, actual.fiscal_quarter)
-        if pead:
-            result.append(
-                PEADResponse(
-                    ticker=pead.ticker,
-                    fiscal_quarter=pead.fiscal_quarter,
-                    earnings_date=pead.earnings_date,
-                    surprise_direction=pead.surprise_direction,
-                    surprise_magnitude=float(pead.surprise_magnitude),
-                    car_1d=float(pead.car_1d) if pead.car_1d else None,
-                    car_5d=float(pead.car_5d) if pead.car_5d else None,
-                    car_21d=float(pead.car_21d) if pead.car_21d else None,
-                    car_60d=float(pead.car_60d) if pead.car_60d else None,
+        result = []
+        for actual in actuals:
+            pead = repo.get_pead(ticker, actual.fiscal_quarter)
+            if pead:
+                result.append(
+                    PEADResponse(
+                        ticker=pead.ticker,
+                        fiscal_quarter=pead.fiscal_quarter,
+                        earnings_date=pead.earnings_date,
+                        surprise_direction=pead.surprise_direction,
+                        surprise_magnitude=float(pead.surprise_magnitude),
+                        car_1d=float(pead.car_1d) if pead.car_1d else None,
+                        car_5d=float(pead.car_5d) if pead.car_5d else None,
+                        car_21d=float(pead.car_21d) if pead.car_21d else None,
+                        car_60d=float(pead.car_60d) if pead.car_60d else None,
+                    )
                 )
-            )
 
-    return result
+        return result
+    except Exception as e:
+        logger.error(f"Error getting PEAD data for {ticker}: {e}")
+        return []
 
 
 @router.get("/screener-signals", response_model=dict)
@@ -277,33 +293,39 @@ def get_screener_signals(
     Returns active signals for all specified tickers in a single call.
     Useful for scanning large watchlists.
     """
-    repo = EarningsRepository(session)
+    try:
+        repo = EarningsRepository(session)
 
-    # Parse and validate tickers
-    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    if len(ticker_list) > 50:
-        raise HTTPException(status_code=400, detail="Maximum 50 tickers allowed")
-    if not all(t.isalnum() and len(t) <= 10 for t in ticker_list):
-        raise HTTPException(status_code=400, detail="Invalid ticker format")
+        # Parse and validate tickers
+        ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+        if len(ticker_list) > 50:
+            raise HTTPException(status_code=400, detail="Maximum 50 tickers allowed")
+        if not all(t.isalnum() and len(t) <= 10 for t in ticker_list):
+            raise HTTPException(status_code=400, detail="Invalid ticker format")
 
-    # Get active signals
-    active_signals = repo.get_active_signals(days_to_earnings_max=30)
+        # Get active signals
+        active_signals = repo.get_active_signals(days_to_earnings_max=30)
 
-    result = {}
-    for ticker in ticker_list:
-        ticker_signals = [s for s in active_signals if s.ticker == ticker]
-        if ticker_signals:
-            signal = ticker_signals[0]
-            result[ticker] = {
-                "signal": signal.signal_type,
-                "confidence": signal.confidence,
-                "days_to_earnings": signal.days_to_earnings,
-                "smart_eps": float(signal.smart_estimate_eps),
-                "consensus_eps": float(signal.consensus_eps),
-                "divergence_pct": float(signal.divergence_pct),
-            }
+        result = {}
+        for ticker in ticker_list:
+            ticker_signals = [s for s in active_signals if s.ticker == ticker]
+            if ticker_signals:
+                signal = ticker_signals[0]
+                result[ticker] = {
+                    "signal": signal.signal_type,
+                    "confidence": signal.confidence,
+                    "days_to_earnings": signal.days_to_earnings,
+                    "smart_eps": float(signal.smart_estimate_eps),
+                    "consensus_eps": float(signal.consensus_eps),
+                    "divergence_pct": float(signal.divergence_pct),
+                }
 
-    return result
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting screener signals: {e}")
+        return {}
 
 
 @router.post("/refresh")
@@ -345,20 +367,24 @@ def calculate_smart_estimate(
     Applies recency decay and analyst accuracy weighting to produce
     a weighted consensus estimate with signal recommendation.
     """
-    engine = SmartEstimateEngine(session)
+    try:
+        engine = SmartEstimateEngine(session)
 
-    result = engine.calculate_smart_estimate(ticker, quarter)
+        result = engine.calculate_smart_estimate(ticker, quarter)
 
-    # Generate signal
-    if result.get("divergence_pct"):
-        signal_type, confidence = engine.generate_signal(
-            result["divergence_pct"],
-            smart_eps=result.get("smart_eps"),
-            consensus_eps=result.get("consensus_eps"),
-        )
-        result["signal"] = signal_type
+        # Generate signal
+        if result.get("divergence_pct"):
+            signal_type, confidence = engine.generate_signal(
+                result["divergence_pct"],
+                smart_eps=result.get("smart_eps"),
+                consensus_eps=result.get("consensus_eps"),
+            )
+            result["signal"] = signal_type
 
-    return result
+        return result
+    except Exception as e:
+        logger.error(f"Error calculating smart estimate for {ticker} {quarter}: {e}")
+        return SmartEstimateResponse()
 
 
 @router.get("/pead-aggregate")
@@ -372,11 +398,13 @@ def get_pead_aggregate(
     Groups by surprise direction and returns average CAR at each window.
     Useful for understanding the market's typical reaction patterns.
     """
-    analyzer = PEADAnalyzer(session)
-
-    aggregate = analyzer.aggregate_pead(surprise_direction=surprise_direction)
-
-    return aggregate
+    try:
+        analyzer = PEADAnalyzer(session)
+        aggregate = analyzer.aggregate_pead(surprise_direction=surprise_direction)
+        return aggregate
+    except Exception as e:
+        logger.error(f"Error getting PEAD aggregate: {e}")
+        return {}
 
 
 @router.get("/pead-by-quartile")
@@ -389,8 +417,10 @@ def get_pead_by_quartile(
     Groups earnings by surprise size and shows how large surprises
     correlate with stronger PEAD effects.
     """
-    analyzer = PEADAnalyzer(session)
-
-    result = analyzer.analyze_pead_by_surprise_quartile()
-
-    return result
+    try:
+        analyzer = PEADAnalyzer(session)
+        result = analyzer.analyze_pead_by_surprise_quartile()
+        return result
+    except Exception as e:
+        logger.error(f"Error analyzing PEAD by quartile: {e}")
+        return {}

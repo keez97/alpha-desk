@@ -170,50 +170,54 @@ def list_events(
 
     Returns paginated list of events ordered by detected_at DESC.
     """
-    from sqlmodel import func, select
-    from backend.models.events import Event
+    try:
+        from sqlmodel import func, select
+        from backend.models.events import Event
 
-    repository = EventRepository(session)
+        repository = EventRepository(session)
 
-    # Build count query with same filters (efficient: single query)
-    count_query = select(func.count(Event.event_id))
+        # Build count query with same filters (efficient: single query)
+        count_query = select(func.count(Event.event_id))
 
-    if ticker:
-        count_query = count_query.where(Event.ticker == ticker)
-    if event_type:
-        count_query = count_query.where(Event.event_type == event_type)
-    if severity_min is not None:
-        count_query = count_query.where(Event.severity_score >= severity_min)
-    if severity_max is not None:
-        count_query = count_query.where(Event.severity_score <= severity_max)
-    if start_date:
-        count_query = count_query.where(Event.event_date >= start_date)
-    if end_date:
-        count_query = count_query.where(Event.event_date <= end_date)
-    if source:
-        count_query = count_query.where(Event.source == source)
+        if ticker:
+            count_query = count_query.where(Event.ticker == ticker)
+        if event_type:
+            count_query = count_query.where(Event.event_type == event_type)
+        if severity_min is not None:
+            count_query = count_query.where(Event.severity_score >= severity_min)
+        if severity_max is not None:
+            count_query = count_query.where(Event.severity_score <= severity_max)
+        if start_date:
+            count_query = count_query.where(Event.event_date >= start_date)
+        if end_date:
+            count_query = count_query.where(Event.event_date <= end_date)
+        if source:
+            count_query = count_query.where(Event.source == source)
 
-    total = session.exec(count_query).one()
+        total = session.exec(count_query).one()
 
-    events = repository.list_events(
-        ticker=ticker,
-        event_type=event_type,
-        severity_min=severity_min,
-        severity_max=severity_max,
-        start_date=start_date,
-        end_date=end_date,
-        source=source,
-        limit=limit,
-        offset=offset,
-    )
+        events = repository.list_events(
+            ticker=ticker,
+            event_type=event_type,
+            severity_min=severity_min,
+            severity_max=severity_max,
+            start_date=start_date,
+            end_date=end_date,
+            source=source,
+            limit=limit,
+            offset=offset,
+        )
 
-    return EventsListResponse(
-        items=[EventListItemResponse.from_orm(e) for e in events],
-        total=total,
-        limit=limit,
-        offset=offset,
-        has_more=(offset + limit) < total,
-    )
+        return EventsListResponse(
+            items=[EventListItemResponse.from_orm(e) for e in events],
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=(offset + limit) < total,
+        )
+    except Exception as e:
+        logger.error(f"Error listing events: {e}")
+        return EventsListResponse(items=[], total=0, limit=limit, offset=offset, has_more=False)
 
 
 @router.get("/{event_id}", response_model=EventDetailResponse)
@@ -326,21 +330,28 @@ def trigger_manual_scan(
 
     Returns immediately with task status. Results are saved to database asynchronously.
     """
-    polling_service = BackgroundPollingService()
+    try:
+        polling_service = BackgroundPollingService()
 
-    # Add background task
-    background_tasks.add_task(
-        polling_service.run_polling_cycle,
-        session,
-        tickers=tickers,
-    )
+        # Add background task
+        background_tasks.add_task(
+            polling_service.run_polling_cycle,
+            session,
+            tickers=tickers,
+        )
 
-    logger.info(f"Scheduled background scan for {len(tickers) if tickers else 'all'} tickers")
+        logger.info(f"Scheduled background scan for {len(tickers) if tickers else 'all'} tickers")
 
-    return ScanTriggerResponse(
-        message="Event scan triggered in background",
-        status="queued",
-    )
+        return ScanTriggerResponse(
+            message="Event scan triggered in background",
+            status="queued",
+        )
+    except Exception as e:
+        logger.error(f"Error triggering scan: {e}")
+        return ScanTriggerResponse(
+            message="Failed to trigger event scan",
+            status="error",
+        )
 
 
 @router.get("/polling-status", response_model=PollingStatusResponse)
@@ -354,17 +365,26 @@ def get_polling_status():
     - events_found: Number of events found in last scan
     - errors: Any errors from last scan
     """
-    polling_service = BackgroundPollingService()
-    status = polling_service.get_polling_status()
+    try:
+        polling_service = BackgroundPollingService()
+        status = polling_service.get_polling_status()
 
-    return PollingStatusResponse(
-        status=status.get("status", "unknown"),
-        last_run=status.get("last_run"),
-        next_run_estimate=status.get("next_run_estimate"),
-        polling_interval_hours=status.get("polling_interval_hours", 1),
-        events_found=status.get("events_found", 0),
-        errors=status.get("errors", []),
-    )
+        return PollingStatusResponse(
+            status=status.get("status", "unknown"),
+            last_run=status.get("last_run"),
+            next_run_estimate=status.get("next_run_estimate"),
+            polling_interval_hours=status.get("polling_interval_hours", 1),
+            events_found=status.get("events_found", 0),
+            errors=status.get("errors", []),
+        )
+    except Exception as e:
+        logger.error(f"Error getting polling status: {e}")
+        return PollingStatusResponse(
+            status="unknown",
+            polling_interval_hours=1,
+            events_found=0,
+            errors=[str(e)],
+        )
 
 
 @router.get("/timeline", response_model=TimelineResponse)
@@ -391,41 +411,45 @@ def get_event_timeline(
     - limit: Results per page
     - offset: Results to skip
     """
-    repository = EventRepository(session)
+    try:
+        repository = EventRepository(session)
 
-    start_date = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days_back)
-    end_date = datetime.now(timezone.utc)
+        start_date = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=days_back)
+        end_date = datetime.now(timezone.utc)
 
-    events = repository.get_events_for_timeline(
-        start_detected_at=start_date,
-        end_detected_at=end_date,
-        ticker=ticker,
-        event_type=event_type,
-        min_severity=min_severity,
-    )
+        events = repository.get_events_for_timeline(
+            start_detected_at=start_date,
+            end_detected_at=end_date,
+            ticker=ticker,
+            event_type=event_type,
+            min_severity=min_severity,
+        )
 
-    # Apply pagination
-    total = len(events)
-    paginated_events = events[offset : offset + limit]
+        # Apply pagination
+        total = len(events)
+        paginated_events = events[offset : offset + limit]
 
-    return TimelineResponse(
-        items=[
-            TimelineItemResponse(
-                event_id=e.event_id,
-                ticker=e.ticker,
-                event_type=e.event_type,
-                severity_score=e.severity_score,
-                headline=e.headline,
-                detected_at=e.detected_at.isoformat(),
-                event_date=e.event_date.isoformat(),
-            )
-            for e in paginated_events
-        ],
-        total=total,
-        limit=limit,
-        offset=offset,
-        has_more=(offset + limit) < total,
-    )
+        return TimelineResponse(
+            items=[
+                TimelineItemResponse(
+                    event_id=e.event_id,
+                    ticker=e.ticker,
+                    event_type=e.event_type,
+                    severity_score=e.severity_score,
+                    headline=e.headline,
+                    detected_at=e.detected_at.isoformat(),
+                    event_date=e.event_date.isoformat(),
+                )
+                for e in paginated_events
+            ],
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=(offset + limit) < total,
+        )
+    except Exception as e:
+        logger.error(f"Error getting event timeline: {e}")
+        return TimelineResponse(items=[], total=0, limit=limit, offset=offset, has_more=False)
 
 
 @router.get("/screener-badges", response_model=ScreenerBadgesResponse)

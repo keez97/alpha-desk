@@ -2,9 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 from datetime import datetime
 from pydantic import BaseModel
+import logging
 from backend.database import get_session
 from backend.models.watchlist import Watchlist
 from backend.services.data_provider import get_quote
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
@@ -26,25 +29,37 @@ class WatchlistResponse(BaseModel):
 @router.get("/")
 def list_watchlist(session: Session = Depends(get_session)):
     """List all watchlist items with current prices."""
-    items = session.exec(select(Watchlist)).all()
+    try:
+        items = session.exec(select(Watchlist)).all()
 
-    response = []
-    for item in items:
-        quote = get_quote(item.ticker)
-        response.append({
-            "ticker": item.ticker,
-            "added_at": item.added_at.isoformat(),
-            "price": quote.get("price", 0),
-            "change": quote.get("change", 0),
-            "pct_change": quote.get("pct_change", 0),
-            "last_grade": item.last_grade,
-            "last_grade_at": item.last_grade_at.isoformat() if item.last_grade_at else None
-        })
+        response = []
+        for item in items:
+            try:
+                quote = get_quote(item.ticker)
+            except Exception as quote_err:
+                logger.error(f"Error getting quote for {item.ticker}: {quote_err}")
+                quote = {"price": 0, "change": 0, "pct_change": 0}
 
-    return {
-        "timestamp": datetime.utcnow().isoformat(),
-        "items": response
-    }
+            response.append({
+                "ticker": item.ticker,
+                "added_at": item.added_at.isoformat(),
+                "price": quote.get("price", 0),
+                "change": quote.get("change", 0),
+                "pct_change": quote.get("pct_change", 0),
+                "last_grade": item.last_grade,
+                "last_grade_at": item.last_grade_at.isoformat() if item.last_grade_at else None
+            })
+
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "items": response
+        }
+    except Exception as e:
+        logger.error(f"Error listing watchlist: {e}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "items": []
+        }
 
 
 @router.post("/")

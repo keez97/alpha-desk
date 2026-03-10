@@ -2,12 +2,14 @@ from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 from datetime import datetime, timedelta
 import json
+import logging
 from backend.database import get_session
 from backend.models.cache import MorningBriefCache, MorningReportCache
 from backend.config import CACHE_TTL_HOURS
 from backend.services.data_provider import get_macro_data, get_sector_data
 from backend.services.claude_service import generate_morning_drivers, generate_morning_report
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/morning-brief", tags=["morning-brief"])
 
 REPORT_CACHE_TTL_HOURS = 4  # Morning report refreshes every 4 hours
@@ -40,33 +42,43 @@ async def get_drivers(session: Session = Depends(get_session)):
     today = datetime.utcnow().date().isoformat()
     cache_key = f"drivers_{today}"
 
-    # Check cache
-    cached = session.exec(
-        select(MorningBriefCache).where(
-            MorningBriefCache.cache_key == cache_key,
-            MorningBriefCache.expires_at > datetime.utcnow()
-        )
-    ).first()
+    # Check cache (with error handling for DB issues)
+    try:
+        cached = session.exec(
+            select(MorningBriefCache).where(
+                MorningBriefCache.cache_key == cache_key,
+                MorningBriefCache.expires_at > datetime.utcnow()
+            )
+        ).first()
 
-    if cached:
-        return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "cached": True,
-            "data": json.loads(cached.data_json)
-        }
+        if cached:
+            return {
+                "timestamp": datetime.utcnow().isoformat(),
+                "cached": True,
+                "data": json.loads(cached.data_json)
+            }
+    except Exception as e:
+        logger.warning(f"Cache read failed for drivers, generating fresh: {e}")
 
     # Generate new drivers
     drivers = await generate_morning_drivers(today)
 
-    # Cache result
-    expires_at = datetime.utcnow() + timedelta(hours=CACHE_TTL_HOURS)
-    cache_entry = MorningBriefCache(
-        cache_key=cache_key,
-        data_json=json.dumps(drivers),
-        expires_at=expires_at
-    )
-    session.add(cache_entry)
-    session.commit()
+    # Cache result (best-effort — don't 500 if cache write fails)
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=CACHE_TTL_HOURS)
+        cache_entry = MorningBriefCache(
+            cache_key=cache_key,
+            data_json=json.dumps(drivers),
+            expires_at=expires_at
+        )
+        session.add(cache_entry)
+        session.commit()
+    except Exception as e:
+        logger.warning(f"Cache write failed for drivers: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
@@ -80,27 +92,41 @@ async def refresh_drivers(session: Session = Depends(get_session)):
     """Force refresh of market drivers."""
     today = datetime.utcnow().date().isoformat()
 
-    # Delete existing cache
-    cache_key = f"drivers_{today}"
-    cached = session.exec(
-        select(MorningBriefCache).where(MorningBriefCache.cache_key == cache_key)
-    ).first()
-    if cached:
-        session.delete(cached)
-        session.commit()
+    # Delete existing cache (best-effort)
+    try:
+        cache_key = f"drivers_{today}"
+        cached = session.exec(
+            select(MorningBriefCache).where(MorningBriefCache.cache_key == cache_key)
+        ).first()
+        if cached:
+            session.delete(cached)
+            session.commit()
+    except Exception as e:
+        logger.warning(f"Cache delete failed: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
     # Generate new drivers
     drivers = await generate_morning_drivers(today)
 
-    # Cache result
-    expires_at = datetime.utcnow() + timedelta(hours=CACHE_TTL_HOURS)
-    cache_entry = MorningBriefCache(
-        cache_key=cache_key,
-        data_json=json.dumps(drivers),
-        expires_at=expires_at
-    )
-    session.add(cache_entry)
-    session.commit()
+    # Cache result (best-effort)
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=CACHE_TTL_HOURS)
+        cache_entry = MorningBriefCache(
+            cache_key=cache_key,
+            data_json=json.dumps(drivers),
+            expires_at=expires_at
+        )
+        session.add(cache_entry)
+        session.commit()
+    except Exception as e:
+        logger.warning(f"Cache write failed: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
@@ -114,33 +140,43 @@ async def get_morning_report(session: Session = Depends(get_session)):
     today = datetime.utcnow().date().isoformat()
     cache_key = f"report_{today}"
 
-    # Check cache — return if fresh (< 4 hours old)
-    cached = session.exec(
-        select(MorningReportCache).where(
-            MorningReportCache.cache_key == cache_key,
-            MorningReportCache.expires_at > datetime.utcnow()
-        )
-    ).first()
+    # Check cache (best-effort)
+    try:
+        cached = session.exec(
+            select(MorningReportCache).where(
+                MorningReportCache.cache_key == cache_key,
+                MorningReportCache.expires_at > datetime.utcnow()
+            )
+        ).first()
 
-    if cached:
-        return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "cached": True,
-            "data": json.loads(cached.data_json)
-        }
+        if cached:
+            return {
+                "timestamp": datetime.utcnow().isoformat(),
+                "cached": True,
+                "data": json.loads(cached.data_json)
+            }
+    except Exception as e:
+        logger.warning(f"Cache read failed for report, generating fresh: {e}")
 
-    # Generate new report (non-streaming)
+    # Generate new report
     report = await generate_morning_report(today)
 
-    # Cache result
-    expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
-    cache_entry = MorningReportCache(
-        cache_key=cache_key,
-        data_json=json.dumps(report),
-        expires_at=expires_at
-    )
-    session.add(cache_entry)
-    session.commit()
+    # Cache result (best-effort)
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
+        cache_entry = MorningReportCache(
+            cache_key=cache_key,
+            data_json=json.dumps(report),
+            expires_at=expires_at
+        )
+        session.add(cache_entry)
+        session.commit()
+    except Exception as e:
+        logger.warning(f"Cache write failed for report: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
@@ -155,26 +191,40 @@ async def refresh_morning_report(session: Session = Depends(get_session)):
     today = datetime.utcnow().date().isoformat()
     cache_key = f"report_{today}"
 
-    # Delete existing cache
-    cached = session.exec(
-        select(MorningReportCache).where(MorningReportCache.cache_key == cache_key)
-    ).first()
-    if cached:
-        session.delete(cached)
-        session.commit()
+    # Delete existing cache (best-effort)
+    try:
+        cached = session.exec(
+            select(MorningReportCache).where(MorningReportCache.cache_key == cache_key)
+        ).first()
+        if cached:
+            session.delete(cached)
+            session.commit()
+    except Exception as e:
+        logger.warning(f"Cache delete failed: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
     # Generate new report
     report = await generate_morning_report(today)
 
-    # Cache result
-    expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
-    cache_entry = MorningReportCache(
-        cache_key=cache_key,
-        data_json=json.dumps(report),
-        expires_at=expires_at
-    )
-    session.add(cache_entry)
-    session.commit()
+    # Cache result (best-effort)
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
+        cache_entry = MorningReportCache(
+            cache_key=cache_key,
+            data_json=json.dumps(report),
+            expires_at=expires_at
+        )
+        session.add(cache_entry)
+        session.commit()
+    except Exception as e:
+        logger.warning(f"Cache write failed: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
 
     return {
         "timestamp": datetime.utcnow().isoformat(),

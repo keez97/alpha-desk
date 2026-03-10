@@ -33,13 +33,13 @@ from backend.routers import (
 app = FastAPI(
     title="AlphaDesk API",
     description="Investment dashboard backend API",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # CORS middleware - restrict to local development origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5177", "http://localhost:3000"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5177", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],

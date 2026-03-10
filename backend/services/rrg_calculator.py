@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Any
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from backend.services.data_provider import get_history
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,10 @@ SECTOR_ETFS = {
     "XLC": "Communication Services",
 }
 
+# Simple in-memory cache with TTL
+_rrg_cache = {}
+_CACHE_TTL = 300  # 5 minutes
+
 
 def calculate_rrg(
     tickers: List[str],
@@ -28,7 +34,15 @@ def calculate_rrg(
 ) -> Dict[str, Any]:
     """Calculate Relative Rotation Graph metrics using JdK methodology."""
     try:
-        # Fetch historical data
+        # Check cache first
+        cache_key = f"{benchmark}_{weeks}_{','.join(sorted(tickers))}"
+        if cache_key in _rrg_cache:
+            cached_data, cached_time = _rrg_cache[cache_key]
+            if time.time() - cached_time < _CACHE_TTL:
+                logger.info(f"Returning cached RRG result (age: {time.time() - cached_time:.1f}s)")
+                return cached_data
+
+        # Fetch benchmark data (single call)
         benchmark_history = get_history(benchmark, period="1y")
         if not benchmark_history:
             return {"error": f"Could not fetch {benchmark} data", "sectors": []}
@@ -38,12 +52,30 @@ def calculate_rrg(
         benchmark_prices = [h["close"] for h in benchmark_history]
         benchmark_df = pd.Series(benchmark_prices, index=benchmark_dates)
 
-        # Fetch ticker data and compute relative strength
+        # Fetch all ticker data concurrently
+        ticker_histories = {}
         results = []
 
-        for ticker in tickers:
+        def fetch_ticker_history(ticker):
+            """Fetch history for a single ticker."""
             try:
                 history = get_history(ticker, period="1y")
+                return ticker, history
+            except Exception as e:
+                logger.error(f"Error fetching {ticker}: {e}")
+                return ticker, None
+
+        # Use ThreadPoolExecutor to fetch all tickers in parallel
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(fetch_ticker_history, ticker): ticker for ticker in tickers}
+            for future in as_completed(futures):
+                ticker, history = future.result()
+                ticker_histories[ticker] = history
+
+        # Process ticker data
+        for ticker in tickers:
+            try:
+                history = ticker_histories.get(ticker)
                 if not history:
                     logger.warning(f"No data for {ticker}")
                     continue
@@ -101,11 +133,16 @@ def calculate_rrg(
                 logger.error(f"Error processing {ticker}: {e}")
                 continue
 
-        return {
+        result = {
             "benchmark": benchmark,
             "weeks": weeks,
             "sectors": results,
         }
+
+        # Cache the result
+        _rrg_cache[cache_key] = (result, time.time())
+
+        return result
     except Exception as e:
         logger.error(f"Error calculating RRG: {e}")
         return {

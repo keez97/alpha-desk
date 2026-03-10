@@ -107,8 +107,11 @@ export function EarningsCalendar({
               </tr>
             ) : sortedItems.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-4 text-center text-neutral-500">
-                  No earnings data available
+                <td colSpan={7} className="px-3 py-4 text-center">
+                  <div className="space-y-1">
+                    <p className="text-neutral-300 text-sm font-medium">No earnings data available</p>
+                    <p className="text-neutral-500 text-xs">Earnings data is loading. Enter a ticker symbol to view earnings history and predictions.</p>
+                  </div>
                 </td>
               </tr>
             ) : (

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchReportList, fetchReport, deleteReport, generateWeeklyReportSSE } from '../lib/api';
+import { fetchReportList, fetchReport, deleteReport } from '../lib/api';
 import type { Report } from '../lib/api';
 import { useState, useCallback } from 'react';
 
@@ -50,38 +50,53 @@ export function useGenerateWeeklyReport() {
     setSections([]);
 
     try {
-      const eventSourceUrl = generateWeeklyReportSSE();
-      const eventSource = new EventSource(eventSourceUrl);
+      const response = await fetch('/api/weekly-report/generate', {
+        method: 'POST',
+        headers: { 'Accept': 'text/event-stream' },
+      });
 
-      eventSource.addEventListener('section', (event) => {
-        try {
-          const section = JSON.parse(event.data) as SSESection;
-          setSections((prev) => [...prev, section]);
-        } catch (err) {
-          console.error('Failed to parse section:', err);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let currentEvent = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            try {
+              const parsed = JSON.parse(data);
+              if (currentEvent === 'section') {
+                setSections((prev) => [...prev, parsed as SSESection]);
+              } else if (currentEvent === 'complete') {
+                queryClient.invalidateQueries({ queryKey: ['reports'] });
+                setIsGenerating(false);
+                return;
+              }
+            } catch (e) {
+              // Ignore malformed JSON
+            }
+            currentEvent = '';
+          }
         }
-      });
+      }
 
-      eventSource.addEventListener('complete', (event) => {
-        try {
-          const report = JSON.parse(event.data) as Report;
-          queryClient.setQueryData(['reports'], (old: unknown[] | undefined) => {
-            return old ? [report, ...old] : [report];
-          });
-          eventSource.close();
-          setIsGenerating(false);
-        } catch (err) {
-          console.error('Failed to parse complete event:', err);
-          eventSource.close();
-          setIsGenerating(false);
-        }
-      });
-
-      eventSource.addEventListener('error', () => {
-        setError('Failed to generate report');
-        eventSource.close();
-        setIsGenerating(false);
-      });
+      setIsGenerating(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
       setIsGenerating(false);

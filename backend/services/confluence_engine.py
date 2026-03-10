@@ -140,14 +140,38 @@ def get_sector_impact_from_regime(
     return "Neutral"
 
 
-def score_conviction(signal_count: int) -> str:
-    """Score conviction based on number of aligned signals."""
-    if signal_count >= 3:
+def score_conviction(signal_count: int, signal_strength: float = 1.0) -> str:
+    """
+    Score conviction based on number of aligned signals and their strength.
+
+    Args:
+        signal_count: Number of aligned signals (0-3)
+        signal_strength: Average strength/magnitude of signals (0-1, where 1 is strongest)
+    """
+    # Adjust conviction based on signal strength
+    adjusted_count = signal_count * (0.5 + signal_strength * 0.5)
+
+    if adjusted_count >= 2.5:
         return "HIGH"
-    elif signal_count == 2:
+    elif adjusted_count >= 1.5:
         return "MEDIUM"
     else:
         return "LOW"
+
+
+def _calculate_signal_strength(perf_pct: float, rs_momentum: float, macro_impact: str) -> float:
+    """Calculate normalized signal strength (0-1) based on magnitude."""
+    # Performance strength: 0-1 based on absolute daily move
+    perf_strength = min(abs(perf_pct) / 2.0, 1.0)  # Normalize to 2% daily move
+
+    # RS momentum strength: 0-1 based on magnitude
+    rs_strength = min(abs(rs_momentum) / 20.0, 1.0)  # Normalize to 20% momentum
+
+    # Macro impact strength: 0.5 = neutral, 1.0 = strong signal
+    macro_strength = 1.0 if "strong" in macro_impact.lower() or "bullish" in macro_impact.lower() or "bearish" in macro_impact.lower() else 0.5
+
+    # Average strength
+    return (perf_strength + rs_strength + macro_strength) / 3.0
 
 
 def generate_confluence_signals(
@@ -269,33 +293,44 @@ def generate_confluence_signals(
 
         # Only include if we have at least 2 signals
         if len(supporting_signals) >= 2:
-            conviction = score_conviction(len(supporting_signals))
+            # ENHANCED: Calculate signal strength to differentiate between stocks
+            signal_strength = _calculate_signal_strength(
+                daily_pct,
+                rs_momentum,
+                sector_impact
+            )
+            conviction = score_conviction(len(supporting_signals), signal_strength)
 
-            # Generate thesis statement
+            # Generate thesis statement with specific rationale
             if overall_direction == "bullish":
-                thesis = f"Overweight {sector_name}"
+                thesis = f"Overweight {sector_name} — {signal_strength*100:.0f}% confluence strength"
             elif overall_direction == "bearish":
-                thesis = f"Underweight {sector_name}"
+                thesis = f"Underweight {sector_name} — {signal_strength*100:.0f}% confluence strength"
             else:
                 thesis = f"Neutral {sector_name}"
 
-            # Suggested action
+            # ENHANCED: More specific suggested action based on signal strength
             if conviction == "HIGH":
-                suggested_action = f"Strong {overall_direction} signal - Consider increasing {overall_direction} exposure"
+                if signal_strength > 0.8:
+                    suggested_action = f"Very Strong {overall_direction} — Consider significant {overall_direction} positioning"
+                else:
+                    suggested_action = f"Strong {overall_direction} signal — Consider increasing {overall_direction} exposure"
             elif conviction == "MEDIUM":
-                suggested_action = f"Moderate {overall_direction} signal - Consider modest {overall_direction} positioning"
+                suggested_action = f"Moderate {overall_direction} signal — Consider modest {overall_direction} positioning"
             else:
-                suggested_action = f"Weak signal - Monitor for confirmation"
+                suggested_action = f"Weak signal — Wait for stronger confirmation before trading"
 
             signals.append({
                 "thesis": thesis,
                 "direction": overall_direction,
                 "conviction": conviction,
+                "strength": signal_strength,  # NEW: explicit strength metric
                 "sector": sector_name,
                 "sectorTicker": sector_ticker,
                 "signals": supporting_signals,
                 "suggestedAction": suggested_action,
-                "timeframe": "1-5 days",  # Confluence signals are short-term
+                "timeframe": "1-5 days",
+                "confidence": f"{signal_strength*100:.0f}%"  # NEW: human-readable confidence
             })
 
     return signals
@@ -365,6 +400,10 @@ def get_signal_matrix_data(
         else:
             confluence = "neutral"
 
+        # ENHANCED: Calculate strength for matrix display
+        signal_strength = _calculate_signal_strength(daily_pct, rs_momentum, sector_impact)
+        conviction = score_conviction(signal_count, signal_strength)
+
         matrix_rows.append({
             "ticker": sector_ticker,
             "name": sector_name,
@@ -378,10 +417,13 @@ def get_signal_matrix_data(
             },
             "performance": {
                 "change1d": daily_pct,
-                "change1m": 0,  # Would need additional data
+                "change1m": 0,
             },
             "confluence": confluence,
             "signalCount": signal_count,
+            "strength": signal_strength,  # NEW
+            "conviction": conviction,  # NEW
+            "confidence": f"{signal_strength*100:.0f}%"  # NEW
         })
 
     return matrix_rows
@@ -392,7 +434,7 @@ def calculate_confluence_signals() -> Dict[str, Any]:
     Main entry point: fetch all data and generate confluence analysis.
 
     Returns:
-        Dict with confluence_signals and matrix_data
+        Dict with confluence_signals and matrix_data, with diagnostics if empty
     """
     try:
         # Fetch data from all sources
@@ -408,6 +450,10 @@ def calculate_confluence_signals() -> Dict[str, Any]:
                 "matrix_data": [],
                 "timestamp": datetime.utcnow().isoformat(),
                 "macro_regime": {},
+                "diagnostic": {
+                    "issue": "Missing data sources",
+                    "details": f"macro_data: {bool(macro_data)}, sector_data: {bool(sector_data)}, rrg_data: {bool(rrg_data.get('sectors'))}"
+                }
             }
 
         # Analyze macro regime
@@ -421,12 +467,40 @@ def calculate_confluence_signals() -> Dict[str, Any]:
         # Generate matrix data
         matrix_data = get_signal_matrix_data(rrg_data, sector_data, macro_regime)
 
-        return {
+        # ENHANCED: Provide diagnostic if no high-conviction signals found
+        result = {
             "confluence_signals": confluence_signals,
             "matrix_data": matrix_data,
             "macro_regime": macro_regime,
             "timestamp": datetime.utcnow().isoformat(),
         }
+
+        if not confluence_signals or len(confluence_signals) == 0:
+            # Generate diagnostic message
+            high_conviction_count = sum(1 for s in confluence_signals if s.get("conviction") == "HIGH")
+            medium_conviction_count = sum(1 for s in confluence_signals if s.get("conviction") == "MEDIUM")
+
+            result["diagnostic"] = {
+                "note": "No high-conviction confluence signals detected in current market environment",
+                "matrix_available": len(matrix_data) > 0,
+                "high_conviction_signals": high_conviction_count,
+                "medium_conviction_signals": medium_conviction_count,
+                "recommendation": "Review the signal matrix for MEDIUM conviction opportunities. High-conviction signals are rare — wait for multiple confirmations before trading."
+            }
+        else:
+            # Count by conviction
+            high_conv = sum(1 for s in confluence_signals if s.get("conviction") == "HIGH")
+            med_conv = sum(1 for s in confluence_signals if s.get("conviction") == "MEDIUM")
+            low_conv = len(confluence_signals) - high_conv - med_conv
+
+            result["summary"] = {
+                "total_signals": len(confluence_signals),
+                "high_conviction": high_conv,
+                "medium_conviction": med_conv,
+                "low_conviction": low_conv,
+            }
+
+        return result
 
     except Exception as e:
         logger.error(f"Error calculating confluence signals: {e}")
@@ -435,4 +509,8 @@ def calculate_confluence_signals() -> Dict[str, Any]:
             "matrix_data": [],
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat(),
+            "diagnostic": {
+                "issue": "Error calculating confluence",
+                "details": str(e)
+            }
         }

@@ -9,7 +9,17 @@ const api: AxiosInstance = axios.create({
 
 api.interceptors.response.use(
   (response: any) => response,
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
+    const config = error.config as any;
+    if (!config || config._retry) {
+      console.error('API Error:', error.message);
+      return Promise.reject(error);
+    }
+    // Retry once on network errors or 5xx
+    if (!error.response || (error.response.status >= 500)) {
+      config._retry = true;
+      return api(config);
+    }
     console.error('API Error:', error.message);
     return Promise.reject(error);
   }
@@ -668,7 +678,7 @@ export const exportBacktest = (id: number) =>
   api.get(`/backtests/${id}/export`).then((r) => r.data);
 
 export const listBacktests = () =>
-  api.get('/backtests').then((r) => r.data);
+  api.get('/backtests').then((r) => r.data?.backtests || []);
 
 export const deleteBacktest = (id: number) =>
   api.delete(`/backtests/${id}`).then((r) => r.data);
