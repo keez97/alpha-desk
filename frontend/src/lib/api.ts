@@ -852,3 +852,74 @@ export const refreshEarnings = () =>
 
 export const getScreenerEarningsSignals = (tickers: string[]) =>
   api.get('/earnings/screener-signals', { params: { tickers: tickers.join(',') } }).then((r) => r.data as ScreenerEarningsSignalsResponse);
+
+// ── Sentiment ────────────────────────────────────────────────
+export interface SentimentData {
+  ticker: string;
+  scores: { window: string; score: number; velocity: number; article_count: number }[];
+  lm_categories: Record<string, number>;
+}
+
+export interface SentimentHistoryPoint {
+  date: string;
+  score: number;
+  velocity: number;
+  article_count: number;
+  price?: number;
+}
+
+export interface SentimentAlert {
+  id: number;
+  ticker: string;
+  alert_type: string;
+  sentiment_score: number;
+  price_return: number;
+  divergence_magnitude: number;
+  alert_date: string;
+  resolved_at: string | null;
+}
+
+export interface SentimentMover {
+  ticker: string;
+  sentiment_score: number;
+  velocity: number;
+  velocity_change: number;
+  article_count: number;
+}
+
+export interface NewsArticle {
+  id: number;
+  headline: string;
+  source: string;
+  published_at: string;
+  sentiment_score: number;
+  source_url: string;
+}
+
+export interface SentimentHeatmapSector {
+  sector: string;
+  avg_sentiment: number;
+  article_count: number;
+  top_movers: { ticker: string; score: number }[];
+}
+
+export const getSentiment = (ticker: string) =>
+  api.get(`/sentiment/${ticker}`).then(r => r.data as SentimentData);
+
+export const getSentimentHistory = (ticker: string, days: number = 30) =>
+  api.get(`/sentiment/${ticker}/history`, { params: { days } }).then(r => r.data as SentimentHistoryPoint[]);
+
+export const getSentimentAlerts = () =>
+  api.get('/sentiment/alerts').then(r => r.data as SentimentAlert[]);
+
+export const getSentimentMovers = (limit: number = 20) =>
+  api.get('/sentiment/movers', { params: { limit } }).then(r => r.data as SentimentMover[]);
+
+export const getSentimentNews = (ticker: string, limit: number = 20) =>
+  api.get(`/sentiment/news/${ticker}`, { params: { limit } }).then(r => r.data as NewsArticle[]);
+
+export const getSentimentHeatmap = () =>
+  api.get('/sentiment/heatmap').then(r => r.data as SentimentHeatmapSector[]);
+
+export const refreshSentiment = () =>
+  api.post('/sentiment/refresh').then(r => r.data);

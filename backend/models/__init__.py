@@ -34,6 +34,14 @@ from backend.models.events import (
     EventCorrelationAnalysis,
 )
 
+# News Sentiment Scoring models
+from backend.models.sentiment import (
+    NewsArticle,
+    TickerSentiment,
+    SentimentAlert,
+    SentimentHeatmapCache,
+)
+
 # Earnings Surprise Predictor models
 from backend.models.earnings import (
     EarningsEstimate,
@@ -88,4 +96,9 @@ __all__ = [
     "AnalystScorecard",
     "PEADMeasurement",
     "EarningsSignal",
+    # News Sentiment Scoring
+    "NewsArticle",
+    "TickerSentiment",
+    "SentimentAlert",
+    "SentimentHeatmapCache",
 ]

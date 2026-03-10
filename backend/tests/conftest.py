@@ -35,6 +35,13 @@ from backend.models.earnings import (
     PEADMeasurement,
     EarningsSignal,
 )
+from backend.models.sentiment import (
+    NewsArticle,
+    TickerSentiment,
+    SentimentAlert,
+    SentimentHeatmapCache,
+)
+from backend.services.sentiment_engine import calculate_dedup_hash
 
 
 @pytest.fixture(name="session")
@@ -713,3 +720,131 @@ def sample_earnings_signals_fixture(session: Session):
 
     session.commit()
     return signals
+
+
+# ==================== Sentiment-Related Fixtures ====================
+
+
+@pytest.fixture(name="sample_articles")
+def sample_articles_fixture(session: Session, sample_securities):
+    """
+    Create sample news articles with sentiment scores for testing.
+    """
+    articles = []
+    now = datetime.now(timezone.utc)
+    tickers = ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
+
+    for ticker_idx, ticker in enumerate(tickers):
+        for i in range(5):
+            headline = f"{ticker} news article {i}"
+            source = ["reuters", "bloomberg", "finviz"][i % 3]
+            hash_val = calculate_dedup_hash(headline, source)
+
+            article = NewsArticle(
+                ticker=ticker,
+                source=source,
+                headline=headline,
+                body_snippet=f"This is article {i} for {ticker}...",
+                published_at=now - timedelta(hours=i),
+                sentiment_score=Decimal(str(0.3 + ticker_idx * 0.1 + i * 0.05)),
+                finbert_positive=Decimal(str(0.5 + i * 0.05)),
+                finbert_negative=Decimal(str(0.2 - i * 0.02)),
+                finbert_neutral=Decimal(str(0.3 - i * 0.03)),
+                lm_categories={
+                    "uncertainty": i,
+                    "litigious": 0,
+                    "constraining": i % 2,
+                    "positive": 3 + i,
+                    "negative": i,
+                },
+                tickers_mentioned={ticker: 1.0},
+                source_url=f"https://{source}.com/{ticker}/{i}",
+                dedup_hash=hash_val,
+            )
+            articles.append(article)
+            session.add(article)
+
+    session.commit()
+    return articles
+
+
+@pytest.fixture(name="sample_ticker_sentiments")
+def sample_ticker_sentiments_fixture(session: Session, sample_securities):
+    """
+    Create sample ticker sentiment aggregates for testing.
+    """
+    sentiments = []
+    now = datetime.now(timezone.utc)
+    tickers = ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
+
+    for ticker_idx, ticker in enumerate(tickers):
+        for window in ["24h", "7d", "30d"]:
+            sentiment = TickerSentiment(
+                ticker=ticker,
+                window_type=window,
+                sentiment_score=Decimal(str(0.4 + ticker_idx * 0.1)),
+                sentiment_velocity=Decimal(str(0.05 + ticker_idx * 0.02)),
+                article_count=10 + ticker_idx * 5,
+                computed_at=now - timedelta(days={"24h": 0, "7d": 1, "30d": 7}[window]),
+            )
+            sentiments.append(sentiment)
+            session.add(sentiment)
+
+    session.commit()
+    return sentiments
+
+
+@pytest.fixture(name="sample_sentiment_alerts")
+def sample_sentiment_alerts_fixture(session: Session, sample_securities):
+    """
+    Create sample sentiment alerts for testing.
+    """
+    alerts = []
+    now = datetime.now(timezone.utc)
+    tickers = ["AAPL", "MSFT", "GOOGL"]
+    alert_types = ["contrarian_bullish", "contrarian_bearish", "momentum_shift", "velocity_spike"]
+
+    for ticker_idx, ticker in enumerate(tickers):
+        for alert_idx, alert_type in enumerate(alert_types):
+            alert = SentimentAlert(
+                ticker=ticker,
+                alert_type=alert_type,
+                sentiment_score=Decimal(str(-0.7 + alert_idx * 0.4)),
+                price_return=Decimal(str(2.0 + alert_idx * 1.5)),
+                divergence_magnitude=Decimal(str(0.5 + alert_idx * 0.15)),
+                alert_date=now - timedelta(hours=alert_idx),
+                resolved_at=None if alert_idx % 2 == 0 else now - timedelta(hours=alert_idx - 1),
+            )
+            alerts.append(alert)
+            session.add(alert)
+
+    session.commit()
+    return alerts
+
+
+@pytest.fixture(name="sample_heatmap_cache")
+def sample_heatmap_cache_fixture(session: Session):
+    """
+    Create sample sentiment heatmap cache entries for testing.
+    """
+    caches = []
+    now = datetime.now(timezone.utc)
+    sectors = ["Information Technology", "Healthcare", "Finance", "Consumer Discretionary", "Energy"]
+
+    for sector_idx, sector in enumerate(sectors):
+        for window in ["24h", "7d", "30d"]:
+            cache = SentimentHeatmapCache(
+                sector=sector,
+                window_type=window,
+                avg_sentiment=Decimal(str(0.4 + sector_idx * 0.1)),
+                article_count=50 + sector_idx * 20,
+                top_movers={
+                    f"TOP{i}": float(0.15 - i * 0.03) for i in range(1, 6)
+                },
+                computed_at=now - timedelta(days={"24h": 0, "7d": 1, "30d": 7}[window]),
+            )
+            caches.append(cache)
+            session.add(cache)
+
+    session.commit()
+    return caches

@@ -7,6 +7,7 @@ const navItems = [
   { label: 'Screener', path: '/screener' },
   { label: 'Events', path: '/events' },
   { label: 'Earnings', path: '/earnings' },
+  { label: 'Sentiment', path: '/sentiment' },
   { label: 'Weekly Report', path: '/weekly-report' },
   { label: 'Portfolio', path: '/portfolio' },
   { label: 'RRG', path: '/rrg' },

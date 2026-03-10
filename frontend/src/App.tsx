@@ -9,6 +9,7 @@ import { RRG } from './pages/RRG';
 import { Backtester } from './pages/Backtester';
 import { Events } from './pages/Events';
 import { Earnings } from './pages/Earnings';
+import { Sentiment } from './pages/Sentiment';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,6 +34,7 @@ function App() {
             <Route path="/backtester" element={<Backtester />} />
             <Route path="/events" element={<Events />} />
             <Route path="/earnings" element={<Earnings />} />
+            <Route path="/sentiment" element={<Sentiment />} />
           </Route>
         </Routes>
       </BrowserRouter>

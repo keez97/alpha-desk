@@ -16,6 +16,7 @@ from backend.routers import (
     data_ingestion,
     events,
     earnings,
+    sentiment,
 )
 
 app = FastAPI(
@@ -47,6 +48,7 @@ app.include_router(factors.router)
 app.include_router(data_ingestion.router)
 app.include_router(events.router)
 app.include_router(earnings.router)
+app.include_router(sentiment.router)
 
 
 @app.on_event("startup")
