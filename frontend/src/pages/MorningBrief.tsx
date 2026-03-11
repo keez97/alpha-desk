@@ -1,8 +1,6 @@
 import { MacroBar } from '../components/layout/MacroBar';
 import { BreadthPanel } from '../components/morning-brief/BreadthPanel';
-import { RegimePanel } from '../components/morning-brief/RegimePanel';
-import { VixTermStructurePanel } from '../components/morning-brief/VixTermStructurePanel';
-import { OvernightPanel } from '../components/morning-brief/OvernightPanel';
+import { MarketRegimeCard } from '../components/morning-brief/MarketRegimeCard';
 import { MarketReportPanel } from '../components/morning-brief/MarketReportPanel';
 import { EnhancedSectorPanel } from '../components/morning-brief/EnhancedSectorPanel';
 import { SectorChart } from '../components/morning-brief/SectorChart';
@@ -37,10 +35,10 @@ export function MorningBrief() {
       <div className="p-4 space-y-4">
         {/* Layer 1: Signal - Top Strip */}
         <div className="grid gap-4 lg:grid-cols-4 sm:grid-cols-1">
-          <RegimePanel />
-          <VixTermStructurePanel />
+          <div className="lg:col-span-3">
+            <MarketRegimeCard />
+          </div>
           <BreadthPanel />
-          <OvernightPanel />
         </div>
 
         {/* Layer 2: Context - Main Grid */}
