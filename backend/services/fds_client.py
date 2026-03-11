@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 # Base configuration
 BASE_URL = "https://api.financialdatasets.ai"
 TIMEOUT = 15
-MAX_RETRIES = 4
+MAX_RETRIES = 2
 RETRY_BACKOFF = 1.0  # seconds
 
 # Global rate limiter — max 1 request per 0.5 seconds
 _rate_lock = threading.Lock()
 _last_request_time = 0.0
-_MIN_REQUEST_INTERVAL = 0.5  # seconds between requests
+_MIN_REQUEST_INTERVAL = 0.2  # seconds between requests (was 0.5, reduced for speed)
 
 # Track if we've already logged the "API key not available" warning
 _API_KEY_WARNING_LOGGED = False
