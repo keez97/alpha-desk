@@ -16,12 +16,14 @@ from sqlmodel import Session
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
+import logging
 
 from backend.database import get_session
 from backend.models.notifications import Notification, NotificationConfig
 from backend.services.notification_engine import NotificationEngine
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
+logger = logging.getLogger(__name__)
 
 
 # ==================== Pydantic Response Models ====================
@@ -102,28 +104,32 @@ def list_notifications(
     Returns:
         List of notifications
     """
-    notifications = NotificationEngine.get_notifications(
-        session,
-        limit=limit,
-        unread_only=unread_only,
-    )
-
-    return [
-        NotificationResponse(
-            id=n.id,
-            type=n.type,
-            severity=n.severity,
-            title=n.title,
-            body=n.body,
-            ticker=n.ticker,
-            sector=n.sector,
-            read=n.read,
-            created_at=n.created_at,
-            webhook_sent=n.webhook_sent,
-            email_sent=n.email_sent,
+    try:
+        notifications = NotificationEngine.get_notifications(
+            session,
+            limit=limit,
+            unread_only=unread_only,
         )
-        for n in notifications
-    ]
+
+        return [
+            NotificationResponse(
+                id=n.id,
+                type=n.type,
+                severity=n.severity,
+                title=n.title,
+                body=n.body,
+                ticker=n.ticker,
+                sector=n.sector,
+                read=n.read,
+                created_at=n.created_at,
+                webhook_sent=n.webhook_sent,
+                email_sent=n.email_sent,
+            )
+            for n in notifications
+        ]
+    except Exception as e:
+        logger.warning(f"Error listing notifications (DB may be unavailable): {e}")
+        return []
 
 
 @router.get("/count", response_model=NotificationCountResponse)
@@ -139,8 +145,12 @@ def get_notification_count(
     Returns:
         NotificationCountResponse with unread count
     """
-    count = NotificationEngine.get_unread_count(session)
-    return NotificationCountResponse(unread=count)
+    try:
+        count = NotificationEngine.get_unread_count(session)
+        return NotificationCountResponse(unread=count)
+    except Exception as e:
+        logger.warning(f"Error getting notification count (DB may be unavailable): {e}")
+        return NotificationCountResponse(unread=0)
 
 
 @router.post("/read/{notification_id}")
