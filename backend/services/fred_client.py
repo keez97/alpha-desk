@@ -231,12 +231,22 @@ def get_macro_snapshot() -> Dict[str, Dict[str, Any]]:
 
     for series_id in series_ids:
         try:
-            observations = get_series(series_id, limit=1)
+            observations = get_series(series_id, limit=2)
             if observations and observations[0]["value"] is not None:
-                snapshot[series_id] = {
-                    "value": observations[0]["value"],
+                current = observations[0]["value"]
+                entry = {
+                    "value": current,
                     "date": observations[0]["date"],
                 }
+                # Calculate change from previous observation if available
+                if len(observations) >= 2 and observations[1]["value"] is not None:
+                    prev = observations[1]["value"]
+                    entry["change"] = round(current - prev, 4)
+                    if prev != 0:
+                        entry["pct_change"] = round((current - prev) / abs(prev) * 100, 4)
+                    else:
+                        entry["pct_change"] = 0.0
+                snapshot[series_id] = entry
             else:
                 logger.warning(f"No valid data returned for {series_id}")
         except Exception as e:

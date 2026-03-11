@@ -14,8 +14,9 @@ Data source cascade:
 
 import logging
 import time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yfinance as yf
 from backend.services import yfinance_service
@@ -213,32 +214,47 @@ def get_overnight_returns() -> Dict[str, Any]:
         logger.info("Returning cached overnight returns")
         return _cache_overnight
 
-    # Fetch live data with cascade
+    # Fetch live data with cascade — parallel execution (was sequential, 14 tickers × 4 tiers = 546s worst case)
     indices_data = []
     gaps_up = 0
     gaps_down = 0
     notable_gaps = []
     data_sources = set()
 
-    for ticker, name in ALL_TICKERS.items():
-        result = _calculate_overnight_return_cascade(ticker)
-        if result:
-            result["name"] = name
-            indices_data.append(result)
-            data_sources.add(result.get("data_source", "unknown"))
+    def _fetch_one(ticker_name: Tuple[str, str]) -> Tuple[str, str, Any]:
+        ticker, name = ticker_name
+        try:
+            return (ticker, name, _calculate_overnight_return_cascade(ticker))
+        except Exception as e:
+            logger.warning(f"Error fetching overnight return for {ticker}: {e}")
+            return (ticker, name, None)
 
-            if result["direction"] == "up":
-                gaps_up += 1
-            else:
-                gaps_down += 1
+    # Process 4 tickers concurrently (balance speed vs rate-limiting)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_fetch_one, item): item for item in ALL_TICKERS.items()}
+        for future in as_completed(futures, timeout=20):
+            try:
+                ticker, name, result = future.result(timeout=10)
+            except Exception as e:
+                logger.warning(f"Overnight return future failed: {e}")
+                continue
+            if result:
+                result["name"] = name
+                indices_data.append(result)
+                data_sources.add(result.get("data_source", "unknown"))
 
-            if result["is_outlier"]:
-                notable_gaps.append({
-                    "ticker": ticker,
-                    "overnight_return_pct": result["overnight_return_pct"],
-                    "z_score": result["z_score"],
-                    "direction": result["direction"],
-                })
+                if result["direction"] == "up":
+                    gaps_up += 1
+                else:
+                    gaps_down += 1
+
+                if result["is_outlier"]:
+                    notable_gaps.append({
+                        "ticker": ticker,
+                        "overnight_return_pct": result["overnight_return_pct"],
+                        "z_score": result["z_score"],
+                        "direction": result["direction"],
+                    })
 
     # If we got live data for most tickers, use it
     if len(indices_data) >= 8:

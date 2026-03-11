@@ -206,14 +206,13 @@ def get_macro_data() -> Dict:
     for fred_series, ticker_key in fred_series_mapping.items():
         if fred_series in fred_snapshot:
             try:
-                fred_value = fred_snapshot[fred_series].get("value")
+                fred_entry = fred_snapshot[fred_series]
+                fred_value = fred_entry.get("value")
                 if fred_value is not None:
-                    # Build result in the format expected
-                    # FRED doesn't provide daily change — set to None so frontend displays "N/A"
                     result[ticker_key] = {
                         "price": float(fred_value),
-                        "change": None,
-                        "pct_change": None,
+                        "change": fred_entry.get("change"),
+                        "pct_change": fred_entry.get("pct_change"),
                     }
                     logger.debug(f"Macro {ticker_key} served from FRED (Tier 2)")
             except Exception as e:

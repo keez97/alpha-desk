@@ -104,7 +104,15 @@ export function MarketReportPanel() {
   if (error) {
     return (
       <div className="border border-neutral-800 rounded px-4 py-3">
-        <span className="text-xs text-red-400/80">Report unavailable: {error}</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-neutral-500">Morning Report temporarily unavailable</span>
+          <button
+            onClick={() => loadReport(selectedTopics)}
+            className="text-[10px] text-neutral-500 hover:text-neutral-300 transition-colors px-2 py-1 border border-neutral-700 rounded"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
