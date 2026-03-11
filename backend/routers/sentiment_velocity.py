@@ -6,6 +6,7 @@ contrarian divergence flags, and news density metrics.
 """
 
 from fastapi import APIRouter, Query
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
@@ -56,7 +57,7 @@ class SentimentVelocityResponse(BaseModel):
 
 
 @router.get("", response_model=SentimentVelocityResponse)
-def get_sentiment_velocity_data(
+async def get_sentiment_velocity_data(
     tickers: Optional[str] = Query(
         None,
         description="Comma-separated tickers (default: SPY,QQQ)",
@@ -86,7 +87,10 @@ def get_sentiment_velocity_data(
         ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
     try:
-        result = get_sentiment_velocity(ticker_list)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(get_sentiment_velocity, ticker_list),
+            timeout=12.0  # 12s timeout for RSS + scoring
+        )
 
         # Build response, converting headline list to Headline objects
         headlines = [
@@ -120,6 +124,19 @@ def get_sentiment_velocity_data(
             history_5d=history,
         )
 
+    except asyncio.TimeoutError:
+        logger.warning("Sentiment velocity timed out after 12s")
+        return SentimentVelocityResponse(
+            timestamp=datetime.utcnow().isoformat(),
+            aggregate_score=0.0,
+            velocity=0.0,
+            velocity_signal="stable",
+            contrarian_flag=None,
+            news_density=0,
+            attention_level="normal",
+            top_headlines=[],
+            history_5d=[],
+        )
     except Exception as e:
         logger.error(f"Error fetching sentiment velocity: {e}", exc_info=True)
         # Return default response on error
