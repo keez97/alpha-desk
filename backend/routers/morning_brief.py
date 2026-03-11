@@ -427,7 +427,7 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
         "cot_positioning": positioning_raw or {},
         "scenario_risk": risk_raw or {},
         "momentum_spillover": spillover_raw or {},
-        "overnight_returns": overnight_raw or {},
+        "overnight_returns": {"timestamp": ts, "data": overnight_raw or {}},
     }
 
     return json.loads(json.dumps(result, default=_json_serial))
