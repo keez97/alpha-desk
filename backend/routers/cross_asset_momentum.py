@@ -43,5 +43,25 @@ async def get_momentum_spillover_endpoint():
         },
     }
     """
-    result = await asyncio.to_thread(get_momentum_spillover)
-    return result
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(get_momentum_spillover),
+            timeout=15.0
+        )
+        return result
+    except asyncio.TimeoutError:
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "assets": [],
+            "signals": [],
+            "matrix": {"positive_count": 0, "negative_count": 0, "neutral_count": 0},
+            "error": "timeout"
+        }
+    except Exception as e:
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "assets": [],
+            "signals": [],
+            "matrix": {"positive_count": 0, "negative_count": 0, "neutral_count": 0},
+            "error": str(e)
+        }
