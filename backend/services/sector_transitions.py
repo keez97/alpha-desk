@@ -25,13 +25,16 @@ _transitions_cache: Dict[str, Any] = {}
 _CACHE_TTL = 1800  # 30 minutes
 
 
-def get_previous_rrg_data() -> Dict[str, Any]:
+def get_previous_rrg_data(rrg_data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Get RRG data from one week ago to detect quadrant transitions.
     Since we don't have historical RRG data stored, we'll calculate current
     and use heuristics based on recent trail movement.
+    Uses pre-computed data if available, otherwise calculates.
     """
     try:
+        if rrg_data:
+            return rrg_data
         current_rrg = calculate_rrg(list(SECTOR_ETFS.keys()), benchmark="SPY", weeks=10)
         if not current_rrg or "error" in current_rrg:
             return {}
@@ -41,13 +44,15 @@ def get_previous_rrg_data() -> Dict[str, Any]:
         return {}
 
 
-def detect_quadrant_transitions() -> List[Dict[str, Any]]:
+def detect_quadrant_transitions(rrg_data: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """
     Detect recent quadrant transitions for each sector.
     Compares current quadrant vs. quadrant from ~5 days ago based on trail.
+    Uses pre-computed RRG if available.
     """
     try:
-        rrg_data = calculate_rrg(list(SECTOR_ETFS.keys()), benchmark="SPY", weeks=10)
+        if not rrg_data:
+            rrg_data = calculate_rrg(list(SECTOR_ETFS.keys()), benchmark="SPY", weeks=10)
         if not rrg_data or "error" in rrg_data:
             return []
 
@@ -307,13 +312,17 @@ def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
-def get_business_cycle_overlay() -> Dict[str, Any]:
+def get_business_cycle_overlay(macro_data: Dict = None) -> Dict[str, Any]:
     """
     Map current economic regime to historically favorable sectors.
     Uses regime_detector to get current phase.
+    Uses pre-computed macro_data if available.
     """
     try:
-        macro = get_macro_data()
+        if not macro_data:
+            macro = get_macro_data()
+        else:
+            macro = macro_data
         regime = detect_regime(macro)
         current_regime = regime.get("regime", "neutral")
 
@@ -353,8 +362,9 @@ def get_business_cycle_overlay() -> Dict[str, Any]:
         }
 
 
-def get_sector_transitions() -> Dict[str, Any]:
-    """Main function to get all sector transition data."""
+def get_sector_transitions(rrg_data: Dict[str, Any] = None, macro_data: Dict = None) -> Dict[str, Any]:
+    """Main function to get all sector transition data.
+    Accepts optional pre-computed RRG and macro data to avoid redundant fetches."""
     now = time.time()
     cache_key = "sector_transitions"
 
@@ -366,13 +376,13 @@ def get_sector_transitions() -> Dict[str, Any]:
 
     try:
         # Run quadrant transitions and business cycle concurrently with factor batch
-        transitions = detect_quadrant_transitions()
+        transitions = detect_quadrant_transitions(rrg_data=rrg_data)
 
         # Get factor decomposition for ALL sectors in one batch (shared data fetched once)
         factor_decomposition = decompose_factors_batch(list(SECTOR_ETFS.keys()))
 
         # Get business cycle overlay
-        cycle_overlay = get_business_cycle_overlay()
+        cycle_overlay = get_business_cycle_overlay(macro_data=macro_data)
 
         result = {
             "timestamp": pd.Timestamp.utcnow().isoformat(),

@@ -55,7 +55,7 @@ def _get_client() -> httpx.Client:
     if _shared_client is None or _shared_client.is_closed:
         _shared_client = httpx.Client(
             timeout=10, follow_redirects=True, headers=_HEADERS,
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
     return _shared_client
 

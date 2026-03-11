@@ -46,7 +46,6 @@ const _originalGet = api.get.bind(api);
   const pathOnly = url.split('?')[0];
   const cached = _preCache.get(pathOnly);
   if (cached) {
-    _preCache.delete(pathOnly);
     return { data: cached, status: 200, statusText: 'OK', headers: {}, config: config || {} };
   }
   return _originalGet(url, config);

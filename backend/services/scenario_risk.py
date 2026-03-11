@@ -68,8 +68,9 @@ def _get_price_history_cascade(ticker: str, days: int = 365) -> List[Dict]:
     return hist if hist else []
 
 
-def get_historical_var(ticker: str = "SPY") -> Dict[str, float]:
-    """Calculate historical VaR for a representative portfolio (SPY)."""
+def get_historical_var(ticker: str = "SPY", macro_data: Dict = None) -> Dict[str, float]:
+    """Calculate historical VaR for a representative portfolio (SPY).
+    Uses pre-computed macro_data if available to avoid redundant fetches."""
     try:
         hist = _get_price_history_cascade(ticker)
         if not hist or len(hist) < 50:
@@ -82,8 +83,11 @@ def get_historical_var(ticker: str = "SPY") -> Dict[str, float]:
         # Historical VaR (simple percentile method)
         var_95_hist = calculate_var_95(returns)
 
-        # Get current regime
-        macro = get_macro_data()
+        # Get current regime — use passed-in macro_data if available
+        if not macro_data:
+            macro = get_macro_data()
+        else:
+            macro = macro_data
         regime_data = detect_regime(macro)
         current_regime = regime_data.get("regime", "neutral")
 
@@ -104,14 +108,18 @@ def get_historical_var(ticker: str = "SPY") -> Dict[str, float]:
         }
 
 
-def find_historical_analogs() -> List[Dict[str, Any]]:
+def find_historical_analogs(macro_data: Dict = None) -> List[Dict[str, Any]]:
     """
     Find 3 periods in the past year most similar to current conditions.
     Based on: VIX level, yield curve slope, S&P momentum.
+    Uses pre-computed macro_data if available.
     """
     try:
         # Get current macro data
-        macro = get_macro_data()
+        if not macro_data:
+            macro = get_macro_data()
+        else:
+            macro = macro_data
         vix = macro.get("^VIX", {}).get("price", 20.0)
         tnx = macro.get("^TNX", {}).get("price", 4.5)
         irx = macro.get("^IRX", {}).get("price", 5.0)
@@ -249,13 +257,17 @@ def _generate_scenarios_with_claude(macro_data: dict) -> list:
         return []
 
 
-def calculate_scenario_impacts() -> List[Dict[str, Any]]:
+def calculate_scenario_impacts(macro_data: Dict = None) -> List[Dict[str, Any]]:
     """
     Calculate estimated portfolio impacts under specific stress scenarios:
     (a) 2σ VIX spike, (b) 100bp yield curve steepening, (c) 10% equity correction.
+    Uses pre-computed macro_data if available.
     """
     try:
-        macro = get_macro_data()
+        if not macro_data:
+            macro = get_macro_data()
+        else:
+            macro = macro_data
         vix = macro.get("^VIX", {}).get("price", 20.0)
         spy = macro.get("SPY", {}).get("price", 450.0)
 
@@ -451,8 +463,9 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
     return result
 
 
-def get_scenario_risk_data() -> Dict[str, Any]:
-    """Main function to get scenario risk dashboard data."""
+def get_scenario_risk_data(macro_data: Dict = None) -> Dict[str, Any]:
+    """Main function to get scenario risk dashboard data.
+    Accepts optional pre-computed macro_data to avoid redundant fetches."""
     now = time.time()
     cache_key = "scenario_risk"
 
@@ -469,19 +482,19 @@ def get_scenario_risk_data() -> Dict[str, Any]:
 
     # Scenarios are fast (only needs macro data) — do first
     try:
-        scenarios = calculate_scenario_impacts()
+        scenarios = calculate_scenario_impacts(macro_data=macro_data)
     except Exception as e:
         logger.warning(f"Scenario impacts failed: {e}")
 
     # VaR needs 365d price history — slower
     try:
-        var_data = get_historical_var("SPY")
+        var_data = get_historical_var("SPY", macro_data=macro_data)
     except Exception as e:
         logger.warning(f"VaR calculation failed: {e}")
 
     # Analogs need 365d history + VIX — slowest
     try:
-        analogs = find_historical_analogs()
+        analogs = find_historical_analogs(macro_data=macro_data)
     except Exception as e:
         logger.warning(f"Historical analogs failed: {e}")
 

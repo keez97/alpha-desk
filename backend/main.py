@@ -68,6 +68,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# GZip compression for responses > 500 bytes
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 # Include routers
 app.include_router(morning_brief.router)
 app.include_router(stock.router)

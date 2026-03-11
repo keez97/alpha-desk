@@ -31,6 +31,19 @@ _MIN_REQUEST_INTERVAL = 0.2  # seconds between requests (was 0.5, reduced for sp
 # Track if we've already logged the "API key not available" warning
 _API_KEY_WARNING_LOGGED = False
 
+# Shared httpx client for connection pooling (avoids TCP handshake per request)
+_fds_client: Optional[httpx.Client] = None
+
+def _get_fds_client() -> httpx.Client:
+    global _fds_client
+    if _fds_client is None or _fds_client.is_closed:
+        _fds_client = httpx.Client(
+            timeout=TIMEOUT,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _fds_client
+
 
 def is_available() -> bool:
     """Check if FDS API key is available."""
@@ -80,15 +93,15 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
             _last_request_time = time.time()
 
         try:
-            with httpx.Client(timeout=TIMEOUT, follow_redirects=True) as client:
-                if method.upper() == "GET":
-                    response = client.get(url, headers=headers, params=params)
-                else:
-                    response = client.request(method, url, headers=headers, params=params)
+            client = _get_fds_client()
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers, params=params)
+            else:
+                response = client.request(method, url, headers=headers, params=params)
 
-                response.raise_for_status()
-                get_breaker("fds").record_success()
-                return response.json()
+            response.raise_for_status()
+            get_breaker("fds").record_success()
+            return response.json()
 
         except httpx.HTTPStatusError as e:
             status = e.response.status_code

@@ -632,19 +632,22 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     # Regime depends on macro result
     regime_raw = await safe("regime", detect_regime, macro_raw or {})
 
-    # Batch 2: Sector data (4 concurrent) — increased timeouts for FDS cascade
-    sectors_raw, sector_perf_raw, transitions_raw, rrg_raw = await asyncio.gather(
+    # Batch 2a: Sector data + RRG (3 concurrent)
+    sectors_raw, sector_perf_raw, rrg_raw = await asyncio.gather(
         safe("sectors", get_sector_chart_data, "1D", timeout_s=15.0),
         safe("sector_perf", get_sector_data, "1D", timeout_s=8.0),
-        safe("transitions", get_sector_transitions, timeout_s=15.0),
         safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10, timeout_s=8.0),
     )
+
+    # Batch 2b: Sector transitions (reuses rrg_raw + macro_raw to avoid duplicate fetches)
+    transitions_raw = await safe("transitions", get_sector_transitions, rrg_raw, macro_raw or {}, timeout_s=15.0)
 
     # Batch 3+4 combined: Market signals + analysis (7 concurrent)
     # Must stay under Railway's 30s proxy timeout (4+4+4+8 = 20s worst case)
     # NOTE: overnight uses synthetic estimator (instant) as primary in /all
     # because the full 4-tier cascade (14 tickers × 4 APIs) can't finish in 8s.
     # The dedicated /overnight-returns endpoint still uses the full cascade.
+    # NOTE: get_scenario_risk_fast already accepts macro_data parameter
     (sentiment_raw, options_raw, earnings_raw, overnight_raw,
      positioning_raw, risk_raw, spillover_raw) = await asyncio.gather(
         safe("sentiment", get_sentiment_velocity_fast, macro_raw or {}, timeout_s=10.0),
