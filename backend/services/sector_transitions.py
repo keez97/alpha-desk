@@ -8,8 +8,9 @@ Data source cascade for price history:
 """
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
 import pandas as pd
 from backend.services import fds_client as fds
@@ -132,122 +133,126 @@ def _factor_label(name: str, value: float) -> str:
     return "Neutral"
 
 
-def decompose_factors(ticker: str) -> Dict[str, float]:
+def _empty_factors() -> Dict[str, Any]:
+    """Return zero-valued factor decomposition with labels."""
+    return {
+        "beta_contribution": 0.0,
+        "beta_label": _factor_label("beta", 0.0),
+        "size_contribution": 0.0,
+        "size_label": _factor_label("size", 0.0),
+        "value_contribution": 0.0,
+        "value_label": _factor_label("value", 0.0),
+        "momentum_contribution": 0.0,
+        "momentum_label": _factor_label("momentum", 0.0),
+    }
+
+
+def _make_series(hist: List[Dict]) -> pd.Series:
+    """Convert price history list to pandas Series."""
+    dates = [pd.to_datetime(h["date"]) for h in hist]
+    prices = [h["close"] for h in hist]
+    return pd.Series(prices, index=dates).sort_index()
+
+
+def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
     """
-    Decompose sector ETF returns into factor contributions using regression.
-    Factors: market beta (vs SPY), size (IWM-SPY), value (IWD-IWF), momentum.
+    Decompose sector ETF returns into factor contributions for ALL sectors at once.
+    Fetches shared factor data (SPY, IWM, IWD, IWF) only once, then each sector once.
+    Uses concurrent fetching for speed.
     """
+    # All tickers we need to fetch (shared factors + sectors)
+    shared_tickers = ["SPY", "IWM", "IWD", "IWF"]
+    all_tickers = list(set(shared_tickers + tickers))
+
+    # Fetch all histories concurrently
+    histories: Dict[str, List[Dict]] = {}
+
+    def _fetch(t: str) -> tuple:
+        return t, _get_history_cascade(t)
+
     try:
-        # Fetch 1-year history via FDS → yfinance cascade
-        spy_hist = _get_history_cascade("SPY")
-        ticker_hist = _get_history_cascade(ticker)
-        iwm_hist = _get_history_cascade("IWM")  # Size factor
-        iwd_hist = _get_history_cascade("IWD")  # Value ETF
-        iwf_hist = _get_history_cascade("IWF")  # Growth ETF
-
-        if not all([spy_hist, ticker_hist, iwm_hist, iwd_hist, iwf_hist]):
-            return {
-                "beta_contribution": 0.0,
-                "beta_label": _factor_label("beta", 0.0),
-                "size_contribution": 0.0,
-                "size_label": _factor_label("size", 0.0),
-                "value_contribution": 0.0,
-                "value_label": _factor_label("value", 0.0),
-                "momentum_contribution": 0.0,
-                "momentum_label": _factor_label("momentum", 0.0),
-            }
-
-        # Convert to DataFrames
-        def make_series(hist):
-            dates = [pd.to_datetime(h["date"]) for h in hist]
-            prices = [h["close"] for h in hist]
-            return pd.Series(prices, index=dates).sort_index()
-
-        spy_s = make_series(spy_hist)
-        ticker_s = make_series(ticker_hist)
-        iwm_s = make_series(iwm_hist)
-        iwd_s = make_series(iwd_hist)
-        iwf_s = make_series(iwf_hist)
-
-        # Calculate daily returns
-        spy_ret = spy_s.pct_change().dropna()
-        ticker_ret = ticker_s.pct_change().dropna()
-        iwm_ret = iwm_s.pct_change().dropna()
-        iwd_ret = iwd_s.pct_change().dropna()
-        iwf_ret = iwf_s.pct_change().dropna()
-
-        # Align data
-        common_dates = spy_ret.index.intersection(
-            ticker_ret.index
-        ).intersection(iwm_ret.index).intersection(iwd_ret.index).intersection(iwf_ret.index)
-
-        if len(common_dates) < 20:
-            return {
-                "beta_contribution": 0.0,
-                "beta_label": _factor_label("beta", 0.0),
-                "size_contribution": 0.0,
-                "size_label": _factor_label("size", 0.0),
-                "value_contribution": 0.0,
-                "value_label": _factor_label("value", 0.0),
-                "momentum_contribution": 0.0,
-                "momentum_label": _factor_label("momentum", 0.0),
-            }
-
-        # Use last 252 trading days (1 year)
-        recent_dates = common_dates[-252:]
-        spy_r = spy_ret[recent_dates]
-        ticker_r = ticker_ret[recent_dates]
-        iwm_r = iwm_ret[recent_dates]
-        iwd_r = iwd_ret[recent_dates]
-        iwf_r = iwf_ret[recent_dates]
-
-        # Calculate market beta (ticker vs SPY)
-        cov_beta = np.cov(ticker_r, spy_r)[0, 1]
-        var_spy = np.var(spy_r)
-        beta = cov_beta / var_spy if var_spy > 0 else 1.0
-
-        # Size factor: IWM - SPY (small cap premium)
-        size_factor = (iwm_r - spy_r).mean() * 252
-
-        # Value factor: IWD - IWF (value premium)
-        value_factor = (iwd_r - iwf_r).mean() * 252
-
-        # Momentum: 12-month return
-        momentum_return = (ticker_s.iloc[-1] / ticker_s.iloc[0] - 1) * 100
-
-        # Contribution calculation (simplified)
-        beta_contribution = (beta - 1.0) * spy_ret.mean() * 252 * 100
-        size_contribution = size_factor * 100
-        value_contribution = value_factor * 100
-        momentum_contribution = momentum_return * 0.2  # Weight momentum less
-
-        beta_contrib_rounded = round(beta_contribution, 2)
-        size_contrib_rounded = round(size_contribution, 2)
-        value_contrib_rounded = round(value_contribution, 2)
-        momentum_contrib_rounded = round(momentum_contribution, 2)
-
-        return {
-            "beta_contribution": beta_contrib_rounded,
-            "beta_label": _factor_label("beta", beta_contrib_rounded),
-            "size_contribution": size_contrib_rounded,
-            "size_label": _factor_label("size", size_contrib_rounded),
-            "value_contribution": value_contrib_rounded,
-            "value_label": _factor_label("value", value_contrib_rounded),
-            "momentum_contribution": momentum_contrib_rounded,
-            "momentum_label": _factor_label("momentum", momentum_contrib_rounded),
-        }
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch, t): t for t in all_tickers}
+            for future in as_completed(futures, timeout=45):
+                try:
+                    t, hist = future.result(timeout=30)
+                    if hist and len(hist) >= 20:
+                        histories[t] = hist
+                except Exception as e:
+                    t = futures[future]
+                    logger.warning(f"Failed to fetch {t}: {e}")
     except Exception as e:
-        logger.error(f"Error decomposing factors for {ticker}: {e}")
-        return {
-            "beta_contribution": 0.0,
-            "beta_label": _factor_label("beta", 0.0),
-            "size_contribution": 0.0,
-            "size_label": _factor_label("size", 0.0),
-            "value_contribution": 0.0,
-            "value_label": _factor_label("value", 0.0),
-            "momentum_contribution": 0.0,
-            "momentum_label": _factor_label("momentum", 0.0),
-        }
+        logger.error(f"Concurrent history fetch failed: {e}")
+
+    # Check shared data is available
+    if not all(t in histories for t in shared_tickers):
+        logger.warning("Missing shared factor data, returning empty factors")
+        return [{"ticker": t, "name": SECTOR_ETFS.get(t, t), **_empty_factors()} for t in tickers]
+
+    # Build shared series once
+    spy_s = _make_series(histories["SPY"])
+    iwm_s = _make_series(histories["IWM"])
+    iwd_s = _make_series(histories["IWD"])
+    iwf_s = _make_series(histories["IWF"])
+    spy_ret = spy_s.pct_change().dropna()
+    iwm_ret = iwm_s.pct_change().dropna()
+    iwd_ret = iwd_s.pct_change().dropna()
+    iwf_ret = iwf_s.pct_change().dropna()
+
+    results = []
+    for ticker in tickers:
+        try:
+            if ticker not in histories:
+                results.append({"ticker": ticker, "name": SECTOR_ETFS.get(ticker, ticker), **_empty_factors()})
+                continue
+
+            ticker_s = _make_series(histories[ticker])
+            ticker_ret = ticker_s.pct_change().dropna()
+
+            common_dates = spy_ret.index.intersection(
+                ticker_ret.index
+            ).intersection(iwm_ret.index).intersection(iwd_ret.index).intersection(iwf_ret.index)
+
+            if len(common_dates) < 20:
+                results.append({"ticker": ticker, "name": SECTOR_ETFS.get(ticker, ticker), **_empty_factors()})
+                continue
+
+            recent_dates = common_dates[-252:]
+            spy_r = spy_ret[recent_dates]
+            ticker_r = ticker_ret[recent_dates]
+            iwm_r = iwm_ret[recent_dates]
+            iwd_r = iwd_ret[recent_dates]
+            iwf_r = iwf_ret[recent_dates]
+
+            cov_beta = np.cov(ticker_r, spy_r)[0, 1]
+            var_spy = np.var(spy_r)
+            beta = cov_beta / var_spy if var_spy > 0 else 1.0
+            size_factor = (iwm_r - spy_r).mean() * 252
+            value_factor = (iwd_r - iwf_r).mean() * 252
+            momentum_return = (ticker_s.iloc[-1] / ticker_s.iloc[0] - 1) * 100
+
+            beta_contribution = round((beta - 1.0) * spy_ret.mean() * 252 * 100, 2)
+            size_contribution = round(size_factor * 100, 2)
+            value_contribution = round(value_factor * 100, 2)
+            momentum_contribution = round(momentum_return * 0.2, 2)
+
+            results.append({
+                "ticker": ticker,
+                "name": SECTOR_ETFS.get(ticker, ticker),
+                "beta_contribution": beta_contribution,
+                "beta_label": _factor_label("beta", beta_contribution),
+                "size_contribution": size_contribution,
+                "size_label": _factor_label("size", size_contribution),
+                "value_contribution": value_contribution,
+                "value_label": _factor_label("value", value_contribution),
+                "momentum_contribution": momentum_contribution,
+                "momentum_label": _factor_label("momentum", momentum_contribution),
+            })
+        except Exception as e:
+            logger.error(f"Error decomposing factors for {ticker}: {e}")
+            results.append({"ticker": ticker, "name": SECTOR_ETFS.get(ticker, ticker), **_empty_factors()})
+
+    return results
 
 
 def get_business_cycle_overlay() -> Dict[str, Any]:
@@ -308,18 +313,11 @@ def get_sector_transitions() -> Dict[str, Any]:
             return cached["data"]
 
     try:
-        # Get quadrant transitions
+        # Run quadrant transitions and business cycle concurrently with factor batch
         transitions = detect_quadrant_transitions()
 
-        # Get factor decomposition for each sector
-        factor_decomposition = []
-        for ticker in SECTOR_ETFS.keys():
-            factors = decompose_factors(ticker)
-            factor_decomposition.append({
-                "ticker": ticker,
-                "name": SECTOR_ETFS[ticker],
-                **factors,
-            })
+        # Get factor decomposition for ALL sectors in one batch (shared data fetched once)
+        factor_decomposition = decompose_factors_batch(list(SECTOR_ETFS.keys()))
 
         # Get business cycle overlay
         cycle_overlay = get_business_cycle_overlay()
