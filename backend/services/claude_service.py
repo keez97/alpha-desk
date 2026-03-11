@@ -128,17 +128,28 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
         logger.warning(f"Could not fetch market data: {e}")
         macro, sectors = {}, []
 
-    # Step 2: Try LLM-enhanced generation if API key is available
-    if not USE_MOCK:
+    # Step 2: Try LLM-enhanced generation if API key is available AND we have data
+    if not USE_MOCK and macro:
         try:
-            prompt = morning_drivers.get_morning_drivers_prompt(date)
+            prompt = morning_drivers.get_morning_drivers_prompt(date, macro=macro, sectors=sectors)
             model_id = get_model_id()
             logger.info(f"Generating morning drivers with model: {model_id}")
 
             text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=2000)
             parsed = _parse_json_from_text(text_content)
-            if parsed:
-                return parsed
+            # Validate: must have at least 2 proper drivers with titles
+            if parsed and isinstance(parsed.get("drivers"), list) and len(parsed["drivers"]) >= 2:
+                # Verify drivers have required fields
+                valid = all(
+                    d.get("title") and d.get("market_implications")
+                    for d in parsed["drivers"][:3]
+                )
+                if valid:
+                    return parsed
+                else:
+                    logger.warning("LLM drivers missing required fields, falling back to data-driven")
+            else:
+                logger.warning(f"LLM returned invalid drivers (count={len(parsed.get('drivers', []))}), falling back to data-driven")
         except Exception as e:
             logger.warning(f"LLM generation failed, using data-driven analysis: {e}")
 
