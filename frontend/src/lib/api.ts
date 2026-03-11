@@ -1392,9 +1392,13 @@ export interface FactorDecomposition {
   ticker: string;
   name: string;
   beta_contribution: number;
+  beta_label: string;
   size_contribution: number;
+  size_label: string;
   value_contribution: number;
+  value_label: string;
   momentum_contribution: number;
+  momentum_label: string;
 }
 
 export interface Transition {
@@ -1436,9 +1440,13 @@ export async function fetchSectorTransitions(): Promise<SectorTransitionsData> {
       ticker: f.ticker,
       name: f.name,
       beta_contribution: f.beta_contribution ?? 0,
+      beta_label: f.beta_label || '',
       size_contribution: f.size_contribution ?? 0,
+      size_label: f.size_label || '',
       value_contribution: f.value_contribution ?? 0,
+      value_label: f.value_label || '',
       momentum_contribution: f.momentum_contribution ?? 0,
+      momentum_label: f.momentum_label || '',
     })),
     cycle_overlay: {
       current_phase: raw.cycle_overlay?.current_phase || 'unknown',
