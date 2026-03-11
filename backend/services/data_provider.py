@@ -239,22 +239,35 @@ def get_macro_data() -> Dict:
                 except Exception:
                     pass
 
-    # Tier 3: yfinance for tickers FRED and FDS don't cover
-    fallback_tickers = ["GC=F", "BTC-USD", "SPY", "QQQ", "IWM", "XLF", "XLK", "XLE", "XLV"]
+    # Tier 3: yfinance for tickers FRED and FDS don't cover (parallel fetching)
+    fallback_tickers = [t for t in ["GC=F", "BTC-USD", "SPY", "QQQ", "IWM", "XLF", "XLK", "XLE", "XLV"] if t not in result]
 
-    for ticker in fallback_tickers:
-        if ticker not in result:
+    if fallback_tickers:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_yf_quote(ticker):
             try:
                 quote = yf_svc.get_quote(ticker)
                 if quote and "price" in quote:
-                    result[ticker] = {
+                    return ticker, {
                         "price": quote.get("price", 0),
                         "change": quote.get("change", 0),
                         "pct_change": quote.get("pct_change", 0),
                     }
-                    logger.debug(f"Macro {ticker} served from yfinance (Tier 3)")
             except Exception as e:
-                logger.warning(f"yfinance macro fetch failed for {ticker}: {e}")
+                logger.debug(f"yfinance macro fetch failed for {ticker}: {e}")
+            return ticker, None
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(_fetch_yf_quote, t): t for t in fallback_tickers}
+            for future in as_completed(futures, timeout=8):
+                try:
+                    ticker, data = future.result(timeout=6)
+                    if data:
+                        result[ticker] = data
+                        logger.debug(f"Macro {ticker} served from yfinance (Tier 3)")
+                except Exception:
+                    pass
 
     if result:
         logger.info(f"Macro data served from FDS/FRED/yfinance (mixed tiers)")

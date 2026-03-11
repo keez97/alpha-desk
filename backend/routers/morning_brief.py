@@ -539,21 +539,21 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     # Fully parallel crashed the server. Batches of 3-4 are the sweet spot.
     logger.info("[all] Starting aggregate fetch (batched)")
 
-    # Batch 1: Core macro data (3 concurrent)
+    # Batch 1: Core macro data (3 concurrent) — macro gets extra time for yfinance fallback
     macro_raw, breadth_raw, vix_raw = await asyncio.gather(
-        safe("macro", get_macro_data),
+        safe("macro", get_macro_data, timeout_s=10.0),
         safe("breadth", calculate_breadth),
         safe("vix", get_vix_term_structure),
     )
     # Regime depends on macro result
     regime_raw = await safe("regime", detect_regime, macro_raw or {})
 
-    # Batch 2: Sector data (4 concurrent)
+    # Batch 2: Sector data (4 concurrent) — increased timeouts for FDS cascade
     sectors_raw, sector_perf_raw, transitions_raw, rrg_raw = await asyncio.gather(
-        safe("sectors", get_sector_chart_data, "1D"),
-        safe("sector_perf", get_sector_data, "1D"),
-        safe("transitions", get_sector_transitions),
-        safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10),
+        safe("sectors", get_sector_chart_data, "1D", timeout_s=15.0),
+        safe("sector_perf", get_sector_data, "1D", timeout_s=8.0),
+        safe("transitions", get_sector_transitions, timeout_s=15.0),
+        safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10, timeout_s=8.0),
     )
 
     # Batch 3+4 combined: Market signals + analysis (7 concurrent)
