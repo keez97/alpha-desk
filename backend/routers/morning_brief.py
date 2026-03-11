@@ -34,40 +34,60 @@ async def debug_yahoo():
     from backend.services import yahoo_direct as yd
     from backend.services.cache import cache as global_cache
     import traceback
+    import httpx
 
     results = {}
 
-    # Test 1: Single quote
+    # Reset rate limit to test fresh
+    yd._rate_limited_until = 0
+    yd._consecutive_failures = 0
+    results["rate_limit_reset"] = True
+
+    # Test 0: Get crumb
+    try:
+        crumb, cookies = yd._get_crumb_and_cookies()
+        results["crumb"] = crumb[:10] + "..." if crumb else "None"
+        results["cookies"] = list(cookies.keys()) if cookies else "None"
+    except Exception as e:
+        results["crumb_error"] = str(e)
+
+    # Test 1: Raw HTTP test (bypassing yahoo_direct entirely)
+    try:
+        with httpx.Client(timeout=10, follow_redirects=True) as client:
+            # Try query2 first
+            r = client.get(
+                "https://query2.finance.yahoo.com/v8/finance/chart/SPY",
+                headers=yd._HEADERS,
+                params={"range": "2d", "interval": "1d", "crumb": crumb or ""},
+                cookies=cookies or {},
+            )
+            results["raw_query2_status"] = r.status_code
+            results["raw_query2_body"] = r.text[:200] if r.status_code != 200 else "OK"
+            if r.status_code == 200:
+                data = r.json()
+                meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
+                results["raw_spy_price"] = meta.get("regularMarketPrice")
+    except Exception as e:
+        results["raw_test_error"] = str(e)
+
+    # Test 2: yahoo_direct quote
     try:
         quote = yd.get_quote("SPY")
         results["spy_quote"] = quote if quote else "None returned"
     except Exception as e:
         results["spy_quote_error"] = f"{e}\n{traceback.format_exc()}"
 
-    # Test 2: Rate limit state
-    results["rate_limited"] = yd._is_rate_limited()
-    results["consecutive_failures"] = yd._consecutive_failures
-    results["rate_limited_until"] = yd._rate_limited_until
+    # Test 3: Rate limit state after test
+    results["rate_limited_after"] = yd._is_rate_limited()
+    results["consecutive_failures_after"] = yd._consecutive_failures
 
-    # Test 3: Cache state
+    # Test 4: Clear all caches
     try:
-        macro_cached = global_cache.get("macro:all")
-        results["macro_cache_keys"] = list(macro_cached.keys()) if macro_cached else "not cached"
-        results["macro_cache_has_spy"] = "SPY" in macro_cached if macro_cached else False
+        for key in ["macro:all", "sector:1D", "sector:1M", "sector_chart:1M", "sector_chart:1D"]:
+            global_cache.set(key, None, 0)
+        results["caches_cleared"] = True
     except Exception as e:
-        results["macro_cache_error"] = str(e)
-
-    # Test 4: Clear macro cache and force refetch
-    try:
-        global_cache.delete("macro:all")
-        results["macro_cache_cleared"] = True
-    except Exception:
-        try:
-            # TTLCache might not have delete - try invalidating
-            global_cache.set("macro:all", None, 0)
-            results["macro_cache_invalidated"] = True
-        except Exception as e:
-            results["macro_cache_clear_error"] = str(e)
+        results["cache_clear_error"] = str(e)
 
     return results
 

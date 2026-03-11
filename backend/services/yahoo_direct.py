@@ -31,13 +31,24 @@ _cache = TTLCache()
 _CACHE_TTL_QUOTE = 300       # 5 min for quotes
 _CACHE_TTL_HISTORY = 1800    # 30 min for history
 
-_BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+_BASE_URLS = [
+    "https://query2.finance.yahoo.com/v8/finance/chart",
+    "https://query1.finance.yahoo.com/v8/finance/chart",
+]
 
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36",
+                  "Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
 }
+
+# Crumb authentication state
+_crumb: Optional[str] = None
+_cookies: Optional[Dict[str, str]] = None
+_crumb_fetch_time: float = 0
+_CRUMB_TTL = 3600  # Refresh crumb every hour
 
 # Independent rate-limit tracking
 _rate_limited_until = 0
@@ -62,8 +73,49 @@ def _reset_failures():
 def _record_failure():
     global _consecutive_failures
     _consecutive_failures += 1
-    if _consecutive_failures >= 8:
+    if _consecutive_failures >= 12:
         _mark_rate_limited(60)
+
+
+def _get_crumb_and_cookies() -> tuple:
+    """
+    Get Yahoo Finance crumb token and session cookies.
+    Required for authenticated API access (avoids 429s on some IPs).
+    """
+    global _crumb, _cookies, _crumb_fetch_time
+
+    # Return cached crumb if still fresh
+    if _crumb and _cookies and (time.time() - _crumb_fetch_time < _CRUMB_TTL):
+        return _crumb, _cookies
+
+    try:
+        # Step 1: Get consent cookies by visiting Yahoo Finance
+        with httpx.Client(timeout=10, follow_redirects=True) as client:
+            # First visit to get cookies
+            resp = client.get(
+                "https://fc.yahoo.com/",
+                headers=_HEADERS,
+            )
+            cookies = dict(resp.cookies)
+
+            # Step 2: Get crumb using the cookies
+            resp2 = client.get(
+                "https://query2.finance.yahoo.com/v1/test/getcrumb",
+                headers=_HEADERS,
+                cookies=cookies,
+            )
+
+            if resp2.status_code == 200 and resp2.text:
+                _crumb = resp2.text.strip()
+                _cookies = cookies
+                _crumb_fetch_time = time.time()
+                logger.info(f"Got Yahoo crumb: {_crumb[:8]}...")
+                return _crumb, _cookies
+
+    except Exception as e:
+        logger.warning(f"Failed to get Yahoo crumb: {e}")
+
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -88,41 +140,52 @@ def _fetch_chart(
     if cached is not None:
         return cached
 
-    try:
-        url = f"{_BASE_URL}/{ticker}"
-        params = {"interval": interval, "range": range_str}
+    # Get crumb for authenticated requests
+    crumb, cookies = _get_crumb_and_cookies()
 
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            resp = client.get(url, headers=_HEADERS, params=params)
+    params = {"interval": interval, "range": range_str}
+    if crumb:
+        params["crumb"] = crumb
 
-        if resp.status_code == 429:
-            _mark_rate_limited(120)
-            return None
-        if resp.status_code != 200:
+    # Try multiple base URLs (query2 first, then query1)
+    for base_url in _BASE_URLS:
+        try:
+            url = f"{base_url}/{ticker}"
+
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                resp = client.get(url, headers=_HEADERS, params=params, cookies=cookies or {})
+
+            if resp.status_code == 429:
+                logger.warning("yahoo_direct %s: 429 from %s, trying next", ticker, base_url)
+                continue  # Try next base URL before giving up
+            if resp.status_code != 200:
+                _record_failure()
+                logger.warning("yahoo_direct %s: HTTP %d from %s", ticker, resp.status_code, base_url)
+                continue
+
+            data = resp.json()
+            chart = data.get("chart", {})
+            result = chart.get("result")
+            if not result:
+                _record_failure()
+                continue
+
+            _reset_failures()
+            parsed = result[0]
+            _cache.set(cache_key, parsed, _CACHE_TTL_QUOTE if range_str == "1d" else _CACHE_TTL_HISTORY)
+            return parsed
+
+        except httpx.TimeoutException:
             _record_failure()
-            logger.warning("yahoo_direct %s: HTTP %d", ticker, resp.status_code)
-            return None
-
-        data = resp.json()
-        chart = data.get("chart", {})
-        result = chart.get("result")
-        if not result:
+            logger.warning("yahoo_direct %s: timeout from %s", ticker, base_url)
+            continue
+        except Exception as e:
             _record_failure()
-            return None
+            logger.warning("yahoo_direct %s: %s from %s", ticker, e, base_url)
+            continue
 
-        _reset_failures()
-        parsed = result[0]
-        _cache.set(cache_key, parsed, _CACHE_TTL_QUOTE if range_str == "1d" else _CACHE_TTL_HISTORY)
-        return parsed
-
-    except httpx.TimeoutException:
-        _record_failure()
-        logger.warning("yahoo_direct %s: timeout", ticker)
-        return None
-    except Exception as e:
-        _record_failure()
-        logger.warning("yahoo_direct %s: %s", ticker, e)
-        return None
+    # All base URLs failed — only rate limit if we got 429s from all
+    return None
 
 
 # ---------------------------------------------------------------------------
