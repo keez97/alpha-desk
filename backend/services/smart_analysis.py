@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ─── News fetching helper ────────────────────────────────────────────
 _news_cache: Dict[str, Any] = {}
-_NEWS_CACHE_TTL = 1800  # 30 minutes
+_NEWS_CACHE_TTL = 1200  # 20 minutes (reduced for fresher news)
 
 
 def _fetch_relevant_news(keywords: List[str] = None, max_articles: int = 6) -> List[Dict[str, Any]]:
@@ -106,8 +106,63 @@ def _detect_contrarian_signal(news_articles: List[Dict]) -> Optional[str]:
     return None
 
 
+def _enhance_driver_with_claude(driver: dict, macro: dict) -> dict:
+    """Enhance a single driver with Claude-generated narrative. Falls back to existing data on failure."""
+    try:
+        from backend.services.claude_service import _call_llm, USE_MOCK
+        if USE_MOCK:
+            return driver
+
+        vix = macro.get("^VIX", {}).get("price", 20)
+        spy_price = macro.get("SPY", {}).get("price", 450)
+        tnx = macro.get("^TNX", {}).get("price", 4.5)
+
+        prompt = f"""You are a senior macro strategist. Analyze this market driver and provide actionable insight.
+
+Driver: {driver.get('title', '')}
+Current Data: {driver.get('key_data', '')}
+Affected Assets: {', '.join(driver.get('affected_assets', []))}
+Sentiment: {driver.get('impact', 'neutral')}
+Current Context: VIX={vix:.1f}, SPY=${spy_price:.0f}, 10Y={tnx:.2f}%
+
+Provide a JSON object with exactly 2 fields:
+- "market_implications": 2-3 sentence actionable analysis. What does this mean for positioning? Be specific about sectors and assets.
+- "key_data": Enhanced 1-2 sentence data summary with the most important numbers and what they signal.
+
+Return ONLY valid JSON. No markdown, no code fences."""
+
+        text = _call_llm(
+            "You are a macro strategist. Return only valid JSON.",
+            prompt,
+            max_tokens=400
+        )
+
+        if text:
+            import json
+            # Try to extract JSON
+            json_start = text.find("{")
+            json_end = text.rfind("}") + 1
+            if json_start >= 0 and json_end > json_start:
+                parsed = json.loads(text[json_start:json_end])
+                if "market_implications" in parsed:
+                    driver["market_implications"] = parsed["market_implications"]
+                if "key_data" in parsed:
+                    driver["key_data"] = parsed["key_data"]
+    except Exception as e:
+        logger.warning(f"Claude enhancement failed for driver '{driver.get('title', '')}': {e}")
+
+    return driver
+
+
 def generate_smart_drivers(date: str, macro: dict, sectors: list) -> Dict[str, Any]:
-    """Generate market drivers from real data — no LLM needed."""
+    """Generate market drivers from real data with optional Claude enhancement."""
+    # Check cache for enhanced drivers (1 hour cache to avoid excessive Claude calls)
+    now = time.time()
+    cache_key = "smart_drivers_enhanced"
+    if cache_key in _news_cache and now - _news_cache[cache_key]["ts"] < 3600:  # 1 hour cache
+        logger.debug("Using cached smart drivers")
+        return _news_cache[cache_key]["data"]
+
     drivers = []
 
     # --- Driver 1: Identify top/bottom sector moves + rotation signals ---
@@ -330,10 +385,15 @@ def generate_smart_drivers(date: str, macro: dict, sectors: list) -> Dict[str, A
         if contrarian:
             driver["contrarian_signal"] = contrarian
 
-    return {
-        "date": date,
-        "drivers": drivers
-    }
+    # ── Enhance top 3 drivers with Claude narratives ──
+    # Only enhance the top 3 by impact score to limit API calls
+    sorted_by_impact = sorted(enumerate(drivers), key=lambda x: x[1].get("impact_score", 0), reverse=True)
+    for idx, driver in sorted_by_impact[:3]:
+        drivers[idx] = _enhance_driver_with_claude(driver, macro)
+
+    result = {"date": date, "drivers": drivers}
+    _news_cache[cache_key] = {"ts": time.time(), "data": result}
+    return result
 
 
 def generate_smart_report(date: str, macro: dict, sectors: list) -> Dict[str, Any]:

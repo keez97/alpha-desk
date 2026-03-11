@@ -296,10 +296,28 @@ def get_sector_data(period: str = "1D") -> List[Dict]:
     return []
 
 
-def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_days: int = 0) -> Optional[Dict]:
-    """Fetch chart data for a single sector ETF. Used by ThreadPoolExecutor."""
+def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_days: int = 0, fds_days: int = 30) -> Optional[Dict]:
+    """Fetch chart data for a single sector ETF. Uses FDS → yfinance cascade."""
     try:
-        history = get_history(ticker, period=yf_period, interval="1d")
+        # Tier 1: FDS with proper date range for the requested period
+        history = None
+        if fds.is_available():
+            try:
+                from datetime import datetime as dt
+                end_date = (dt.utcnow().date() - timedelta(days=1)).isoformat()
+                start_date = (dt.utcnow().date() - timedelta(days=fds_days)).isoformat()
+                history = fds.get_historical_prices(ticker, start=start_date, end=end_date)
+                if history and len(history) >= 2:
+                    logger.debug(f"Fetched {len(history)} days of FDS data for {ticker}")
+                else:
+                    history = None
+            except Exception as e:
+                logger.debug(f"FDS fetch failed for {ticker}: {e}")
+                history = None
+
+        # Tier 2: yfinance fallback
+        if not history:
+            history = get_history(ticker, period=yf_period, interval="1d")
 
         if not history or len(history) == 0:
             logger.warning(f"No history data for {ticker}")
@@ -354,16 +372,17 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
         logger.debug(f"Sector chart data (period={period}) served from cache")
         return cached_result
 
-    # Map period to yfinance period + optional trim
+    # Map period to yfinance period + optional trim + FDS lookback days
     period_config = {
-        "1D": {"yf_period": "5d", "trim_days": 2},   # Last 2 trading days
-        "5D": {"yf_period": "5d", "trim_days": 0},    # Full 5 days
-        "1M": {"yf_period": "1mo", "trim_days": 0},   # ~22 trading days
-        "3M": {"yf_period": "3mo", "trim_days": 0},   # ~66 trading days
+        "1D": {"yf_period": "5d", "trim_days": 2, "fds_days": 5},       # Last 2 trading days, 5 days FDS lookback
+        "5D": {"yf_period": "5d", "trim_days": 0, "fds_days": 10},      # Full 5 days, 10 days FDS lookback
+        "1M": {"yf_period": "1mo", "trim_days": 0, "fds_days": 35},     # ~22 trading days, 35 days FDS lookback
+        "3M": {"yf_period": "3mo", "trim_days": 0, "fds_days": 100},    # ~66 trading days, 100 days FDS lookback
     }
-    config = period_config.get(period, {"yf_period": "1mo", "trim_days": 0})
+    config = period_config.get(period, {"yf_period": "1mo", "trim_days": 0, "fds_days": 30})
     yf_period = config["yf_period"]
     trim_days = config["trim_days"]
+    fds_days = config.get("fds_days", 30)
 
     # Sector ETF mapping
     sector_etfs = {
@@ -384,7 +403,7 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
     # Fetch all sectors concurrently (3 workers to respect FDS rate limits)
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
-            executor.submit(_fetch_single_sector, ticker, name, yf_period, trim_days): ticker
+            executor.submit(_fetch_single_sector, ticker, name, yf_period, trim_days, fds_days): ticker
             for ticker, name in sector_etfs.items()
         }
         for future in as_completed(futures):

@@ -12,18 +12,23 @@ import logging
 from sqlmodel import Session
 import feedparser
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backend.repositories.sentiment_repo import SentimentRepository
 from backend.services.sentiment_engine import SentimentEngine, calculate_dedup_hash
 
 logger = logging.getLogger(__name__)
 
-# RSS feed sources
+# RSS feed sources - expanded with additional reliable sources
 RSS_FEEDS = {
     "MarketWatch": "https://feeds.marketwatch.com/marketwatch/topstories/",
     "CNBC": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
     "Yahoo Finance": "https://finance.yahoo.com/news/rss",
     "Reuters": "https://feeds.reuters.com/reuters/businessNews",
+    "Google News Markets": "https://news.google.com/rss/search?q=stock+market&hl=en-US&gl=US&ceid=US:en",
+    "Investing.com": "https://www.investing.com/rss/news.rss",
+    "Seeking Alpha": "https://seekingalpha.com/market_currents.xml",
+    "Bloomberg via Google": "https://news.google.com/rss/search?q=site:bloomberg.com+markets&hl=en-US",
 }
 
 # Ticker to company keywords mapping
@@ -71,6 +76,74 @@ def _is_cache_valid() -> bool:
     return elapsed < _rss_cache.get("ttl_seconds", 600)
 
 
+def _fetch_single_feed(source_name: str, feed_url: str, max_per_source: int = 10) -> List[Dict[str, Any]]:
+    """Fetch articles from a single RSS feed with timeout and custom User-Agent."""
+    articles = []
+    try:
+        logger.info(f"Fetching RSS feed from {source_name}: {feed_url}")
+        # Use custom User-Agent header to avoid blocking by feed sources
+        request_headers = {
+            'User-Agent': 'Mozilla/5.0 (compatible; AlphaDesk/1.0; +http://alphadeskclient.local)'
+        }
+        feed = feedparser.parse(feed_url, request_headers=request_headers, timeout=10)
+
+        if feed.bozo:
+            logger.warning(f"Feed parsing issues for {source_name}: {feed.bozo_exception}")
+
+        article_count = 0
+        for entry in feed.entries:
+            if article_count >= max_per_source:
+                break
+
+            try:
+                # Extract published date
+                published_at = datetime.now(timezone.utc)
+                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                    published_at = datetime.fromtimestamp(
+                        time.mktime(entry.published_parsed),
+                        tz=timezone.utc
+                    )
+                elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
+                    published_at = datetime.fromtimestamp(
+                        time.mktime(entry.updated_parsed),
+                        tz=timezone.utc
+                    )
+
+                # Extract body snippet
+                body_snippet = ""
+                if hasattr(entry, "summary"):
+                    body_snippet = entry.summary[:500]
+                elif hasattr(entry, "description"):
+                    body_snippet = entry.description[:500]
+
+                # feedparser entries support both attr and dict access
+                title = getattr(entry, "title", "") or entry.get("title", "")
+                link = getattr(entry, "link", "") or entry.get("link", "")
+
+                article = {
+                    "headline": title,
+                    "title": title,
+                    "source": source_name,
+                    "publisher": source_name,
+                    "published_at": published_at.isoformat() if isinstance(published_at, datetime) else str(published_at),
+                    "publishedAt": published_at.isoformat() if isinstance(published_at, datetime) else str(published_at),
+                    "url": link,
+                    "body_snippet": body_snippet,
+                }
+
+                articles.append(article)
+                article_count += 1
+
+            except Exception as e:
+                logger.warning(f"Error processing entry from {source_name}: {e}")
+                continue
+
+    except Exception as e:
+        logger.error(f"Error fetching RSS feed from {source_name}: {e}")
+
+    return articles
+
+
 def _match_ticker(headline: str) -> str:
     """
     Match article headline against ticker keywords to determine relevant ticker.
@@ -93,9 +166,11 @@ def _match_ticker(headline: str) -> str:
 
 def fetch_rss_articles(max_per_source: int = 10) -> List[Dict[str, Any]]:
     """
-    Fetch articles from all RSS feeds.
+    Fetch articles from all RSS feeds using parallel execution with timeout handling.
 
     Uses module-level cache with 10-minute TTL to avoid hammering feeds.
+    Fetches feeds in parallel using ThreadPoolExecutor to avoid slow feeds blocking others.
+    Each feed has a 10-second timeout.
 
     Args:
         max_per_source: Maximum articles to fetch from each source
@@ -115,71 +190,28 @@ def fetch_rss_articles(max_per_source: int = 10) -> List[Dict[str, Any]]:
 
     articles = []
 
-    for source_name, feed_url in RSS_FEEDS.items():
-        try:
-            logger.info(f"Fetching RSS feed from {source_name}: {feed_url}")
-            feed = feedparser.parse(feed_url)
+    # Fetch all feeds in parallel using ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(_fetch_single_feed, source_name, feed_url, max_per_source): source_name
+            for source_name, feed_url in RSS_FEEDS.items()
+        }
 
-            if feed.bozo:
-                logger.warning(f"Feed parsing issues for {source_name}: {feed.bozo_exception}")
-
-            article_count = 0
-            for entry in feed.entries:
-                if article_count >= max_per_source:
-                    break
-
-                try:
-                    # Extract published date
-                    published_at = datetime.now(timezone.utc)
-                    if hasattr(entry, "published_parsed") and entry.published_parsed:
-                        published_at = datetime.fromtimestamp(
-                            time.mktime(entry.published_parsed),
-                            tz=timezone.utc
-                        )
-                    elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
-                        published_at = datetime.fromtimestamp(
-                            time.mktime(entry.updated_parsed),
-                            tz=timezone.utc
-                        )
-
-                    # Extract body snippet
-                    body_snippet = ""
-                    if hasattr(entry, "summary"):
-                        body_snippet = entry.summary[:500]
-                    elif hasattr(entry, "description"):
-                        body_snippet = entry.description[:500]
-
-                    # feedparser entries support both attr and dict access
-                    title = getattr(entry, "title", "") or entry.get("title", "")
-                    link = getattr(entry, "link", "") or entry.get("link", "")
-
-                    article = {
-                        "headline": title,
-                        "title": title,  # alias for smart_analysis compatibility
-                        "source": source_name,
-                        "publisher": source_name,  # alias for frontend compat
-                        "published_at": published_at.isoformat() if isinstance(published_at, datetime) else str(published_at),
-                        "publishedAt": published_at.isoformat() if isinstance(published_at, datetime) else str(published_at),
-                        "url": link,
-                        "body_snippet": body_snippet,
-                    }
-
-                    articles.append(article)
-                    article_count += 1
-
-                except Exception as e:
-                    logger.warning(f"Error processing entry from {source_name}: {e}")
-                    continue
-
-        except Exception as e:
-            logger.error(f"Error fetching RSS feed from {source_name}: {e}")
-            continue
+        for future in as_completed(futures, timeout=15):
+            source_name = futures[future]
+            try:
+                feed_articles = future.result(timeout=10)
+                articles.extend(feed_articles)
+                logger.debug(f"Fetched {len(feed_articles)} articles from {source_name}")
+            except Exception as e:
+                logger.warning(f"Timeout or error fetching from {source_name}: {e}")
+                continue
 
     # Update cache
     _rss_cache["articles"] = articles
     _rss_cache["fetch_time"] = time.time()
 
-    logger.info(f"Fetched {len(articles)} articles from RSS feeds")
+    logger.info(f"Fetched {len(articles)} articles from {len(RSS_FEEDS)} RSS feeds")
     return articles
 
 
