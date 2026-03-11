@@ -114,8 +114,11 @@ def _get_regime_context() -> tuple:
 async def generate_morning_drivers(date: str) -> Dict[str, Any]:
     """Generate 5 market drivers for the given date.
 
-    Strategy: Always try data-driven analysis first (works without LLM).
-    Only call OpenRouter if USE_LLM_ENHANCED is True and key is valid.
+    Pipeline:
+    1. Fetch real macro data + sector performance
+    2. Fetch real-time news via web search (DDG) + RSS feeds
+    3. Pass ALL context (data + news) to Claude for synthesis
+    4. Fall back to data-driven analysis if Claude fails
     """
     from backend.services.smart_analysis import generate_smart_drivers
 
@@ -128,14 +131,29 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
         logger.warning(f"Could not fetch market data: {e}")
         macro, sectors = {}, []
 
-    # Step 2: Try LLM-enhanced generation if API key is available AND we have data
+    # Step 2: Fetch real-time news via web search + RSS
+    news_context = ""
+    try:
+        from backend.services.web_search import search_market_news, format_news_for_prompt
+        news_articles = search_market_news(macro_data=macro, max_total=15)
+        if news_articles:
+            news_context = format_news_for_prompt(news_articles, max_articles=15)
+            logger.info(f"Fetched {len(news_articles)} news articles for drivers prompt")
+        else:
+            logger.warning("No news articles found from web search + RSS")
+    except Exception as e:
+        logger.warning(f"News fetch failed (will use data-only mode): {e}")
+
+    # Step 3: Try LLM-enhanced generation with data + news context
     if not USE_MOCK and macro:
         try:
-            prompt = morning_drivers.get_morning_drivers_prompt(date, macro=macro, sectors=sectors)
+            prompt = morning_drivers.get_morning_drivers_prompt(
+                date, macro=macro, sectors=sectors, news_context=news_context
+            )
             model_id = get_model_id()
-            logger.info(f"Generating morning drivers with model: {model_id}")
+            logger.info(f"Generating morning drivers with model: {model_id} (news_articles={bool(news_context)})")
 
-            text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=2000)
+            text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=2500)
             parsed = _parse_json_from_text(text_content)
             # Validate: must have at least 2 proper drivers with titles
             if parsed and isinstance(parsed.get("drivers"), list) and len(parsed["drivers"]) >= 2:

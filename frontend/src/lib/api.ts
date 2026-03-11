@@ -314,6 +314,29 @@ export async function fetchSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Pr
 
 // ── Drivers ────────────────────────────────────────────────
 function _mapDriver(d: any): Driver {
+  // Map news_articles from backend (existing format)
+  let newsArticles: NewsArticleForDriver[] = (d.news_articles || []).map((a: any) => ({
+    title: a.title || '',
+    url: a.url || '',
+    publisher: a.publisher || 'Unknown',
+    publishedAt: a.published_at || null,
+    ticker: a.ticker || '',
+  }));
+
+  // Also map news_sources from Claude's response (string array: "headline — Source")
+  if (d.news_sources && Array.isArray(d.news_sources) && newsArticles.length === 0) {
+    newsArticles = d.news_sources.map((src: string) => {
+      const parts = src.split(' — ');
+      return {
+        title: parts[0] || src,
+        url: '',
+        publisher: parts[1] || 'News',
+        publishedAt: null,
+        ticker: '',
+      };
+    });
+  }
+
   return {
     headline: d.headline || d.title || 'Untitled',
     explanation: d.explanation || d.market_implications || '',
@@ -324,13 +347,7 @@ function _mapDriver(d: any): Driver {
     impactScore: d.impact_score,
     contrarianSignal: d.contrarian_signal || null,
     affectedAssets: d.affected_assets || [],
-    newsArticles: (d.news_articles || []).map((a: any) => ({
-      title: a.title || '',
-      url: a.url || '',
-      publisher: a.publisher || 'Unknown',
-      publishedAt: a.published_at || null,
-      ticker: a.ticker || '',
-    })),
+    newsArticles,
     metrics: (d.metrics || []).map((m: any) => ({
       label: m.label || '',
       value: m.value || '',

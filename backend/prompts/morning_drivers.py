@@ -1,5 +1,10 @@
-def get_morning_drivers_prompt(date: str, macro: dict = None, sectors: list = None) -> str:
-    """Generate prompt for morning market drivers analysis with real data context."""
+def get_morning_drivers_prompt(
+    date: str,
+    macro: dict = None,
+    sectors: list = None,
+    news_context: str = "",
+) -> str:
+    """Generate prompt for morning market drivers analysis with real data + news context."""
     # Build data context from real market data
     data_context = ""
     if macro:
@@ -37,27 +42,30 @@ def get_morning_drivers_prompt(date: str, macro: dict = None, sectors: list = No
         if sector_lines:
             data_context += "TOP SECTOR MOVES:\n" + "\n".join(sector_lines) + "\n\n"
 
-    return f"""Today is {date}. Using the market data below, identify the 5 most impactful market drivers for today.
+    # Add news context if available
+    if news_context:
+        data_context += news_context + "\n"
 
-{data_context}Based on this data, analyze:
-- Which moves are most significant and why
-- Volatility regime and what it implies for positioning
-- Yield curve dynamics and rate expectations
-- Commodity/energy signals
-- Sector rotation patterns
+    return f"""Today is {date}. You are a senior macro strategist. Using the market data AND recent news below, identify the 5 most impactful market drivers for today.
 
-For each driver, explain the data-driven rationale and actionable positioning implications.
+{data_context}INSTRUCTIONS:
+- Cross-reference the news headlines with the market data to form your analysis
+- Prioritize drivers that are confirmed by BOTH price action and news catalysts
+- For each driver, cite specific news sources when relevant (e.g., "per Reuters" or "according to MarketWatch")
+- Provide actionable positioning implications (specific sectors, assets, and directional bias)
+- Include a "news_sources" field listing the relevant article headlines you used
 
 Return ONLY a valid JSON object with this exact structure:
 {{
   "date": "{date}",
   "drivers": [
     {{
-      "title": "string - concise driver name",
+      "title": "string - concise driver name (e.g., 'Fed Hawkish Surprise Pressures Duration')",
       "impact": "positive|negative|neutral",
       "affected_assets": ["ticker1", "ticker2"],
-      "key_data": "string - key numbers and what they signal",
-      "market_implications": "string - 2-3 sentences on positioning implications"
+      "key_data": "string - key numbers and what they signal, citing specific data points",
+      "market_implications": "string - 2-3 sentences on positioning implications. Be specific about sectors, asset classes, and trade ideas.",
+      "news_sources": ["headline1 — Source", "headline2 — Source"]
     }}
   ]
 }}"""
