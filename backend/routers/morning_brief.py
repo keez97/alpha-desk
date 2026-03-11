@@ -28,6 +28,50 @@ router = APIRouter(prefix="/api/morning-brief", tags=["morning-brief"])
 REPORT_CACHE_TTL_HOURS = 4  # Morning report refreshes every 4 hours
 
 
+@router.get("/debug/yahoo")
+async def debug_yahoo():
+    """Debug endpoint to test yahoo_direct on Railway."""
+    from backend.services import yahoo_direct as yd
+    from backend.services.cache import cache as global_cache
+    import traceback
+
+    results = {}
+
+    # Test 1: Single quote
+    try:
+        quote = yd.get_quote("SPY")
+        results["spy_quote"] = quote if quote else "None returned"
+    except Exception as e:
+        results["spy_quote_error"] = f"{e}\n{traceback.format_exc()}"
+
+    # Test 2: Rate limit state
+    results["rate_limited"] = yd._is_rate_limited()
+    results["consecutive_failures"] = yd._consecutive_failures
+    results["rate_limited_until"] = yd._rate_limited_until
+
+    # Test 3: Cache state
+    try:
+        macro_cached = global_cache.get("macro:all")
+        results["macro_cache_keys"] = list(macro_cached.keys()) if macro_cached else "not cached"
+        results["macro_cache_has_spy"] = "SPY" in macro_cached if macro_cached else False
+    except Exception as e:
+        results["macro_cache_error"] = str(e)
+
+    # Test 4: Clear macro cache and force refetch
+    try:
+        global_cache.delete("macro:all")
+        results["macro_cache_cleared"] = True
+    except Exception:
+        try:
+            # TTLCache might not have delete - try invalidating
+            global_cache.set("macro:all", None, 0)
+            results["macro_cache_invalidated"] = True
+        except Exception as e:
+            results["macro_cache_clear_error"] = str(e)
+
+    return results
+
+
 @router.get("/macro")
 async def get_macro(session: Session = Depends(get_session)):
     """Get macro indicators (VIX, yields, commodities, etc.) with regime detection."""
