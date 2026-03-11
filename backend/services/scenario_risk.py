@@ -224,6 +224,37 @@ def calculate_scenario_impacts() -> List[Dict[str, Any]]:
         return []
 
 
+def get_scenario_risk_fast() -> Dict[str, Any]:
+    """Fast version for /all endpoint — only scenarios (needs macro data, instant).
+    Skips VaR and analogs which need 365d price history and can take >15s.
+    """
+    now = time.time()
+    cache_key = "scenario_risk_fast"
+
+    if cache_key in _scenario_cache:
+        cached = _scenario_cache[cache_key]
+        if now - cached["ts"] < _CACHE_TTL:
+            return cached["data"]
+
+    scenarios = []
+    try:
+        scenarios = calculate_scenario_impacts()
+    except Exception as e:
+        logger.warning(f"Scenario impacts failed: {e}")
+
+    result = {
+        "timestamp": pd.Timestamp.utcnow().isoformat(),
+        "var_95_historical": 0.0,
+        "var_95_regime_adjusted": 0.0,
+        "current_regime": "unknown",
+        "historical_analogs": [],
+        "scenarios": scenarios,
+    }
+
+    _scenario_cache[cache_key] = {"ts": now, "data": result}
+    return result
+
+
 def get_scenario_risk_data() -> Dict[str, Any]:
     """Main function to get scenario risk dashboard data."""
     now = time.time()

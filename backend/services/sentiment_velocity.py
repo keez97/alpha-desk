@@ -132,26 +132,29 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
     """
     Fetch headlines from all RSS feeds with timeout protection.
 
-    Uses httpx (primary) with urllib fallback. Returns list of dicts with
-    keys: headline, source, published_at, link.
+    Uses httpx (primary) with urllib fallback. If all RSS feeds fail
+    (common on cloud hosting), generates synthetic headlines from market data.
+    Returns list of dicts with keys: headline, source, published_at, link.
     """
     import feedparser
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     all_headlines: List[Dict[str, Any]] = []
     now = datetime.now(timezone.utc)
     feeds_tried = 0
     feeds_succeeded = 0
 
-    for feed_config in RSS_FEEDS:
-        feeds_tried += 1
-        feed_content = None
+    _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-        # Primary: httpx (handles redirects, gzip, TLS better than urllib)
-        # Use realistic browser User-Agent — many RSS feeds block custom/bot UAs
-        _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    def _fetch_single_feed(feed_config: Dict) -> List[Dict[str, Any]]:
+        """Fetch a single RSS feed with httpx → urllib cascade."""
+        feed_content = None
+        headlines = []
+
+        # Primary: httpx
         try:
             import httpx
-            with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+            with httpx.Client(timeout=5.0, follow_redirects=True) as client:
                 resp = client.get(
                     feed_config["url"],
                     headers={
@@ -164,7 +167,7 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
                 feed_content = resp.content
                 logger.debug(f"RSS httpx OK for {feed_config['name']}: {len(feed_content)} bytes")
         except Exception as httpx_err:
-            logger.warning(f"RSS httpx fetch failed for {feed_config['name']}: {type(httpx_err).__name__}: {httpx_err}")
+            logger.debug(f"RSS httpx {feed_config['name']}: {type(httpx_err).__name__}")
 
         # Fallback: urllib
         if feed_content is None:
@@ -179,23 +182,21 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
                         "Accept": "application/rss+xml, application/xml, text/xml, */*",
                     },
                 )
-                resp = urllib.request.urlopen(req, timeout=8, context=ctx)
+                resp = urllib.request.urlopen(req, timeout=5, context=ctx)
                 feed_content = resp.read()
                 logger.debug(f"RSS urllib OK for {feed_config['name']}: {len(feed_content)} bytes")
             except Exception as urllib_err:
-                logger.warning(f"RSS urllib also failed for {feed_config['name']}: {type(urllib_err).__name__}: {urllib_err}")
-                continue
+                logger.debug(f"RSS urllib {feed_config['name']}: {type(urllib_err).__name__}")
+                return []
 
         # Parse feed content
         try:
             feed = feedparser.parse(feed_content)
-            entry_count = 0
-            for entry in feed.entries[:30]:  # cap per source
+            for entry in feed.entries[:20]:
                 title = entry.get("title", "").strip()
                 if not title:
                     continue
 
-                # Parse published date
                 published_at = now
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     try:
@@ -210,21 +211,38 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
                     except Exception:
                         pass
 
-                all_headlines.append({
+                headlines.append({
                     "headline": title,
                     "source": feed_config["name"],
                     "published_at": published_at.isoformat(),
                     "link": entry.get("link", ""),
                 })
-                entry_count += 1
-
-            if entry_count > 0:
-                feeds_succeeded += 1
-                logger.debug(f"RSS {feed_config['name']}: {entry_count} headlines")
         except Exception as e:
             logger.warning("Failed to parse RSS feed %s: %s", feed_config["name"], e)
 
+        return headlines
+
+    # Fetch all feeds concurrently (5s per feed, all in parallel = 5s total)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_fetch_single_feed, fc): fc for fc in RSS_FEEDS}
+        for future in as_completed(futures, timeout=8):
+            fc = futures[future]
+            feeds_tried += 1
+            try:
+                headlines = future.result(timeout=2)
+                if headlines:
+                    feeds_succeeded += 1
+                    all_headlines.extend(headlines)
+                    logger.debug(f"RSS {fc['name']}: {len(headlines)} headlines")
+            except Exception as e:
+                logger.debug(f"RSS {fc['name']} future failed: {e}")
+
     logger.info(f"RSS fetch complete: {feeds_succeeded}/{feeds_tried} feeds, {len(all_headlines)} total headlines")
+
+    # If all RSS feeds failed, generate synthetic headlines from market data
+    if not all_headlines:
+        logger.warning("All RSS feeds failed — generating synthetic headlines from market data")
+        all_headlines = _generate_synthetic_headlines()
 
     # De-duplicate by headline text (some stories appear on multiple feeds)
     seen = set()
@@ -239,6 +257,93 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
     unique.sort(key=lambda h: h["published_at"], reverse=True)
 
     return unique
+
+
+def _generate_synthetic_headlines() -> List[Dict[str, Any]]:
+    """
+    Generate synthetic headlines from live market data when RSS feeds are unavailable.
+    Uses VIX, sector performance, and macro indicators to create directionally accurate headlines.
+    """
+    now = datetime.now(timezone.utc)
+    headlines = []
+
+    try:
+        from backend.services.yfinance_service import get_macro_data
+        macro = get_macro_data()
+    except Exception:
+        macro = {}
+
+    # VIX-based headlines
+    vix_data = macro.get("^VIX", {})
+    vix_price = vix_data.get("price", 0)
+    vix_change = vix_data.get("pct_change", 0)
+    if vix_price > 0:
+        if vix_price > 30:
+            headlines.append({"headline": f"Market volatility surges as VIX hits {vix_price:.1f}", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+            headlines.append({"headline": "Fear gauge signals elevated risk as investors seek safety", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        elif vix_price > 20:
+            headlines.append({"headline": f"VIX at {vix_price:.1f} signals cautious market sentiment", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        else:
+            headlines.append({"headline": f"Market calm continues with VIX at {vix_price:.1f}", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    # SPY-based headlines
+    spy_data = macro.get("SPY", {})
+    spy_change = spy_data.get("pct_change", 0)
+    if spy_change != 0:
+        if spy_change > 1.0:
+            headlines.append({"headline": f"S&P 500 rallies {spy_change:.1f}% in broad-based advance", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+            headlines.append({"headline": "Stocks climb as bulls maintain momentum", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        elif spy_change > 0:
+            headlines.append({"headline": f"S&P 500 gains {spy_change:.1f}% as markets edge higher", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        elif spy_change > -1.0:
+            headlines.append({"headline": f"S&P 500 slips {abs(spy_change):.1f}% amid mixed signals", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        else:
+            headlines.append({"headline": f"Stocks tumble as S&P 500 drops {abs(spy_change):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+            headlines.append({"headline": "Broad selloff hits markets as bears take control", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    # Treasury yield headlines
+    tnx_data = macro.get("^TNX", {})
+    tnx_price = tnx_data.get("price", 0)
+    if tnx_price > 0:
+        if tnx_price > 4.5:
+            headlines.append({"headline": f"10-Year Treasury yield rises to {tnx_price:.2f}%, pressuring growth stocks", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        elif tnx_price < 3.5:
+            headlines.append({"headline": f"Bond yields fall to {tnx_price:.2f}% as investors seek safety", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    # Oil headlines
+    oil_data = macro.get("CL=F", {})
+    oil_price = oil_data.get("price", 0)
+    oil_change = oil_data.get("pct_change", 0)
+    if oil_price > 0 and abs(oil_change) > 1.0:
+        direction = "surges" if oil_change > 0 else "drops"
+        headlines.append({"headline": f"Crude oil {direction} {abs(oil_change):.1f}% to ${oil_price:.2f}/barrel", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    # Gold headlines
+    gold_data = macro.get("GC=F", {})
+    gold_price = gold_data.get("price", 0)
+    gold_change = gold_data.get("pct_change", 0)
+    if gold_price > 0 and abs(gold_change) > 0.5:
+        if gold_change > 0:
+            headlines.append({"headline": f"Gold rises {gold_change:.1f}% as investors weigh macro risks", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+        else:
+            headlines.append({"headline": f"Gold pulls back {abs(gold_change):.1f}% amid risk-on sentiment", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    # QQQ headlines
+    qqq_data = macro.get("QQQ", {})
+    qqq_change = qqq_data.get("pct_change", 0)
+    if qqq_change != 0:
+        if abs(qqq_change) > 1.0:
+            direction = "leads gains" if qqq_change > 0 else "underperforms"
+            headlines.append({"headline": f"Tech {direction} as Nasdaq moves {qqq_change:+.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    # General market context
+    if spy_change > 0 and vix_change < 0:
+        headlines.append({"headline": "Risk appetite improves as volatility recedes", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+    elif spy_change < 0 and vix_change > 0:
+        headlines.append({"headline": "Markets face headwinds as uncertainty rises", "source": "Market Data", "published_at": now.isoformat(), "link": ""})
+
+    logger.info(f"Generated {len(headlines)} synthetic headlines from market data")
+    return headlines
 
 
 # ---------------------------------------------------------------------------
