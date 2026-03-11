@@ -11,7 +11,7 @@ openai>=1.40.0
 apscheduler==3.10.4
 psycopg2-binary==2.9.9
 alembic==1.13.1
-cot-reports>=1.1.0
+cot-reports>=0.1.0
 transformers>=4.40.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
