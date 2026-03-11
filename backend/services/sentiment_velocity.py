@@ -36,17 +36,27 @@ _sentiment_velocity_cache = TTLCache()
 RSS_FEEDS = [
     {
         "name": "MarketWatch",
-        "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",
         "category": "market",
     },
     {
         "name": "CNBC",
-        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+        "category": "market",
+    },
+    {
+        "name": "Yahoo Finance",
+        "url": "https://finance.yahoo.com/news/rss",
         "category": "market",
     },
     {
         "name": "Google News – Markets",
         "url": "https://news.google.com/rss/search?q=stock+market+today&hl=en-US&gl=US&ceid=US:en",
+        "category": "market",
+    },
+    {
+        "name": "Investing.com",
+        "url": "https://www.investing.com/rss/news.rss",
         "category": "market",
     },
 ]
@@ -122,25 +132,51 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
     """
     Fetch headlines from all RSS feeds with timeout protection.
 
-    Returns list of dicts with keys: headline, source, published_at, link.
+    Uses httpx (primary) with urllib fallback. Returns list of dicts with
+    keys: headline, source, published_at, link.
     """
     import feedparser
-    import urllib.request
 
     all_headlines: List[Dict[str, Any]] = []
     now = datetime.now(timezone.utc)
+    feeds_tried = 0
+    feeds_succeeded = 0
 
     for feed_config in RSS_FEEDS:
+        feeds_tried += 1
+        feed_content = None
+
+        # Primary: httpx (handles redirects, gzip, TLS better than urllib)
         try:
-            # Use urllib with timeout to fetch the feed, then parse
+            import httpx
+            with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+                resp = client.get(
+                    feed_config["url"],
+                    headers={"User-Agent": "AlphaDesk/1.0 (Financial Dashboard)"},
+                )
+                resp.raise_for_status()
+                feed_content = resp.content
+        except Exception as httpx_err:
+            logger.debug(f"RSS httpx fetch failed for {feed_config['name']}: {httpx_err}")
+
+        # Fallback: urllib
+        if feed_content is None:
             try:
-                req = urllib.request.Request(feed_config["url"], headers={"User-Agent": "AlphaDesk/1.0"})
-                resp = urllib.request.urlopen(req, timeout=5)
+                import urllib.request
+                req = urllib.request.Request(
+                    feed_config["url"],
+                    headers={"User-Agent": "AlphaDesk/1.0"},
+                )
+                resp = urllib.request.urlopen(req, timeout=8)
                 feed_content = resp.read()
-                feed = feedparser.parse(feed_content)
-            except Exception as fetch_err:
-                logger.debug(f"RSS fetch timeout/error for {feed_config['name']}: {fetch_err}")
+            except Exception as urllib_err:
+                logger.debug(f"RSS urllib fetch also failed for {feed_config['name']}: {urllib_err}")
                 continue
+
+        # Parse feed content
+        try:
+            feed = feedparser.parse(feed_content)
+            entry_count = 0
             for entry in feed.entries[:30]:  # cap per source
                 title = entry.get("title", "").strip()
                 if not title:
@@ -167,8 +203,15 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
                     "published_at": published_at.isoformat(),
                     "link": entry.get("link", ""),
                 })
+                entry_count += 1
+
+            if entry_count > 0:
+                feeds_succeeded += 1
+                logger.debug(f"RSS {feed_config['name']}: {entry_count} headlines")
         except Exception as e:
-            logger.warning("Failed to fetch RSS feed %s: %s", feed_config["name"], e)
+            logger.warning("Failed to parse RSS feed %s: %s", feed_config["name"], e)
+
+    logger.info(f"RSS fetch complete: {feeds_succeeded}/{feeds_tried} feeds, {len(all_headlines)} total headlines")
 
     # De-duplicate by headline text (some stories appear on multiple feeds)
     seen = set()

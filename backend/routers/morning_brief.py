@@ -370,18 +370,18 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
         safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10),
     )
 
-    # Batch 3: Market signals (4 concurrent)
+    # Batch 3: Market signals (4 concurrent) — longer timeouts for cascade/RSS services
     sentiment_raw, options_raw, earnings_raw, overnight_raw = await asyncio.gather(
-        safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"]),
+        safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"], timeout_s=12.0),
         safe("options", get_options_flow),
         safe("earnings", get_earnings_brief),
-        safe("overnight", get_overnight_returns),
+        safe("overnight", get_overnight_returns, timeout_s=10.0),
     )
 
     # Batch 4: Analysis & positioning (3 concurrent)
     positioning_raw, risk_raw, spillover_raw = await asyncio.gather(
         safe("positioning", get_cot_positioning),
-        safe("risk", get_scenario_risk_data),
+        safe("risk", get_scenario_risk_data, timeout_s=10.0),
         safe("spillover", get_momentum_spillover),
     )
     logger.info("[all] Done")

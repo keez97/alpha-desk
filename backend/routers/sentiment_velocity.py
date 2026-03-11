@@ -29,6 +29,10 @@ class Headline(BaseModel):
     ticker: str
     sentiment: float = Field(..., ge=-1, le=1)
     published_at: str
+    source: str = ""
+    link: str = ""
+    label: str = "neutral"
+    confidence: float = 0.5
 
 
 class HistoryPoint(BaseModel):
@@ -43,14 +47,16 @@ class SentimentVelocityResponse(BaseModel):
     """Aggregate sentiment velocity with contrarian flags."""
 
     timestamp: str
-    aggregate_score: float = Field(..., ge=-1, le=1, description="Consolidated sentiment -1 to +1")
+    scoring_model: str = Field("none", description="Scoring model used (finbert/keyword-fallback)")
+    aggregate_score: float = Field(..., description="Consolidated sentiment -1 to +1")
     velocity: float = Field(..., description="Sentiment change rate (today vs 5d avg)")
     velocity_signal: str = Field(..., description="accelerating|decelerating|stable")
     contrarian_flag: Optional[str] = Field(None, description="overbought|oversold|null")
     news_density: int = Field(..., description="Number of articles analyzed")
     attention_level: str = Field(..., description="normal|elevated|extreme")
-    top_headlines: List[Headline] = Field(..., description="Top 10 headlines by sentiment extremity")
+    top_headlines: List[Headline] = Field(..., description="Top 15 headlines by sentiment extremity")
     history_5d: List[HistoryPoint] = Field(..., description="5-day sentiment history")
+    sentiment_distribution: Dict[str, int] = Field(default_factory=dict, description="positive/negative/neutral counts")
 
 
 # ==================== API Endpoints ====================
@@ -96,9 +102,13 @@ async def get_sentiment_velocity_data(
         headlines = [
             Headline(
                 headline=h["headline"],
-                ticker=h["ticker"],
+                ticker=h.get("ticker", "SPY"),
                 sentiment=h["sentiment"],
                 published_at=h["published_at"],
+                source=h.get("source", ""),
+                link=h.get("link", ""),
+                label=h.get("label", "neutral"),
+                confidence=h.get("confidence", 0.5),
             )
             for h in result.get("top_headlines", [])
         ]
@@ -114,7 +124,8 @@ async def get_sentiment_velocity_data(
 
         return SentimentVelocityResponse(
             timestamp=result["timestamp"],
-            aggregate_score=result["aggregate_score"],
+            scoring_model=result.get("scoring_model", "none"),
+            aggregate_score=max(-1.0, min(1.0, result["aggregate_score"])),
             velocity=result["velocity"],
             velocity_signal=result["velocity_signal"],
             contrarian_flag=result["contrarian_flag"],
@@ -122,6 +133,7 @@ async def get_sentiment_velocity_data(
             attention_level=result["attention_level"],
             top_headlines=headlines,
             history_5d=history,
+            sentiment_distribution=result.get("sentiment_distribution", {}),
         )
 
     except asyncio.TimeoutError:
