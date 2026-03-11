@@ -4,8 +4,10 @@ from functools import lru_cache
 from typing import Dict, List, Any
 import logging
 import time
+import threading
 import requests
 from backend.services import mock_data
+from backend.services.circuit_breaker import get_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +27,16 @@ _yf_session.mount("http://", _TimeoutHTTPAdapter())
 
 
 _rate_limited_until = 0  # Timestamp when rate limiting expires
+_state_lock = threading.Lock()
 
 def _retry_with_backoff(func, max_retries=1, initial_delay=0.5, backoff_factor=2.0):
     """Execute function with single attempt (no retries when rate-limited)."""
     global _rate_limited_until
     # If we recently got rate-limited, skip live calls entirely
-    if time.time() < _rate_limited_until:
-        logger.debug("Skipping live call — still rate-limited, using mock")
-        return None
+    with _state_lock:
+        if time.time() < _rate_limited_until:
+            logger.debug("Skipping live call — still rate-limited, using mock")
+            return None
     for attempt in range(max_retries):
         try:
             result = func()
@@ -40,7 +44,8 @@ def _retry_with_backoff(func, max_retries=1, initial_delay=0.5, backoff_factor=2
         except Exception as e:
             error_str = str(e).lower()
             if "429" in error_str or "too many requests" in error_str or "rate" in error_str:
-                _rate_limited_until = time.time() + 60  # Back off for 1 minute (was 2 min)
+                with _state_lock:
+                    _rate_limited_until = time.time() + 60  # Back off for 1 minute (was 2 min)
                 logger.warning(f"Rate limited by yfinance, backing off 60s: {e}")
                 return None
             if attempt == max_retries - 1:
@@ -54,9 +59,14 @@ _consecutive_empty = 0  # Track consecutive empty results from yfinance
 def get_quote(ticker: str) -> Dict[str, Any]:
     """Get stock quote including price, change, volume, and market cap."""
     global _rate_limited_until, _consecutive_empty
-    if time.time() < _rate_limited_until or _consecutive_empty >= 8:
-        if _consecutive_empty >= 8 and time.time() >= _rate_limited_until:
-            _rate_limited_until = time.time() + 45
+    with _state_lock:
+        rate_limited = time.time() < _rate_limited_until
+        consecutive_count = _consecutive_empty
+
+    if rate_limited or consecutive_count >= 8:
+        with _state_lock:
+            if consecutive_count >= 8 and time.time() >= _rate_limited_until:
+                _rate_limited_until = time.time() + 45
         if ticker in mock_data.MOCK_QUOTE_DATA:
             return mock_data.MOCK_QUOTE_DATA[ticker]
         return {}
@@ -68,16 +78,21 @@ def get_quote(ticker: str) -> Dict[str, Any]:
             hist = data.history(period="1d")
 
             if hist.empty:
-                _consecutive_empty += 1
-                logger.warning(f"Empty hist for {ticker} (consecutive: {_consecutive_empty})")
-                if _consecutive_empty >= 5:
-                    _rate_limited_until = time.time() + 60
+                with _state_lock:
+                    _consecutive_empty += 1
+                    empty_count = _consecutive_empty
+                logger.warning(f"Empty hist for {ticker} (consecutive: {empty_count})")
+                if empty_count >= 5:
+                    with _state_lock:
+                        _rate_limited_until = time.time() + 60
                     logger.warning("Multiple empty results — likely rate-limited, backing off 60s")
+                get_breaker("yfinance").record_failure()
                 if ticker in mock_data.MOCK_QUOTE_DATA:
                     return mock_data.MOCK_QUOTE_DATA[ticker]
                 return {}
 
-            _consecutive_empty = 0  # Reset on success
+            with _state_lock:
+                _consecutive_empty = 0  # Reset on success
 
             # Only call .info if history succeeded (avoids extra slow HTTP call on rate limit)
             try:
@@ -90,6 +105,7 @@ def get_quote(ticker: str) -> Dict[str, Any]:
             change = current_price - prev_close
             pct_change = (change / prev_close * 100) if prev_close else 0
 
+            get_breaker("yfinance").record_success()
             return {
                 "ticker": ticker,
                 "price": float(current_price),
@@ -103,9 +119,13 @@ def get_quote(ticker: str) -> Dict[str, Any]:
                 "sector": info.get("sector", ""),
             }
         except Exception as e:
-            _consecutive_empty += 1
-            if _consecutive_empty >= 5:
-                _rate_limited_until = time.time() + 45
+            with _state_lock:
+                _consecutive_empty += 1
+                empty_count = _consecutive_empty
+            if empty_count >= 5:
+                with _state_lock:
+                    _rate_limited_until = time.time() + 45
+            get_breaker("yfinance").record_failure()
             logger.error(f"Error fetching quote for {ticker}: {e}")
             if ticker in mock_data.MOCK_QUOTE_DATA:
                 logger.info(f"Using mock data for quote: {ticker}")
@@ -123,6 +143,7 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d") -> List[D
             hist = data.history(period=period, interval=interval)
 
             if hist.empty:
+                get_breaker("yfinance").record_failure()
                 return []
 
             result = []
@@ -135,8 +156,10 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d") -> List[D
                     "close": float(row["Close"]),
                     "volume": int(row["Volume"]),
                 })
+            get_breaker("yfinance").record_success()
             return result
         except Exception as e:
+            get_breaker("yfinance").record_failure()
             logger.error(f"Error fetching history for {ticker}: {e}")
             # Return empty list for mock (history is complex to mock)
             logger.info(f"Using mock data (empty) for history: {ticker}")
@@ -148,9 +171,10 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d") -> List[D
 def get_macro_data() -> Dict[str, Any]:
     """Fetch macro indicators: TNX, IRX, VIX, Dollar, Gold, Oil, BTC, SPY, QQQ, IWM."""
     global _rate_limited_until
-    if time.time() < _rate_limited_until:
-        logger.info("Using mock macro data (rate-limited)")
-        return mock_data.MOCK_MACRO_DATA
+    with _state_lock:
+        if time.time() < _rate_limited_until:
+            logger.info("Using mock macro data (rate-limited)")
+            return mock_data.MOCK_MACRO_DATA
 
     def _fetch():
         try:
@@ -161,7 +185,8 @@ def get_macro_data() -> Dict[str, Any]:
             for ticker in tickers:
                 if consecutive_failures >= 5:
                     logger.warning("Too many consecutive failures, stopping live fetches")
-                    _rate_limited_until = time.time() + 45
+                    with _state_lock:
+                        _rate_limited_until = time.time() + 45
                     break
                 try:
                     data = yf.Ticker(ticker, session=_yf_session)
@@ -187,7 +212,8 @@ def get_macro_data() -> Dict[str, Any]:
                     logger.error(f"Error fetching {ticker}: {e}")
                     consecutive_failures += 1
                     if consecutive_failures >= 5:
-                        _rate_limited_until = time.time() + 45
+                        with _state_lock:
+                            _rate_limited_until = time.time() + 45
                         break
                     continue
 
@@ -219,9 +245,10 @@ def get_sector_data(period: str = "1D") -> List[Dict[str, Any]]:
         "XLC": "Communication Services",
     }
 
-    if time.time() < _rate_limited_until:
-        logger.info("Using mock sector data (rate-limited)")
-        return mock_data.MOCK_SECTOR_DATA
+    with _state_lock:
+        if time.time() < _rate_limited_until:
+            logger.info("Using mock sector data (rate-limited)")
+            return mock_data.MOCK_SECTOR_DATA
 
     def _fetch():
         try:
@@ -233,7 +260,8 @@ def get_sector_data(period: str = "1D") -> List[Dict[str, Any]]:
             for ticker, sector_name in sector_etfs.items():
                 if consecutive_failures >= 5:
                     logger.warning("Too many sector failures, stopping live fetches")
-                    _rate_limited_until = time.time() + 45
+                    with _state_lock:
+                        _rate_limited_until = time.time() + 45
                     break
                 try:
                     data = yf.Ticker(ticker, session=_yf_session)
@@ -266,7 +294,8 @@ def get_sector_data(period: str = "1D") -> List[Dict[str, Any]]:
                     logger.error(f"Error fetching sector {ticker}: {e}")
                     consecutive_failures += 1
                     if consecutive_failures >= 5:
-                        _rate_limited_until = time.time() + 45
+                        with _state_lock:
+                            _rate_limited_until = time.time() + 45
                         break
                     continue
 

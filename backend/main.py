@@ -109,50 +109,15 @@ app.include_router(vix_term_structure.router)
 def on_startup():
     create_db_and_tables()
 
-    # Pre-warm data caches in background thread to avoid timeout on first /all
-    import threading
-    def _prewarm():
-        import time
-        time.sleep(2)  # Let the app fully start first
-        try:
-            from backend.services import yahoo_direct as yd
-            from backend.services.data_provider import get_macro_data, get_sector_chart_data
-            import logging
-            logger = logging.getLogger(__name__)
+    # Start background cache refresh daemon (replaces one-shot _prewarm)
+    from backend.services import cache_refresh
+    cache_refresh.start()
 
-            # Step 1: Fetch macro data (5 equity tickers + FRED)
-            logger.info("Pre-warming macro cache...")
-            macro = get_macro_data()
-            logger.info(f"Pre-warmed macro: {len(macro)} tickers")
 
-            time.sleep(1)  # Brief pause between batches
-
-            # Step 2: Fetch sector chart data (10 sector ETFs)
-            logger.info("Pre-warming sector chart cache...")
-            sectors = get_sector_chart_data("1D")
-            logger.info(f"Pre-warmed sectors: {len(sectors.get('sectors', []))} sectors")
-
-            time.sleep(1)
-
-            # Step 3: Pre-warm SPY 1y history (for historical analogs)
-            logger.info("Pre-warming SPY history for analogs...")
-            spy_hist = yd.get_history("SPY", range_str="1y", interval="1d")
-            logger.info(f"Pre-warmed SPY history: {len(spy_hist) if spy_hist else 0} records")
-
-            # Step 4: Pre-warm web search news (for sentiment headlines)
-            logger.info("Pre-warming market news...")
-            try:
-                from backend.services.web_search import search_market_news
-                articles = search_market_news(macro_data=macro, max_total=15)
-                logger.info(f"Pre-warmed news: {len(articles)} articles")
-            except Exception as news_err:
-                logger.warning(f"News pre-warm failed: {news_err}")
-
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Cache pre-warm failed: {e}")
-
-    threading.Thread(target=_prewarm, daemon=True).start()
+@app.on_event("shutdown")
+def on_shutdown():
+    from backend.services import cache_refresh
+    cache_refresh.stop()
 
 
 @app.get("/api/health")

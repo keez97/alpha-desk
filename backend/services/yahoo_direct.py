@@ -18,12 +18,14 @@ Provides:
 
 import logging
 import time
+import threading
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 
 import httpx
 
 from backend.services.cache import TTLCache
+from backend.services.circuit_breaker import get_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -66,28 +68,33 @@ _CRUMB_TTL = 3600  # Refresh crumb every hour
 # Independent rate-limit tracking
 _rate_limited_until = 0
 _consecutive_failures = 0
+_state_lock = threading.Lock()
 
 
 def _is_rate_limited() -> bool:
-    return time.time() < _rate_limited_until
+    with _state_lock:
+        return time.time() < _rate_limited_until
 
 
 def _mark_rate_limited(seconds: int = 60):
     global _rate_limited_until
-    _rate_limited_until = time.time() + seconds
-    logger.warning("yahoo_direct: rate limited for %ds", seconds)
+    with _state_lock:
+        _rate_limited_until = time.time() + seconds
+        logger.warning("yahoo_direct: rate limited for %ds", seconds)
 
 
 def _reset_failures():
     global _consecutive_failures
-    _consecutive_failures = 0
+    with _state_lock:
+        _consecutive_failures = 0
 
 
 def _record_failure():
     global _consecutive_failures
-    _consecutive_failures += 1
-    if _consecutive_failures >= 12:
-        _mark_rate_limited(60)
+    with _state_lock:
+        _consecutive_failures += 1
+        if _consecutive_failures >= 12:
+            _mark_rate_limited(60)
 
 
 def _get_crumb_and_cookies() -> tuple:
@@ -148,6 +155,9 @@ def _fetch_chart(
     if _is_rate_limited():
         return None
 
+    if not get_breaker("yahoo_direct").is_available():
+        return None
+
     cache_key = f"yd_chart:{ticker}:{interval}:{range_str}"
     cached = _cache.get(cache_key)
     if cached is not None:
@@ -161,6 +171,7 @@ def _fetch_chart(
         params["crumb"] = crumb
 
     # Try multiple base URLs (query2 first, then query1)
+    all_429 = True
     for base_url in _BASE_URLS:
         try:
             url = f"{base_url}/{ticker}"
@@ -170,8 +181,10 @@ def _fetch_chart(
             if resp.status_code == 429:
                 logger.warning("yahoo_direct %s: 429 from %s, trying next", ticker, base_url)
                 continue  # Try next base URL before giving up
+            all_429 = False
             if resp.status_code != 200:
                 _record_failure()
+                get_breaker("yahoo_direct").record_failure()
                 logger.warning("yahoo_direct %s: HTTP %d from %s", ticker, resp.status_code, base_url)
                 continue
 
@@ -180,23 +193,31 @@ def _fetch_chart(
             result = chart.get("result")
             if not result:
                 _record_failure()
+                get_breaker("yahoo_direct").record_failure()
                 continue
 
             _reset_failures()
+            get_breaker("yahoo_direct").record_success()
             parsed = result[0]
             _cache.set(cache_key, parsed, _CACHE_TTL_QUOTE if range_str == "1d" else _CACHE_TTL_HISTORY)
             return parsed
 
         except httpx.TimeoutException:
             _record_failure()
+            get_breaker("yahoo_direct").record_failure()
             logger.warning("yahoo_direct %s: timeout from %s", ticker, base_url)
+            all_429 = False
             continue
         except Exception as e:
             _record_failure()
+            get_breaker("yahoo_direct").record_failure()
             logger.warning("yahoo_direct %s: %s from %s", ticker, e, base_url)
+            all_429 = False
             continue
 
-    # All base URLs failed — only rate limit if we got 429s from all
+    # All base URLs failed — mark rate limited if we got 429s from all
+    if all_429:
+        _mark_rate_limited(90)
     return None
 
 
@@ -354,6 +375,9 @@ def batch_quotes(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     if _is_rate_limited():
+        return {}
+
+    if not get_breaker("yahoo_direct").is_available():
         return {}
 
     results = {}

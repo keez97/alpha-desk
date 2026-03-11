@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from backend.config import FDS_API_KEY
+from backend.services.circuit_breaker import get_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,9 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
             _API_KEY_WARNING_LOGGED = True
         return None
 
+    if not get_breaker("fds").is_available():
+        return None
+
     url = f"{BASE_URL}{endpoint}"
     headers = _get_headers()
 
@@ -83,6 +87,7 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
                     response = client.request(method, url, headers=headers, params=params)
 
                 response.raise_for_status()
+                get_breaker("fds").record_success()
                 return response.json()
 
         except httpx.HTTPStatusError as e:
@@ -91,6 +96,7 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
 
             # Handle 429 rate limiting — extract wait time from response
             if status == 429:
+                get_breaker("fds").record_failure()
                 wait_match = re.search(r"(\d+)\s*seconds?", body)
                 wait_time = int(wait_match.group(1)) + 2 if wait_match else 30
                 logger.warning(f"Rate limited on {endpoint}, waiting {wait_time}s")
@@ -99,14 +105,17 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
 
             # Don't retry 400 Bad Request (e.g. invalid date) — it won't change
             if status == 400:
+                get_breaker("fds").record_failure()
                 logger.error(f"Bad request on {method} {endpoint}: {body}")
                 return None
 
             # Don't retry 402 Insufficient credits — won't resolve
             if status == 402:
+                get_breaker("fds").force_open("Insufficient credits")
                 logger.error(f"Insufficient credits on {method} {endpoint}")
                 return None
 
+            get_breaker("fds").record_failure()
             logger.error(
                 f"HTTP error on {method} {endpoint}: {status} - {body}"
             )
@@ -118,6 +127,7 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
                 return None
 
         except httpx.RequestError as e:
+            get_breaker("fds").record_failure()
             logger.error(f"Request error on {method} {endpoint}: {e}")
             if attempt < MAX_RETRIES - 1:
                 wait_time = RETRY_BACKOFF * (2 ** attempt)
@@ -127,6 +137,7 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
                 return None
 
         except Exception as e:
+            get_breaker("fds").record_failure()
             logger.error(f"Unexpected error on {method} {endpoint}: {e}")
             return None
 

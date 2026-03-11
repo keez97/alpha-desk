@@ -89,7 +89,27 @@ async def debug_yahoo():
     except Exception as e:
         results["cache_clear_error"] = str(e)
 
+    # Test 5: Circuit breaker status
+    try:
+        from backend.services.circuit_breaker import all_status
+        results["circuit_breakers"] = all_status()
+    except Exception as e:
+        results["circuit_breaker_error"] = str(e)
+
     return results
+
+
+@router.get("/debug/circuit-breakers")
+async def debug_circuit_breakers():
+    """Debug endpoint to check circuit breaker states for all data sources."""
+    from backend.services.circuit_breaker import all_status
+    from backend.services.cache import cache as global_cache
+
+    return {
+        "circuit_breakers": all_status(),
+        "cache_stats": global_cache.stats(),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 @router.get("/macro")

@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Sentinel object for negative caching (marks recently-failed keys)
+_NEGATIVE_SENTINEL = object()
+
 
 class TTLCache:
     """
@@ -44,6 +47,7 @@ class TTLCache:
         Retrieve a value from the cache.
 
         Returns None if key does not exist or has expired.
+        Also returns None for negative cache entries (without exposing the sentinel).
         Automatically removes expired entries.
         Logs cache hits and misses at debug level.
 
@@ -51,7 +55,7 @@ class TTLCache:
             key: The cache key to retrieve.
 
         Returns:
-            The cached value, or None if not found or expired.
+            The cached value, or None if not found, expired, or negative.
         """
         with self._lock:
             if key not in self._cache:
@@ -66,6 +70,12 @@ class TTLCache:
                 del self._cache[key]
                 self._miss_count += 1
                 logger.debug(f"Cache expired for key: {key}")
+                return None
+
+            # Handle negative cache entries (don't expose the sentinel)
+            if entry["value"] is _NEGATIVE_SENTINEL:
+                self._miss_count += 1
+                logger.debug(f"Cache hit (negative) for key: {key}")
                 return None
 
             self._hit_count += 1
@@ -107,6 +117,71 @@ class TTLCache:
         with self._lock:
             self._cache.clear()
             logger.debug("Cache cleared")
+
+    def set_negative(self, key: str, ttl: int = 30) -> None:
+        """
+        Mark a key as recently failed (negative cache).
+
+        Stores a sentinel value to indicate "don't retry this key yet".
+        Useful for data providers to avoid hammering dead sources.
+
+        Args:
+            key: The cache key to mark as negative.
+            ttl: Time-to-live in seconds (default: 30s).
+        """
+        with self._lock:
+            self._cache[key] = {
+                "value": _NEGATIVE_SENTINEL,
+                "expires_at": time.time() + ttl,
+            }
+            logger.debug(f"Cache negative set for key: {key} with TTL: {ttl}s")
+
+    def is_negative(self, key: str) -> bool:
+        """
+        Check if a key is in negative cache (recently failed).
+
+        Returns True if the key holds the negative sentinel and hasn't expired.
+        Returns False otherwise (missing, expired, or positive cache entry).
+
+        Args:
+            key: The cache key to check.
+
+        Returns:
+            True if key is in negative cache, False otherwise.
+        """
+        with self._lock:
+            if key not in self._cache:
+                return False
+
+            entry = self._cache[key]
+
+            # Check if entry has expired
+            if time.time() > entry["expires_at"]:
+                del self._cache[key]
+                return False
+
+            # Check if it's the negative sentinel
+            return entry["value"] is _NEGATIVE_SENTINEL
+
+    def cleanup_expired(self) -> None:
+        """
+        Remove all expired entries from the cache.
+
+        Called periodically by refresh threads to prevent unbounded cache growth.
+        """
+        with self._lock:
+            current_time = time.time()
+            expired_keys = [
+                key
+                for key, entry in self._cache.items()
+                if current_time > entry["expires_at"]
+            ]
+
+            for key in expired_keys:
+                del self._cache[key]
+
+            if expired_keys:
+                logger.debug(f"Cache cleanup removed {len(expired_keys)} expired entries")
 
     def stats(self) -> Dict[str, Any]:
         """
