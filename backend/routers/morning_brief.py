@@ -383,7 +383,7 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
         safe("earnings", get_earnings_brief),
         safe("overnight", synthetic_estimator.estimate_overnight_returns, OVERNIGHT_TICKERS, timeout_s=4.0),
         safe("positioning", get_cot_positioning),
-        safe("risk", get_scenario_risk_fast, timeout_s=4.0),
+        safe("risk", get_scenario_risk_fast, macro_raw or {}, timeout_s=4.0),
         safe("spillover", get_momentum_spillover),
     )
     logger.info("[all] Done")

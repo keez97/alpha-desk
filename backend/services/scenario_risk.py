@@ -224,9 +224,10 @@ def calculate_scenario_impacts() -> List[Dict[str, Any]]:
         return []
 
 
-def get_scenario_risk_fast() -> Dict[str, Any]:
-    """Fast version for /all endpoint — only scenarios (needs macro data, instant).
+def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
+    """Fast version for /all endpoint — only scenarios, zero network calls.
     Skips VaR and analogs which need 365d price history and can take >15s.
+    Accepts pre-fetched macro_data to avoid calling get_macro_data().
     """
     now = time.time()
     cache_key = "scenario_risk_fast"
@@ -238,7 +239,34 @@ def get_scenario_risk_fast() -> Dict[str, Any]:
 
     scenarios = []
     try:
-        scenarios = calculate_scenario_impacts()
+        if macro_data:
+            # Use pre-fetched macro data — no network calls
+            vix = macro_data.get("^VIX", {}).get("price", 20.0)
+            scenarios = [
+                {
+                    "name": "VIX 2σ Spike",
+                    "description": f"Volatility increases to {vix * 2:.0f}",
+                    "estimated_impact_pct": -2.5,
+                    "probability": 0.15,
+                    "severity": "moderate",
+                },
+                {
+                    "name": "100bp Yield Steepen",
+                    "description": "Yield curve steepens by 100bp",
+                    "estimated_impact_pct": -1.5,
+                    "probability": 0.20,
+                    "severity": "mild",
+                },
+                {
+                    "name": "10% Correction",
+                    "description": "S&P 500 declines 10%",
+                    "estimated_impact_pct": -10.0,
+                    "probability": 0.25,
+                    "severity": "high",
+                },
+            ]
+        else:
+            scenarios = calculate_scenario_impacts()
     except Exception as e:
         logger.warning(f"Scenario impacts failed: {e}")
 
