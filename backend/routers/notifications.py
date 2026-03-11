@@ -85,7 +85,7 @@ class TestWebhookResponse(BaseModel):
 # ==================== Endpoints ====================
 
 
-@router.get("/", response_model=List[NotificationResponse])
+@router.get("", response_model=List[NotificationResponse])
 def list_notifications(
     session: Session = Depends(get_session),
     unread_only: bool = False,
