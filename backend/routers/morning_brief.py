@@ -325,7 +325,7 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     """
     from backend.services.vix_term_structure import get_vix_term_structure
     from backend.services.sector_transitions import get_sector_transitions
-    from backend.services.sentiment_velocity import get_sentiment_velocity
+    from backend.services.sentiment_velocity import get_sentiment_velocity_fast
     from backend.services.options_flow import get_options_flow
     from backend.services.earnings_brief import get_earnings_brief
     from backend.services.cot_positioning import get_cot_positioning
@@ -378,7 +378,7 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     # The dedicated /overnight-returns endpoint still uses the full cascade.
     (sentiment_raw, options_raw, earnings_raw, overnight_raw,
      positioning_raw, risk_raw, spillover_raw) = await asyncio.gather(
-        safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"], timeout_s=8.0),
+        safe("sentiment", get_sentiment_velocity_fast, macro_raw or {}, timeout_s=4.0),
         safe("options", get_options_flow),
         safe("earnings", get_earnings_brief),
         safe("overnight", synthetic_estimator.estimate_overnight_returns, OVERNIGHT_TICKERS, timeout_s=4.0),
