@@ -45,12 +45,32 @@ async def get_macro(session: Session = Depends(get_session)):
 @router.get("/sectors")
 async def get_sectors(period: str = "1D", session: Session = Depends(get_session)):
     """Get sector performance data with actual prices and real dates."""
-    sector_data = await asyncio.to_thread(get_sector_chart_data, period=period)
-    return {
-        "timestamp": datetime.utcnow().isoformat(),
-        "period": period,
-        "sectors": sector_data.get("sectors", [])
-    }
+    try:
+        sector_data = await asyncio.wait_for(
+            asyncio.to_thread(get_sector_chart_data, period=period),
+            timeout=20.0  # 20s timeout for sector chart data
+        )
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "period": period,
+            "sectors": sector_data.get("sectors", [])
+        }
+    except asyncio.TimeoutError:
+        logger.warning(f"Sector chart data timed out for period={period}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "period": period,
+            "sectors": [],
+            "error": "timeout"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching sector chart data: {e}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "period": period,
+            "sectors": [],
+            "error": str(e)
+        }
 
 
 @router.get("/drivers")
@@ -253,10 +273,19 @@ async def refresh_morning_report(session: Session = Depends(get_session)):
 async def get_breadth():
     """Get market breadth metrics (advance/decline, McClellan, breadth thrust)."""
     try:
-        breadth = await asyncio.to_thread(calculate_breadth)
+        breadth = await asyncio.wait_for(
+            asyncio.to_thread(calculate_breadth),
+            timeout=15.0  # 15s timeout — breadth cascades through multiple data sources
+        )
         return {
             "timestamp": datetime.utcnow().isoformat(),
             "data": breadth
+        }
+    except asyncio.TimeoutError:
+        logger.warning("Breadth calculation timed out after 15s")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {"error": "timeout", "signal": "neutral", "advances": 0, "declines": 0, "total": 0, "ad_ratio": 1.0}
         }
     except Exception as e:
         logger.error(f"Error calculating breadth: {e}")
@@ -306,14 +335,14 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     from backend.services.data_provider import get_sector_data
     from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
 
-    async def safe(name, fn, *args, **kwargs):
+    async def safe(name, fn, *args, timeout_s=8.0, **kwargs):
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(fn, *args, **kwargs),
-                timeout=2.0  # 2s per service — cached calls return in <100ms
+                timeout=timeout_s  # Cached calls return <100ms; cold calls need more time
             )
         except asyncio.TimeoutError:
-            logger.warning(f"[all] {name} timed out (2s)")
+            logger.warning(f"[all] {name} timed out ({timeout_s}s)")
             return None
         except Exception as e:
             logger.warning(f"[all] {name} failed: {e}")
