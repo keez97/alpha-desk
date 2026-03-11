@@ -111,6 +111,112 @@ def _get_regime_context() -> tuple:
         return None, "neutral"
 
 
+def _enrich_claude_drivers(parsed: Dict[str, Any], macro: dict, sectors: list) -> Dict[str, Any]:
+    """Enrich Claude's driver response with quantitative features.
+
+    Adds impact scores, contrarian signals, per-driver metrics, and real news articles
+    that the frontend is built to display (ImpactBadge, ContrarianBadge, MetricChip, NewsItem).
+    """
+    from backend.services.smart_analysis import (
+        _calculate_impact_score,
+        _detect_contrarian_signal,
+        _fetch_relevant_news,
+    )
+
+    drivers = parsed.get("drivers", [])
+
+    # ── Build per-driver metrics from macro data based on affected assets ──
+    metric_map = {
+        "SPY": lambda: {"label": "S&P 500", "value": f"${macro.get('SPY', {}).get('price', 0):.2f}", "direction": "up" if (macro.get("SPY", {}).get("pct_change") or 0) > 0 else "down"},
+        "QQQ": lambda: {"label": "Nasdaq", "value": f"${macro.get('QQQ', {}).get('price', 0):.2f}", "direction": "up" if (macro.get("QQQ", {}).get("pct_change") or 0) > 0 else "down"},
+        "IWM": lambda: {"label": "Russell 2K", "value": f"${macro.get('IWM', {}).get('price', 0):.2f}", "direction": "up" if (macro.get("IWM", {}).get("pct_change") or 0) > 0 else "down"},
+        "^VIX": lambda: {"label": "VIX", "value": f"{macro.get('^VIX', {}).get('price', 0):.1f}", "direction": "up" if (macro.get("^VIX", {}).get("price") or 0) > 20 else "down"},
+        "^TNX": lambda: {"label": "10Y Yield", "value": f"{macro.get('^TNX', {}).get('price', 0):.2f}%", "direction": "up" if (macro.get("^TNX", {}).get("price") or 0) > 4.0 else "down"},
+        "CL=F": lambda: {"label": "Crude Oil", "value": f"${macro.get('CL=F', {}).get('price', 0):.0f}", "direction": "up" if (macro.get("CL=F", {}).get("pct_change") or 0) > 0 else "down"},
+        "GC=F": lambda: {"label": "Gold", "value": f"${macro.get('GC=F', {}).get('price', 0):,.0f}", "direction": "up" if (macro.get("GC=F", {}).get("pct_change") or 0) > 0 else "down"},
+        "DX-Y.NYB": lambda: {"label": "Dollar", "value": f"{macro.get('DX-Y.NYB', {}).get('price', 0):.1f}", "direction": "up" if (macro.get("DX-Y.NYB", {}).get("pct_change") or 0) > 0 else "down"},
+        "TLT": lambda: {"label": "10Y Yield", "value": f"{macro.get('^TNX', {}).get('price', 0):.2f}%", "direction": "up" if (macro.get("^TNX", {}).get("price") or 0) > 4.0 else "down"},
+    }
+
+    # Also map sector tickers to their data
+    sector_data = {s.get("ticker", ""): s for s in sectors} if sectors else {}
+    for ticker, s in sector_data.items():
+        if ticker not in metric_map:
+            pct = s.get("daily_pct_change") or s.get("pct_change") or 0
+            price = s.get("price", 0)
+            metric_map[ticker] = lambda t=ticker, p=price, pc=pct: {
+                "label": t, "value": f"${p:.2f}" if p else f"{pc:+.2f}%",
+                "direction": "up" if pc > 0 else "down"
+            }
+
+    # ── Keyword mapping for news search per driver ──
+    driver_news_keywords = {
+        "sector": ["sector", "rotation", "cyclical", "defensive"],
+        "vix": ["volatility", "vix", "fear", "options", "hedge"],
+        "vol": ["volatility", "vix", "fear", "options", "hedge"],
+        "yield": ["treasury", "yield", "bond", "rate", "fed"],
+        "bond": ["treasury", "yield", "bond", "rate", "fed"],
+        "treasury": ["treasury", "yield", "bond", "rate", "fed"],
+        "oil": ["oil", "crude", "opec", "energy", "petroleum"],
+        "gold": ["gold", "commodity", "precious", "metals"],
+        "dollar": ["dollar", "currency", "forex", "dxy"],
+        "tech": ["technology", "tech", "semiconductor", "software", "ai"],
+        "inflation": ["inflation", "cpi", "pce", "prices"],
+        "fed": ["federal reserve", "fed", "rate", "monetary policy"],
+        "geopolitical": ["geopolitical", "war", "tariff", "trade", "sanctions"],
+        "china": ["china", "trade", "tariff", "asia"],
+    }
+
+    all_news = []
+    for driver in drivers:
+        # Build metrics from affected_assets
+        if not driver.get("metrics"):
+            driver_metrics = []
+            for asset in driver.get("affected_assets", [])[:4]:
+                if asset in metric_map:
+                    try:
+                        m = metric_map[asset]()
+                        if m.get("value") and m["value"] not in ("$0.00", "0.0", "$0"):
+                            driver_metrics.append(m)
+                    except Exception:
+                        pass
+            driver["metrics"] = driver_metrics
+
+        # Fetch relevant news articles for this driver
+        if not driver.get("news_articles"):
+            title_lower = (driver.get("title") or "").lower()
+            keywords = []
+            for key, kws in driver_news_keywords.items():
+                if key in title_lower:
+                    keywords.extend(kws)
+                    break
+            # Add affected assets as keywords too
+            for asset in driver.get("affected_assets", [])[:3]:
+                keywords.append(asset.lower())
+
+            try:
+                news_articles = _fetch_relevant_news(
+                    keywords=keywords if keywords else None, max_articles=6
+                )
+                driver["news_articles"] = news_articles
+                all_news.extend(news_articles)
+            except Exception:
+                driver["news_articles"] = []
+
+        # Calculate impact score
+        if not driver.get("impact_score"):
+            driver["impact_score"] = _calculate_impact_score(driver, macro, all_news)
+
+        # Detect contrarian signal
+        if not driver.get("contrarian_signal"):
+            contrarian = _detect_contrarian_signal(driver.get("news_articles", []))
+            if contrarian:
+                driver["contrarian_signal"] = contrarian
+
+    parsed["drivers"] = drivers
+    return parsed
+
+
 async def generate_morning_drivers(date: str) -> Dict[str, Any]:
     """Generate 5 market drivers for the given date.
 
@@ -163,6 +269,8 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
                     for d in parsed["drivers"][:3]
                 )
                 if valid:
+                    # Enrich Claude's drivers with quantitative features
+                    parsed = _enrich_claude_drivers(parsed, macro, sectors)
                     return parsed
                 else:
                     logger.warning("LLM drivers missing required fields, falling back to data-driven")
