@@ -111,16 +111,21 @@ def _get_regime_context() -> tuple:
         return None, "neutral"
 
 
-def _enrich_claude_drivers(parsed: Dict[str, Any], macro: dict, sectors: list) -> Dict[str, Any]:
+def _enrich_claude_drivers(
+    parsed: Dict[str, Any], macro: dict, sectors: list,
+    prefetched_news: list = None,
+) -> Dict[str, Any]:
     """Enrich Claude's driver response with quantitative features.
 
     Adds impact scores, contrarian signals, per-driver metrics, and real news articles
     that the frontend is built to display (ImpactBadge, ContrarianBadge, MetricChip, NewsItem).
+
+    Uses prefetched_news (from web search + RSS already done in step 2) rather than
+    making another slow RSS call, which avoids Railway timeouts.
     """
     from backend.services.smart_analysis import (
         _calculate_impact_score,
         _detect_contrarian_signal,
-        _fetch_relevant_news,
     )
 
     drivers = parsed.get("drivers", [])
@@ -182,8 +187,8 @@ def _enrich_claude_drivers(parsed: Dict[str, Any], macro: dict, sectors: list) -
                         pass
             driver["metrics"] = driver_metrics
 
-        # Fetch relevant news articles for this driver
-        if not driver.get("news_articles"):
+        # Match news articles from prefetched results (already fetched in step 2)
+        if not driver.get("news_articles") and prefetched_news:
             title_lower = (driver.get("title") or "").lower()
             keywords = []
             for key, kws in driver_news_keywords.items():
@@ -194,14 +199,17 @@ def _enrich_claude_drivers(parsed: Dict[str, Any], macro: dict, sectors: list) -
             for asset in driver.get("affected_assets", [])[:3]:
                 keywords.append(asset.lower())
 
-            try:
-                news_articles = _fetch_relevant_news(
-                    keywords=keywords if keywords else None, max_articles=6
-                )
-                driver["news_articles"] = news_articles
-                all_news.extend(news_articles)
-            except Exception:
-                driver["news_articles"] = []
+            # Score and match prefetched articles by keyword relevance
+            matched = []
+            for article in prefetched_news:
+                headline_lower = (article.get("headline") or article.get("title") or "").lower()
+                score = sum(1 for kw in keywords if kw in headline_lower) if keywords else 0
+                if score > 0 or not keywords:
+                    matched.append((score, article))
+            matched.sort(key=lambda x: x[0], reverse=True)
+            news_articles = [a for _, a in matched[:6]]
+            driver["news_articles"] = news_articles
+            all_news.extend(news_articles)
 
         # Calculate impact score
         if not driver.get("impact_score"):
@@ -239,12 +247,13 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
 
     # Step 2: Fetch real-time news via web search + RSS
     news_context = ""
+    fetched_news = []  # Keep reference for enrichment later
     try:
         from backend.services.web_search import search_market_news, format_news_for_prompt
-        news_articles = search_market_news(macro_data=macro, max_total=15)
-        if news_articles:
-            news_context = format_news_for_prompt(news_articles, max_articles=15)
-            logger.info(f"Fetched {len(news_articles)} news articles for drivers prompt")
+        fetched_news = search_market_news(macro_data=macro, max_total=15)
+        if fetched_news:
+            news_context = format_news_for_prompt(fetched_news, max_articles=15)
+            logger.info(f"Fetched {len(fetched_news)} news articles for drivers prompt")
         else:
             logger.warning("No news articles found from web search + RSS")
     except Exception as e:
@@ -270,7 +279,7 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
                 )
                 if valid:
                     # Enrich Claude's drivers with quantitative features
-                    parsed = _enrich_claude_drivers(parsed, macro, sectors)
+                    parsed = _enrich_claude_drivers(parsed, macro, sectors, prefetched_news=fetched_news)
                     return parsed
                 else:
                     logger.warning("LLM drivers missing required fields, falling back to data-driven")
