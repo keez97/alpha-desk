@@ -23,6 +23,14 @@ function getFactorColor(value: number): string {
   return 'text-orange-400';
 }
 
+function getLabelBadgeColor(label: string): string {
+  const positive = ['Strong Uptrend', 'Positive', 'Value Tilt', 'Small Cap Tilt', 'High Beta', 'Moderate'];
+  const negative = ['Strong Downtrend', 'Negative', 'Growth Tilt', 'Large Cap Tilt', 'Very Defensive', 'Defensive'];
+  if (positive.includes(label)) return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20';
+  if (negative.includes(label)) return 'text-red-400 bg-red-400/10 border-red-400/20';
+  return 'text-neutral-400 bg-neutral-400/10 border-neutral-400/20';
+}
+
 export function SectorTransitionsPanel() {
   const { data, isLoading, error, refetch } = useSectorTransitions();
 
@@ -108,10 +116,10 @@ export function SectorTransitionsPanel() {
         <div className="divide-y divide-neutral-800">
           {factor_decomposition.map((f) => {
             const factors = [
-              { name: 'β', value: f.beta_contribution },
-              { name: 'Size', value: f.size_contribution },
-              { name: 'Value', value: f.value_contribution },
-              { name: 'Mom', value: f.momentum_contribution },
+              { name: 'β', value: f.beta_contribution, label: f.beta_label },
+              { name: 'Size', value: f.size_contribution, label: f.size_label },
+              { name: 'Value', value: f.value_contribution, label: f.value_label },
+              { name: 'Mom', value: f.momentum_contribution, label: f.momentum_label },
             ];
 
             return (
@@ -124,6 +132,11 @@ export function SectorTransitionsPanel() {
                       <div className={`text-xs font-mono font-semibold ${getFactorColor(fac.value)}`}>
                         {fac.value > 0 ? '+' : ''}{fac.value.toFixed(2)}
                       </div>
+                      {fac.label && (
+                        <span className={`inline-block mt-0.5 text-[9px] px-1 py-px rounded border font-medium ${getLabelBadgeColor(fac.label)}`}>
+                          {fac.label}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>
