@@ -147,14 +147,14 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
     _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     def _fetch_single_feed(feed_config: Dict) -> List[Dict[str, Any]]:
-        """Fetch a single RSS feed with httpx only (no urllib fallback to save time)."""
+        """Fetch a single RSS feed with httpx → urllib cascade."""
         feed_content = None
         headlines = []
 
-        # httpx with aggressive 3s timeout
+        # Primary: httpx
         try:
             import httpx
-            with httpx.Client(timeout=3.0, follow_redirects=True) as client:
+            with httpx.Client(timeout=5.0, follow_redirects=True) as client:
                 resp = client.get(
                     feed_config["url"],
                     headers={
@@ -168,7 +168,26 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
                 logger.debug(f"RSS httpx OK for {feed_config['name']}: {len(feed_content)} bytes")
         except Exception as httpx_err:
             logger.debug(f"RSS httpx {feed_config['name']}: {type(httpx_err).__name__}")
-            return []
+
+        # Fallback: urllib
+        if feed_content is None:
+            try:
+                import urllib.request
+                import ssl
+                ctx = ssl.create_default_context()
+                req = urllib.request.Request(
+                    feed_config["url"],
+                    headers={
+                        "User-Agent": _UA,
+                        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+                    },
+                )
+                resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+                feed_content = resp.read()
+                logger.debug(f"RSS urllib OK for {feed_config['name']}: {len(feed_content)} bytes")
+            except Exception as urllib_err:
+                logger.debug(f"RSS urllib {feed_config['name']}: {type(urllib_err).__name__}")
+                return []
 
         # Parse feed content
         try:
@@ -203,10 +222,10 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
 
         return headlines
 
-    # Fetch all feeds concurrently (3s per feed, all in parallel = 3s total)
+    # Fetch all feeds concurrently (5s per feed, all in parallel = 5s total)
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(_fetch_single_feed, fc): fc for fc in RSS_FEEDS}
-        for future in as_completed(futures, timeout=4):
+        for future in as_completed(futures, timeout=8):
             fc = futures[future]
             feeds_tried += 1
             try:
@@ -249,8 +268,8 @@ def _generate_synthetic_headlines() -> List[Dict[str, Any]]:
     headlines = []
 
     try:
-        from backend.services.data_provider import get_macro_data
-        macro = get_macro_data()  # Uses cache if already fetched by /all Batch 1
+        from backend.services.yfinance_service import get_macro_data
+        macro = get_macro_data()
     except Exception:
         macro = {}
 
@@ -519,18 +538,14 @@ class SentimentVelocityEngine:
     # Contrarian detection
     # -------------------------------------------------------------------
     def _check_contrarian_signal(self, sentiment_score: Decimal, tickers: List[str]) -> Optional[str]:
-        # Use cached macro data instead of individual get_quote calls (which are slow network calls)
-        try:
-            from backend.services.data_provider import get_macro_data
-            macro = get_macro_data()  # Should be cached from Batch 1 in /all
-            price_changes = []
-            for ticker in tickers:
-                ticker_data = macro.get(ticker, {})
-                pct = ticker_data.get("pct_change", 0)
-                if pct != 0:
-                    price_changes.append(pct)
-        except Exception:
-            price_changes = []
+        price_changes = []
+        for ticker in tickers:
+            try:
+                quote = get_quote(ticker)
+                if quote and "pct_change" in quote:
+                    price_changes.append(quote["pct_change"])
+            except Exception:
+                pass
 
         if not price_changes:
             return None
