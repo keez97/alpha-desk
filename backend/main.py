@@ -109,6 +109,35 @@ app.include_router(vix_term_structure.router)
 def on_startup():
     create_db_and_tables()
 
+    # Pre-warm data caches in background thread to avoid timeout on first /all
+    import threading
+    def _prewarm():
+        import time
+        time.sleep(2)  # Let the app fully start first
+        try:
+            from backend.services import yahoo_direct as yd
+            from backend.services.data_provider import get_macro_data, get_sector_chart_data
+            import logging
+            logger = logging.getLogger(__name__)
+
+            # Step 1: Fetch macro data (5 equity tickers + FRED)
+            logger.info("Pre-warming macro cache...")
+            macro = get_macro_data()
+            logger.info(f"Pre-warmed macro: {len(macro)} tickers")
+
+            time.sleep(1)  # Brief pause between batches
+
+            # Step 2: Fetch sector chart data (10 sector ETFs)
+            logger.info("Pre-warming sector chart cache...")
+            sectors = get_sector_chart_data("1D")
+            logger.info(f"Pre-warmed sectors: {len(sectors.get('sectors', []))} sectors")
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Cache pre-warm failed: {e}")
+
+    threading.Thread(target=_prewarm, daemon=True).start()
+
 
 @app.get("/api/health")
 def health_check():

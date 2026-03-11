@@ -44,6 +44,19 @@ _HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Shared httpx client for connection pooling
+_shared_client: Optional[httpx.Client] = None
+
+def _get_client() -> httpx.Client:
+    """Get or create shared httpx client."""
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.Client(
+            timeout=10, follow_redirects=True, headers=_HEADERS,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _shared_client
+
 # Crumb authentication state
 _crumb: Optional[str] = None
 _cookies: Optional[Dict[str, str]] = None
@@ -151,9 +164,8 @@ def _fetch_chart(
     for base_url in _BASE_URLS:
         try:
             url = f"{base_url}/{ticker}"
-
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-                resp = client.get(url, headers=_HEADERS, params=params, cookies=cookies or {})
+            client = _get_client()
+            resp = client.get(url, params=params, cookies=cookies or {})
 
             if resp.status_code == 429:
                 logger.warning("yahoo_direct %s: 429 from %s, trying next", ticker, base_url)
