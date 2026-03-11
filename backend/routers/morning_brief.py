@@ -396,11 +396,11 @@ async def get_scenarios():
     from backend.services.scenario_risk import (
         _generate_scenarios_with_claude, _scenario_cache, _hardcoded_scenarios
     )
-    from backend.services.yfinance_service import get_macro_data
+    from backend.services.data_provider import get_macro_data as dp_get_macro
 
     try:
         macro_data = await asyncio.wait_for(
-            asyncio.to_thread(get_macro_data), timeout=10.0
+            asyncio.to_thread(dp_get_macro), timeout=10.0
         )
         vix = macro_data.get("^VIX", {}).get("price", 20.0)
 
