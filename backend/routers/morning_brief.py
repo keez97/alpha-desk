@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, date
 import asyncio
 import json
 import logging
+import time
 from backend.services.data_provider import get_macro_data
 
 
@@ -317,6 +318,50 @@ async def custom_report(body: dict):
             "data": {},
             "error": str(e)
         }
+
+
+@router.get("/scenarios")
+async def get_scenarios():
+    """Generate Claude-powered scenarios and cache them.
+
+    Called by frontend AFTER initial /all load to upgrade hardcoded scenarios
+    with AI-generated ones. Populates the Claude scenario cache so subsequent
+    /all calls return them instantly.
+    """
+    import asyncio
+    from backend.services.scenario_risk import (
+        _generate_scenarios_with_claude, _scenario_cache, _hardcoded_scenarios
+    )
+    from backend.services.yfinance_service import get_macro_data
+
+    try:
+        macro_data = await asyncio.wait_for(
+            asyncio.to_thread(get_macro_data), timeout=10.0
+        )
+        vix = macro_data.get("^VIX", {}).get("price", 20.0)
+
+        # Try Claude generation (up to 15s)
+        claude_scenarios = await asyncio.wait_for(
+            asyncio.to_thread(_generate_scenarios_with_claude, macro_data),
+            timeout=15.0
+        )
+
+        if claude_scenarios and len(claude_scenarios) > 0:
+            # Cache for 4 hours so /all picks them up
+            _scenario_cache["scenario_risk_claude"] = {
+                "ts": time.time(), "data": claude_scenarios
+            }
+            # Invalidate the fast cache so next /all uses Claude scenarios
+            _scenario_cache.pop("scenario_risk_fast", None)
+            return {"data": {"scenarios": claude_scenarios, "source": "claude"}}
+        else:
+            return {"data": {"scenarios": _hardcoded_scenarios(vix), "source": "fallback"}}
+    except asyncio.TimeoutError:
+        logger.warning("Claude scenario generation timed out")
+        return {"data": {"scenarios": _hardcoded_scenarios(20.0), "source": "timeout"}}
+    except Exception as e:
+        logger.error(f"Error generating scenarios: {e}")
+        return {"data": {"scenarios": _hardcoded_scenarios(20.0), "source": "error"}}
 
 
 @router.get("/scenario-drilldown")

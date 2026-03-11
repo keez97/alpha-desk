@@ -291,15 +291,39 @@ def calculate_scenario_impacts() -> List[Dict[str, Any]]:
         return []
 
 
-def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
-    """Fast version for /all endpoint — only scenarios, zero network calls.
-    Skips VaR and analogs which need 365d price history and can take >15s.
-    Accepts pre-fetched macro_data to avoid calling get_macro_data().
+def _hardcoded_scenarios(vix: float) -> list:
+    """Fallback scenarios when Claude is unavailable or too slow."""
+    return [
+        {
+            "name": "VIX 2σ Spike",
+            "description": f"Volatility increases to {vix * 2:.0f}",
+            "estimated_impact_pct": -2.5,
+            "probability": 0.15,
+            "severity": "moderate",
+        },
+        {
+            "name": "100bp Yield Steepen",
+            "description": "Yield curve steepens by 100bp",
+            "estimated_impact_pct": -1.5,
+            "probability": 0.20,
+            "severity": "mild",
+        },
+        {
+            "name": "10% Correction",
+            "description": "S&P 500 declines 10%",
+            "estimated_impact_pct": -10.0,
+            "probability": 0.25,
+            "severity": "high",
+        },
+    ]
 
-    Flow:
-    1. Check Claude cache (4-hour TTL) for pre-generated scenarios
-    2. If not cached, try Claude generation (with fallback to hardcoded)
-    3. Return scenarios with VaR metrics
+
+def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
+    """Fast version for /all endpoint — MUST complete within 4s timeout.
+
+    VaR is computed instantly from VIX. Scenarios use Claude cache if available,
+    otherwise fall back to hardcoded. Claude generation is NEVER called here
+    (too slow); it runs on a separate endpoint or background refresh.
     """
     now = time.time()
     cache_key = "scenario_risk_fast"
@@ -318,7 +342,6 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
 
     try:
         if macro_data:
-            # Use pre-fetched macro data — no network calls
             vix = macro_data.get("^VIX", {}).get("price", 20.0)
 
             # Determine regime based on VIX
@@ -329,68 +352,28 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
             else:
                 current_regime = "neutral"
 
-            # VIX-based VaR approximation
-            # VaR_95 = -(VIX / 100) * sqrt(1/252) * 1.65 * 100  (as a percentage)
+            # VIX-based VaR approximation (instant — pure math)
             var_95_historical = -((vix / 100.0) * np.sqrt(1.0 / 252.0) * 1.65 * 100.0)
+            var_95_regime_adjusted = var_95_historical * 1.3 if vix > 25 else var_95_historical
 
-            # Regime-adjusted: multiply by 1.3 if VIX > 25 (bear regime)
-            if vix > 25:
-                var_95_regime_adjusted = var_95_historical * 1.3
-            else:
-                var_95_regime_adjusted = var_95_historical
-
-            # Try Claude-generated scenarios with separate 4-hour cache
+            # Use Claude cache if available (populated by /scenarios endpoint)
             if claude_cache_key in _scenario_cache:
                 claude_cached = _scenario_cache[claude_cache_key]
                 if now - claude_cached["ts"] < _CLAUDE_CACHE_TTL:
-                    logger.info("Using cached Claude scenarios")
                     scenarios = claude_cached["data"]
 
-            # If not in Claude cache, try to generate
+            # Fall back to hardcoded — NEVER call Claude here (too slow for /all)
             if not scenarios:
-                logger.info("Generating new Claude scenarios")
-                claude_scenarios = _generate_scenarios_with_claude(macro_data)
-
-                if claude_scenarios and len(claude_scenarios) > 0:
-                    # Cache the Claude result
-                    _scenario_cache[claude_cache_key] = {"ts": now, "data": claude_scenarios}
-                    scenarios = claude_scenarios
-                    logger.info(f"Successfully cached {len(scenarios)} Claude scenarios")
-                else:
-                    # Fall back to hardcoded scenarios
-                    logger.info("Claude failed, using hardcoded scenarios as fallback")
-                    scenarios = [
-                        {
-                            "name": "VIX 2σ Spike",
-                            "description": f"Volatility increases to {vix * 2:.0f}",
-                            "estimated_impact_pct": -2.5,
-                            "probability": 0.15,
-                            "severity": "moderate",
-                        },
-                        {
-                            "name": "100bp Yield Steepen",
-                            "description": "Yield curve steepens by 100bp",
-                            "estimated_impact_pct": -1.5,
-                            "probability": 0.20,
-                            "severity": "mild",
-                        },
-                        {
-                            "name": "10% Correction",
-                            "description": "S&P 500 declines 10%",
-                            "estimated_impact_pct": -10.0,
-                            "probability": 0.25,
-                            "severity": "high",
-                        },
-                    ]
+                scenarios = _hardcoded_scenarios(vix)
         else:
             scenarios = calculate_scenario_impacts()
     except Exception as e:
-        logger.warning(f"Scenario impacts failed: {e}")
+        logger.warning(f"Scenario risk fast failed: {e}")
 
     result = {
         "timestamp": pd.Timestamp.utcnow().isoformat(),
-        "var_95_historical": var_95_historical,
-        "var_95_regime_adjusted": var_95_regime_adjusted,
+        "var_95_historical": round(var_95_historical, 2),
+        "var_95_regime_adjusted": round(var_95_regime_adjusted, 2),
         "current_regime": current_regime,
         "historical_analogs": [],
         "scenarios": scenarios,

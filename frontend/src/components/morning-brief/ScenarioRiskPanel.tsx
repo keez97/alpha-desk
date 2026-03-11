@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useScenarioRisk } from '../../hooks/useScenarioRisk';
 import { LoadingState } from '../shared/LoadingState';
 import { ErrorState } from '../shared/ErrorState';
@@ -27,9 +28,26 @@ function getVaRColor(value: number): string {
 
 export function ScenarioRiskPanel() {
   const { data, isLoading, error, refetch } = useScenarioRisk();
+  const queryClient = useQueryClient();
   const [expandedScenario, setExpandedScenario] = useState<string | null>(null);
   const [drilldownData, setDrilldownData] = useState<Record<string, any>>({});
   const [loadingDrilldown, setLoadingDrilldown] = useState<string | null>(null);
+  const claudeFetched = useRef(false);
+
+  // Background: fetch Claude-generated scenarios after initial load
+  useEffect(() => {
+    if (!data || claudeFetched.current) return;
+    claudeFetched.current = true;
+    api.get('/morning-brief/scenarios').then(res => {
+      const scenarios = res.data?.data?.scenarios;
+      if (scenarios && scenarios.length > 0 && res.data?.data?.source === 'claude') {
+        // Update cached scenario risk data with Claude scenarios
+        queryClient.setQueryData(['scenarioRisk'], (old: any) =>
+          old ? { ...old, scenarios } : old
+        );
+      }
+    }).catch(() => { /* silent — fallback scenarios still shown */ });
+  }, [data, queryClient]);
 
   if (isLoading) return <LoadingState message="Loading scenario risk..." />;
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
