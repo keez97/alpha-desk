@@ -15,12 +15,25 @@ router = APIRouter(prefix="/api", tags=["enhanced-sectors"])
 async def get_enhanced_sectors(period: str = "1D"):
     """Return sector data enriched with RRG positioning."""
     try:
-        # Get sector performance from yfinance
-        sector_data = await asyncio.to_thread(get_sector_data, period=period)
+        # Get sector performance and RRG data with timeouts
+        try:
+            sector_data = await asyncio.wait_for(
+                asyncio.to_thread(get_sector_data, period=period),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Sector data fetch timed out")
+            sector_data = []
 
-        # Get RRG data from rrg_calculator
         tickers = list(SECTOR_ETFS.keys())
-        rrg_data = await asyncio.to_thread(calculate_rrg, tickers, "SPY", 10)
+        try:
+            rrg_data = await asyncio.wait_for(
+                asyncio.to_thread(calculate_rrg, tickers, "SPY", 10),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("RRG calculation timed out")
+            rrg_data = {"sectors": []}
 
         # Create lookup for RRG data
         rrg_sectors = rrg_data.get("sectors", [])
