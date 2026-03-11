@@ -132,6 +132,22 @@ def on_startup():
             sectors = get_sector_chart_data("1D")
             logger.info(f"Pre-warmed sectors: {len(sectors.get('sectors', []))} sectors")
 
+            time.sleep(1)
+
+            # Step 3: Pre-warm SPY 1y history (for historical analogs)
+            logger.info("Pre-warming SPY history for analogs...")
+            spy_hist = yd.get_history("SPY", range_str="1y", interval="1d")
+            logger.info(f"Pre-warmed SPY history: {len(spy_hist) if spy_hist else 0} records")
+
+            # Step 4: Pre-warm web search news (for sentiment headlines)
+            logger.info("Pre-warming market news...")
+            try:
+                from backend.services.web_search import search_market_news
+                articles = search_market_news(macro_data=macro, max_total=15)
+                logger.info(f"Pre-warmed news: {len(articles)} articles")
+            except Exception as news_err:
+                logger.warning(f"News pre-warm failed: {news_err}")
+
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(f"Cache pre-warm failed: {e}")

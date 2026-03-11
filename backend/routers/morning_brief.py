@@ -627,12 +627,12 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     # The dedicated /overnight-returns endpoint still uses the full cascade.
     (sentiment_raw, options_raw, earnings_raw, overnight_raw,
      positioning_raw, risk_raw, spillover_raw) = await asyncio.gather(
-        safe("sentiment", get_sentiment_velocity_fast, macro_raw or {}, timeout_s=4.0),
+        safe("sentiment", get_sentiment_velocity_fast, macro_raw or {}, timeout_s=10.0),
         safe("options", get_options_flow),
         safe("earnings", get_earnings_brief),
         safe("overnight", synthetic_estimator.estimate_overnight_returns, OVERNIGHT_TICKERS, timeout_s=4.0),
         safe("positioning", get_cot_positioning),
-        safe("risk", get_scenario_risk_fast, macro_raw or {}, timeout_s=4.0),
+        safe("risk", get_scenario_risk_fast, macro_raw or {}, timeout_s=8.0),
         safe("spillover", get_momentum_spillover),
     )
     logger.info("[all] Done")
