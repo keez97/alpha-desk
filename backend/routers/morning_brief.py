@@ -320,7 +320,7 @@ async def custom_report(body: dict):
 
 @router.get("/all")
 async def get_all_morning_brief(session: Session = Depends(get_session)):
-    """Aggregate endpoint – returns ALL morning brief panel data in one response.
+    """Aggregate endpoint \u2013 returns ALL morning brief panel data in one response.
     Avoids 16+ concurrent browser requests which triggers VM rate-limiting.
     """
     from backend.services.vix_term_structure import get_vix_term_structure
@@ -335,11 +335,11 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     from backend.services.data_provider import get_sector_data
     from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
 
-    async def safe(name, fn, *args, timeout_s=8.0, **kwargs):
+    async def safe(name, fn, *args, timeout_s=4.0, **kwargs):
         try:
             return await asyncio.wait_for(
                 asyncio.to_thread(fn, *args, **kwargs),
-                timeout=timeout_s  # Cached calls return <100ms; cold calls need more time
+                timeout=timeout_s  # Cached calls return <100ms; cold calls get 4s
             )
         except asyncio.TimeoutError:
             logger.warning(f"[all] {name} timed out ({timeout_s}s)")
@@ -348,24 +348,42 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
             logger.warning(f"[all] {name} failed: {e}")
             return None
 
-    # Fetch services SEQUENTIALLY to avoid thread contention / GIL starvation.
-    # With in-memory caches warm, each returns in <100ms so total is ~1-2s.
-    logger.info("[all] Starting aggregate fetch (sequential)")
-    macro_raw = await safe("macro", get_macro_data)
+    # Fetch in small batches (3-4 concurrent) to balance speed vs resource usage.
+    # Fully sequential was too slow (15\u00d78s=120s worst case).
+    # Fully parallel crashed the server. Batches of 3-4 are the sweet spot.
+    logger.info("[all] Starting aggregate fetch (batched)")
+
+    # Batch 1: Core macro data (3 concurrent)
+    macro_raw, breadth_raw, vix_raw = await asyncio.gather(
+        safe("macro", get_macro_data),
+        safe("breadth", calculate_breadth),
+        safe("vix", get_vix_term_structure),
+    )
+    # Regime depends on macro result
     regime_raw = await safe("regime", detect_regime, macro_raw or {})
-    breadth_raw = await safe("breadth", calculate_breadth)
-    vix_raw = await safe("vix", get_vix_term_structure)
-    sectors_raw = await safe("sectors", get_sector_chart_data, "1D")
-    sector_perf_raw = await safe("sector_perf", get_sector_data, "1D")
-    transitions_raw = await safe("transitions", get_sector_transitions)
-    rrg_raw = await safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10)
-    sentiment_raw = await safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"])
-    options_raw = await safe("options", get_options_flow)
-    earnings_raw = await safe("earnings", get_earnings_brief)
-    positioning_raw = await safe("positioning", get_cot_positioning)
-    risk_raw = await safe("risk", get_scenario_risk_data)
-    spillover_raw = await safe("spillover", get_momentum_spillover)
-    overnight_raw = await safe("overnight", get_overnight_returns)
+
+    # Batch 2: Sector data (4 concurrent)
+    sectors_raw, sector_perf_raw, transitions_raw, rrg_raw = await asyncio.gather(
+        safe("sectors", get_sector_chart_data, "1D"),
+        safe("sector_perf", get_sector_data, "1D"),
+        safe("transitions", get_sector_transitions),
+        safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10),
+    )
+
+    # Batch 3: Market signals (4 concurrent)
+    sentiment_raw, options_raw, earnings_raw, overnight_raw = await asyncio.gather(
+        safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"]),
+        safe("options", get_options_flow),
+        safe("earnings", get_earnings_brief),
+        safe("overnight", get_overnight_returns),
+    )
+
+    # Batch 4: Analysis & positioning (3 concurrent)
+    positioning_raw, risk_raw, spillover_raw = await asyncio.gather(
+        safe("positioning", get_cot_positioning),
+        safe("risk", get_scenario_risk_data),
+        safe("spillover", get_momentum_spillover),
+    )
     logger.info("[all] Done")
 
     ts = datetime.utcnow().isoformat()
