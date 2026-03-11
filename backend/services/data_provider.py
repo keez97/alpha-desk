@@ -297,11 +297,44 @@ def get_sector_data(period: str = "1D") -> List[Dict]:
     return []
 
 
+def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_days: int = 0) -> Optional[Dict]:
+    """Fetch chart data for a single sector ETF. Used by ThreadPoolExecutor."""
+    try:
+        history = get_history(ticker, period=yf_period, interval="1d")
+
+        if not history or len(history) == 0:
+            logger.warning(f"No history data for {ticker}")
+            return None
+
+        # Trim to requested number of days if specified (e.g., 1D = last 2 days)
+        if trim_days > 0 and len(history) > trim_days:
+            history = history[-trim_days:]
+
+        chart_data = [h.get("close", 0) for h in history]
+        chart_dates = [h.get("date", h.get("time", "")) for h in history]
+
+        quote = get_quote(ticker)
+
+        return {
+            "ticker": ticker,
+            "sector": sector_name,
+            "price": quote.get("price", 0),
+            "daily_change": quote.get("change", 0),
+            "daily_pct_change": quote.get("pct_change", 0),
+            "chart_data": chart_data,
+            "chart_dates": chart_dates,
+        }
+    except Exception as e:
+        logger.warning(f"Error fetching sector chart data for {ticker}: {e}")
+        return None
+
+
 def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
     """
     Get sector ETF chart data with actual prices and real dates.
 
     Uses FDS cascade for actual close prices with ISO dates instead of normalized values.
+    Fetches all sector ETFs concurrently using ThreadPoolExecutor for speed.
 
     Args:
         period: Period for chart data ("1D", "5D", "1M", "3M")
@@ -312,6 +345,8 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
         - chart_data: actual close prices (not normalized)
         - chart_dates: ISO date strings (YYYY-MM-DD)
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     cache_key = f"sector_chart:{period}"
 
     # Check cache first
@@ -320,14 +355,16 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
         logger.debug(f"Sector chart data (period={period}) served from cache")
         return cached_result
 
-    # Map period to yfinance period parameter
-    period_map = {
-        "1D": "5d",
-        "5D": "5d",
-        "1M": "1mo",
-        "3M": "3mo",
+    # Map period to yfinance period + optional trim
+    period_config = {
+        "1D": {"yf_period": "5d", "trim_days": 2},   # Last 2 trading days
+        "5D": {"yf_period": "5d", "trim_days": 0},    # Full 5 days
+        "1M": {"yf_period": "1mo", "trim_days": 0},   # ~22 trading days
+        "3M": {"yf_period": "3mo", "trim_days": 0},   # ~66 trading days
     }
-    yf_period = period_map.get(period, "1mo")
+    config = period_config.get(period, {"yf_period": "1mo", "trim_days": 0})
+    yf_period = config["yf_period"]
+    trim_days = config["trim_days"]
 
     # Sector ETF mapping
     sector_etfs = {
@@ -345,42 +382,24 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
 
     sectors = []
 
-    for ticker, sector_name in sector_etfs.items():
-        try:
-            # Get historical data using FDS cascade
-            history = get_history(ticker, period=yf_period, interval="1d")
+    # Fetch all sectors concurrently (3 workers to respect FDS rate limits)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_fetch_single_sector, ticker, name, yf_period, trim_days): ticker
+            for ticker, name in sector_etfs.items()
+        }
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                result = future.result(timeout=30)
+                if result:
+                    sectors.append(result)
+                    logger.debug(f"Sector chart data for {ticker} retrieved: {len(result['chart_data'])} points")
+            except Exception as e:
+                logger.warning(f"Sector chart fetch timed out for {ticker}: {e}")
 
-            if not history or len(history) == 0:
-                logger.warning(f"No history data for {ticker}")
-                continue
-
-            # Extract chart data and dates
-            # FDS uses "time" field, yfinance uses "date" — handle both
-            chart_data = [h.get("close", 0) for h in history]
-            chart_dates = [h.get("date", h.get("time", "")) for h in history]
-
-            # Get current quote for price and change
-            quote = get_quote(ticker)
-
-            current_price = quote.get("price", 0)
-            daily_change = quote.get("change", 0)
-            daily_pct_change = quote.get("pct_change", 0)
-
-            sectors.append({
-                "ticker": ticker,
-                "sector": sector_name,
-                "price": current_price,
-                "daily_change": daily_change,
-                "daily_pct_change": daily_pct_change,
-                "chart_data": chart_data,
-                "chart_dates": chart_dates,
-            })
-
-            logger.debug(f"Sector chart data for {ticker} ({sector_name}) retrieved: {len(chart_data)} data points")
-
-        except Exception as e:
-            logger.warning(f"Error fetching sector chart data for {ticker}: {e}")
-            continue
+    # Sort by ticker for consistent ordering
+    sectors.sort(key=lambda s: s["ticker"])
 
     result = {
         "period": period,
@@ -388,7 +407,7 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
     }
 
     if sectors:
-        logger.info(f"Sector chart data (period={period}) served from FDS/yfinance cascade")
+        logger.info(f"Sector chart data (period={period}): {len(sectors)} sectors from FDS/yfinance cascade")
         cache.set(cache_key, result, CACHE_TTL_SECTOR)
         return result
 
