@@ -60,6 +60,17 @@ export function Correlation() {
         <LoadingState message="Loading correlation data..." />
       ) : error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
+      ) : data?.error || !data?.matrix || data.matrix.length === 0 ? (
+        <div className="text-center p-8 border border-neutral-800 rounded bg-neutral-900">
+          <p className="text-amber-400 font-bold text-lg">Correlation data temporarily unavailable</p>
+          <p className="text-sm text-neutral-400 mt-2">Data sources are rate-limited. Try again in a few minutes.</p>
+          <button
+            onClick={() => refetch()}
+            className="mt-4 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded text-sm font-medium transition-colors"
+          >
+            Retry
+          </button>
+        </div>
       ) : data ? (
         <div className="grid gap-4 lg:grid-cols-10">
           {/* Correlation Matrix (70% width) */}

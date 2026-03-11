@@ -59,8 +59,8 @@ export function useNotifications(limit: number = 50, unreadOnly: boolean = false
       });
       return (Array.isArray(data) ? data : []).map(normalizeNotification);
     },
-    staleTime: 30 * 1000, // 30 seconds
-    refetchInterval: 30 * 1000, // Refetch every 30 seconds
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 }
 
@@ -71,8 +71,8 @@ export function useNotificationCount() {
       const { data } = await api.get('/notifications/count');
       return data.unread;
     },
-    staleTime: 15 * 1000, // 15 seconds
-    refetchInterval: 15 * 1000, // Refetch every 15 seconds
+    staleTime: 15_000,
+    refetchInterval: 15_000,
   });
 }
 
@@ -111,7 +111,7 @@ export function useNotificationConfig() {
       const { data } = await api.get('/notifications/config');
       return normalizeConfig(data);
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 5 * 60 * 1000,
   });
 }
 

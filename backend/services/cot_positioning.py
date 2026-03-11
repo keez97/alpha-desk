@@ -1,0 +1,499 @@
+"""
+COT (Commitments of Traders) Positioning Module – Live CFTC Data.
+
+Fetches both Disaggregated Combined (for physical commodities: Gold, Crude Oil)
+and TFF Combined (Traders in Financial Futures: S&P 500, 10Y Treasury, Euro FX)
+reports from the CFTC via the cot_reports library.
+
+Calculates positioning percentiles across the full year of data, detects extreme
+positioning (>90th / <10th percentile), and identifies commercial-speculative
+divergences.
+
+Report types used:
+  • Disaggregated Futures-and-Options Combined  (191 columns, 4 trader groups)
+  • TFF Futures-and-Options Combined             (87 columns, 5 trader groups)
+"""
+
+import logging
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional
+
+import numpy as np
+
+from backend.services.cache import TTLCache
+
+logger = logging.getLogger(__name__)
+
+# COT positioning cache – weekly data, long TTL
+_cot_cache = TTLCache()
+_CACHE_TTL = 3600 * 4  # 4 hours (CFTC publishes weekly on Fridays)
+
+# ---------------------------------------------------------------------------
+# Market definitions – maps our internal ticker to the CFTC market name
+# and the report type it belongs to.
+# ---------------------------------------------------------------------------
+MARKETS: Dict[str, Dict[str, Any]] = {
+    "ES": {
+        "name": "S&P 500 E-mini",
+        "cftc_search": "E-MINI S&P 500",
+        "report": "tff",  # Traders in Financial Futures
+    },
+    "GC": {
+        "name": "Gold",
+        "cftc_search": "GOLD - COMMODITY EXCHANGE",
+        "report": "disagg",  # Disaggregated
+    },
+    "CL": {
+        "name": "Crude Oil (WTI)",
+        "cftc_search": "CRUDE OIL, LIGHT SWEET",
+        "report": "disagg",
+    },
+    "ZB": {
+        "name": "10Y Treasury Note",
+        "cftc_search": "UST 10Y NOTE",
+        "report": "tff",
+    },
+    "6E": {
+        "name": "Euro FX",
+        "cftc_search": "EURO FX - CHICAGO MERCANTILE",
+        "report": "tff",
+    },
+}
+
+
+def _safe_int(val) -> int:
+    """Convert a CFTC field value to int, handling whitespace and '.' (suppressed)."""
+    try:
+        s = str(val).strip()
+        if s in (".", "", "nan", "None"):
+            return 0
+        return int(float(s))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _safe_float(val) -> float:
+    """Convert a CFTC field value to float."""
+    try:
+        s = str(val).strip()
+        if s in (".", "", "nan", "None"):
+            return 0.0
+        return float(s)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Data fetching
+# ---------------------------------------------------------------------------
+def _fetch_cftc_data() -> Dict[str, Any]:
+    """
+    Fetch current-year Disaggregated Combined + TFF Combined from CFTC.
+
+    Returns dict with keys 'tff' and 'disagg', each a pandas DataFrame.
+    Falls back to empty DataFrames on error.
+    """
+    import pandas as pd
+
+    result: Dict[str, Any] = {"tff": pd.DataFrame(), "disagg": pd.DataFrame()}
+
+    try:
+        import cot_reports as cot
+        current_year = datetime.now(timezone.utc).year
+
+        logger.info(f"Fetching TFF Combined COT data for {current_year}...")
+        tff_df = cot.cot_year(current_year, cot_report_type="traders_in_financial_futures_futopt")
+        if tff_df is not None and len(tff_df) > 0:
+            result["tff"] = tff_df
+            logger.info(f"TFF data: {len(tff_df)} rows, {len(tff_df.columns)} columns")
+
+        logger.info(f"Fetching Disaggregated Combined COT data for {current_year}...")
+        disagg_df = cot.cot_year(current_year, cot_report_type="disaggregated_futopt")
+        if disagg_df is not None and len(disagg_df) > 0:
+            result["disagg"] = disagg_df
+            logger.info(f"Disaggregated data: {len(disagg_df)} rows, {len(disagg_df.columns)} columns")
+
+    except Exception as e:
+        logger.error(f"Error fetching CFTC COT data: {e}", exc_info=True)
+
+    return result
+
+
+def _extract_market_from_tff(df, search_term: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract the latest report + historical percentiles for a TFF market.
+
+    TFF trader groups:
+      - Dealer (intermediary)
+      - Asset Manager (institutional – our "commercial" equivalent)
+      - Leveraged Money (hedge funds – our "speculative" equivalent)
+      - Other Reportable
+    """
+    if df is None or len(df) == 0:
+        return None
+
+    mask = df["Market_and_Exchange_Names"].str.contains(search_term, case=False, na=False)
+    market_df = df[mask].copy()
+    if len(market_df) == 0:
+        return None
+
+    # Sort by date, take latest
+    market_df = market_df.sort_values("Report_Date_as_YYYY-MM-DD")
+    latest = market_df.iloc[-1]
+
+    # Net positions: long - short
+    asset_mgr_net = _safe_int(latest.get("Asset_Mgr_Positions_Long_All", 0)) - _safe_int(latest.get("Asset_Mgr_Positions_Short_All", 0))
+    lev_money_net = _safe_int(latest.get("Lev_Money_Positions_Long_All", 0)) - _safe_int(latest.get("Lev_Money_Positions_Short_All", 0))
+    dealer_net = _safe_int(latest.get("Dealer_Positions_Long_All", 0)) - _safe_int(latest.get("Dealer_Positions_Short_All", 0))
+
+    # Compute historical net positions for percentile calculation
+    hist_asset_mgr_net = (
+        market_df["Asset_Mgr_Positions_Long_All"].apply(_safe_int)
+        - market_df["Asset_Mgr_Positions_Short_All"].apply(_safe_int)
+    )
+    hist_lev_money_net = (
+        market_df["Lev_Money_Positions_Long_All"].apply(_safe_int)
+        - market_df["Lev_Money_Positions_Short_All"].apply(_safe_int)
+    )
+
+    # Percentile of current value vs all weeks this year
+    def _percentile(current_val: int, hist_series) -> int:
+        arr = hist_series.values.astype(float)
+        if len(arr) < 2:
+            return 50
+        pct = (np.sum(arr < current_val) / len(arr)) * 100
+        return int(min(100, max(0, pct)))
+
+    asset_mgr_pct = _percentile(asset_mgr_net, hist_asset_mgr_net)
+    lev_money_pct = _percentile(lev_money_net, hist_lev_money_net)
+
+    # Weekly change
+    asset_mgr_change = _safe_int(latest.get("Change_in_Asset_Mgr_Long_All", 0)) - _safe_int(latest.get("Change_in_Asset_Mgr_Short_All", 0))
+    lev_money_change = _safe_int(latest.get("Change_in_Lev_Money_Long_All", 0)) - _safe_int(latest.get("Change_in_Lev_Money_Short_All", 0))
+
+    return {
+        "report_date": str(latest.get("Report_Date_as_YYYY-MM-DD", "")),
+        "open_interest": _safe_int(latest.get("Open_Interest_All", 0)),
+        "report_type": "TFF Combined",
+        "trader_groups": {
+            "dealer": {
+                "net": dealer_net,
+                "long": _safe_int(latest.get("Dealer_Positions_Long_All", 0)),
+                "short": _safe_int(latest.get("Dealer_Positions_Short_All", 0)),
+                "spread": _safe_int(latest.get("Dealer_Positions_Spread_All", 0)),
+                "pct_of_oi_long": _safe_float(latest.get("Pct_of_OI_Dealer_Long_All", 0)),
+                "pct_of_oi_short": _safe_float(latest.get("Pct_of_OI_Dealer_Short_All", 0)),
+            },
+            "asset_manager": {
+                "net": asset_mgr_net,
+                "long": _safe_int(latest.get("Asset_Mgr_Positions_Long_All", 0)),
+                "short": _safe_int(latest.get("Asset_Mgr_Positions_Short_All", 0)),
+                "spread": _safe_int(latest.get("Asset_Mgr_Positions_Spread_All", 0)),
+                "pct_of_oi_long": _safe_float(latest.get("Pct_of_OI_Asset_Mgr_Long_All", 0)),
+                "pct_of_oi_short": _safe_float(latest.get("Pct_of_OI_Asset_Mgr_Short_All", 0)),
+                "weekly_change": asset_mgr_change,
+                "percentile": asset_mgr_pct,
+            },
+            "leveraged_money": {
+                "net": lev_money_net,
+                "long": _safe_int(latest.get("Lev_Money_Positions_Long_All", 0)),
+                "short": _safe_int(latest.get("Lev_Money_Positions_Short_All", 0)),
+                "spread": _safe_int(latest.get("Lev_Money_Positions_Spread_All", 0)),
+                "pct_of_oi_long": _safe_float(latest.get("Pct_of_OI_Lev_Money_Long_All", 0)),
+                "pct_of_oi_short": _safe_float(latest.get("Pct_of_OI_Lev_Money_Short_All", 0)),
+                "weekly_change": lev_money_change,
+                "percentile": lev_money_pct,
+            },
+        },
+        # For backwards compat with existing UI:
+        "commercial_net": asset_mgr_net,
+        "speculative_net": lev_money_net,
+        "commercial_percentile": asset_mgr_pct,
+        "speculative_percentile": lev_money_pct,
+        "weeks_of_data": len(market_df),
+    }
+
+
+def _extract_market_from_disagg(df, search_term: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract the latest report + historical percentiles for a Disaggregated market.
+
+    Disaggregated trader groups:
+      - Producer/Merchant/Processor/User  (our "commercial")
+      - Swap Dealers
+      - Managed Money                     (our "speculative")
+      - Other Reportable
+    """
+    if df is None or len(df) == 0:
+        return None
+
+    mask = df["Market_and_Exchange_Names"].str.contains(search_term, case=False, na=False)
+    market_df = df[mask].copy()
+    if len(market_df) == 0:
+        return None
+
+    market_df = market_df.sort_values("Report_Date_as_YYYY-MM-DD")
+    latest = market_df.iloc[-1]
+
+    prod_merc_net = _safe_int(latest.get("Prod_Merc_Positions_Long_All", 0)) - _safe_int(latest.get("Prod_Merc_Positions_Short_All", 0))
+    swap_net = _safe_int(latest.get("Swap_Positions_Long_All", 0)) - _safe_int(latest.get("Swap__Positions_Short_All", 0))
+    m_money_net = _safe_int(latest.get("M_Money_Positions_Long_All", 0)) - _safe_int(latest.get("M_Money_Positions_Short_All", 0))
+
+    # Historical series for percentiles
+    hist_prod_merc_net = (
+        market_df["Prod_Merc_Positions_Long_All"].apply(_safe_int)
+        - market_df["Prod_Merc_Positions_Short_All"].apply(_safe_int)
+    )
+    hist_m_money_net = (
+        market_df["M_Money_Positions_Long_All"].apply(_safe_int)
+        - market_df["M_Money_Positions_Short_All"].apply(_safe_int)
+    )
+
+    def _percentile(current_val: int, hist_series) -> int:
+        arr = hist_series.values.astype(float)
+        if len(arr) < 2:
+            return 50
+        pct = (np.sum(arr < current_val) / len(arr)) * 100
+        return int(min(100, max(0, pct)))
+
+    prod_merc_pct = _percentile(prod_merc_net, hist_prod_merc_net)
+    m_money_pct = _percentile(m_money_net, hist_m_money_net)
+
+    # Weekly changes
+    prod_merc_change = _safe_int(latest.get("Change_in_Prod_Merc_Long_All", 0)) - _safe_int(latest.get("Change_in_Prod_Merc_Short_All", 0))
+    m_money_change = _safe_int(latest.get("Change_in_M_Money_Long_All", 0)) - _safe_int(latest.get("Change_in_M_Money_Short_All", 0))
+
+    return {
+        "report_date": str(latest.get("Report_Date_as_YYYY-MM-DD", "")),
+        "open_interest": _safe_int(latest.get("Open_Interest_All", 0)),
+        "report_type": "Disaggregated Combined",
+        "trader_groups": {
+            "producer_merchant": {
+                "net": prod_merc_net,
+                "long": _safe_int(latest.get("Prod_Merc_Positions_Long_All", 0)),
+                "short": _safe_int(latest.get("Prod_Merc_Positions_Short_All", 0)),
+                "pct_of_oi_long": _safe_float(latest.get("Pct_of_OI_Prod_Merc_Long_All", 0)),
+                "pct_of_oi_short": _safe_float(latest.get("Pct_of_OI_Prod_Merc_Short_All", 0)),
+                "weekly_change": prod_merc_change,
+                "percentile": prod_merc_pct,
+            },
+            "swap_dealers": {
+                "net": swap_net,
+                "long": _safe_int(latest.get("Swap_Positions_Long_All", 0)),
+                "short": _safe_int(latest.get("Swap__Positions_Short_All", 0)),
+                "spread": _safe_int(latest.get("Swap__Positions_Spread_All", 0)),
+                "pct_of_oi_long": _safe_float(latest.get("Pct_of_OI_Swap_Long_All", 0)),
+                "pct_of_oi_short": _safe_float(latest.get("Pct_of_OI_Swap_Short_All", 0)),
+            },
+            "managed_money": {
+                "net": m_money_net,
+                "long": _safe_int(latest.get("M_Money_Positions_Long_All", 0)),
+                "short": _safe_int(latest.get("M_Money_Positions_Short_All", 0)),
+                "spread": _safe_int(latest.get("M_Money_Positions_Spread_All", 0)),
+                "pct_of_oi_long": _safe_float(latest.get("Pct_of_OI_M_Money_Long_All", 0)),
+                "pct_of_oi_short": _safe_float(latest.get("Pct_of_OI_M_Money_Short_All", 0)),
+                "weekly_change": m_money_change,
+                "percentile": m_money_pct,
+            },
+        },
+        # Backwards compat:
+        "commercial_net": prod_merc_net,
+        "speculative_net": m_money_net,
+        "commercial_percentile": prod_merc_pct,
+        "speculative_percentile": m_money_pct,
+        "weeks_of_data": len(market_df),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Alert generation
+# ---------------------------------------------------------------------------
+def _generate_alerts(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Generate reversal and divergence alerts based on positioning extremes."""
+    alerts = []
+
+    for market in markets:
+        ticker = market["ticker"]
+        name = market["name"]
+        comm_pct = market.get("commercial_percentile", 50)
+        spec_pct = market.get("speculative_percentile", 50)
+        comm_net = market.get("commercial_net", 0)
+        spec_net = market.get("speculative_net", 0)
+
+        # Extreme positioning alerts
+        if comm_pct >= 90:
+            alerts.append({
+                "ticker": ticker,
+                "market_name": name,
+                "type": "extreme_positioning",
+                "severity": "high",
+                "message": f"{name}: Commercials at extreme long (P{comm_pct}) – potential reversal risk",
+                "bias": "bearish",
+            })
+        elif comm_pct <= 10:
+            alerts.append({
+                "ticker": ticker,
+                "market_name": name,
+                "type": "extreme_positioning",
+                "severity": "high",
+                "message": f"{name}: Commercials at extreme short (P{comm_pct}) – potential reversal risk",
+                "bias": "bullish",
+            })
+
+        if spec_pct >= 90:
+            alerts.append({
+                "ticker": ticker,
+                "market_name": name,
+                "type": "extreme_positioning",
+                "severity": "high",
+                "message": f"{name}: Speculators at extreme long (P{spec_pct}) – crowded trade warning",
+                "bias": "bearish",
+            })
+        elif spec_pct <= 10:
+            alerts.append({
+                "ticker": ticker,
+                "market_name": name,
+                "type": "extreme_positioning",
+                "severity": "high",
+                "message": f"{name}: Speculators at extreme short (P{spec_pct}) – contrarian buy signal",
+                "bias": "bullish",
+            })
+
+        # Divergence: commercials and speculators on opposite sides
+        if (comm_net > 0 and spec_net < 0) or (comm_net < 0 and spec_net > 0):
+            # Check if positions are far apart (at least 30 pctile difference)
+            if abs(comm_pct - spec_pct) > 30:
+                alerts.append({
+                    "ticker": ticker,
+                    "market_name": name,
+                    "type": "divergence",
+                    "severity": "medium",
+                    "message": f"{name}: Commercial/Speculative divergence – commercials P{comm_pct} vs speculators P{spec_pct}",
+                    "bias": "neutral",
+                })
+
+    return alerts
+
+
+# ---------------------------------------------------------------------------
+# Main engine
+# ---------------------------------------------------------------------------
+class COTPositioningEngine:
+    """Fetch and analyze live CFTC COT positioning data."""
+
+    def __init__(self):
+        self.cache = _cot_cache
+
+    def get_cot_positioning(self) -> Dict[str, Any]:
+        """
+        Get COT positioning for all tracked markets.
+
+        Returns dict with timestamp, markets list, alerts list,
+        and data_source indicator.
+        """
+        cache_key = "cot_positioning:live_v2"
+        cached_result = self.cache.get(cache_key)
+        if cached_result:
+            return cached_result
+
+        try:
+            # Fetch raw CFTC data
+            raw = _fetch_cftc_data()
+            tff_df = raw.get("tff")
+            disagg_df = raw.get("disagg")
+
+            markets_out: List[Dict[str, Any]] = []
+
+            for ticker, config in MARKETS.items():
+                report_type = config["report"]
+                search = config["cftc_search"]
+
+                if report_type == "tff":
+                    data = _extract_market_from_tff(tff_df, search)
+                else:
+                    data = _extract_market_from_disagg(disagg_df, search)
+
+                if data:
+                    # Detect extreme flags
+                    extreme_flag = None
+                    if data["commercial_percentile"] >= 90:
+                        extreme_flag = "commercial_extreme_long"
+                    elif data["commercial_percentile"] <= 10:
+                        extreme_flag = "commercial_extreme_short"
+                    elif data["speculative_percentile"] >= 90:
+                        extreme_flag = "speculative_extreme_long"
+                    elif data["speculative_percentile"] <= 10:
+                        extreme_flag = "speculative_extreme_short"
+
+                    # Divergence check
+                    divergence = False
+                    comm_net = data["commercial_net"]
+                    spec_net = data["speculative_net"]
+                    if (comm_net > 0 and spec_net < 0) or (comm_net < 0 and spec_net > 0):
+                        if abs(data["commercial_percentile"] - data["speculative_percentile"]) > 30:
+                            divergence = True
+
+                    markets_out.append({
+                        "ticker": ticker,
+                        "name": config["name"],
+                        "report_date": data.get("report_date"),
+                        "open_interest": data.get("open_interest", 0),
+                        "report_type": data.get("report_type"),
+                        "commercial_net": data["commercial_net"],
+                        "speculative_net": data["speculative_net"],
+                        "commercial_percentile": data["commercial_percentile"],
+                        "speculative_percentile": data["speculative_percentile"],
+                        "extreme_flag": extreme_flag,
+                        "divergence": divergence,
+                        "trader_groups": data.get("trader_groups", {}),
+                        "weeks_of_data": data.get("weeks_of_data", 0),
+                    })
+                else:
+                    logger.warning(f"No CFTC data found for {ticker} ({search})")
+
+            # Generate alerts
+            alerts = _generate_alerts(markets_out)
+
+            result = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data_source": "CFTC Disaggregated Combined + TFF Combined",
+                "markets": markets_out,
+                "alerts": alerts,
+            }
+
+            self.cache.set(cache_key, result, _CACHE_TTL)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in COT positioning engine: {e}", exc_info=True)
+            return self._empty_result()
+
+    def get_market_positioning(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get positioning for a specific market from the cached full result."""
+        full = self.get_cot_positioning()
+        for m in full.get("markets", []):
+            if m["ticker"] == ticker:
+                return m
+        return None
+
+    def _empty_result(self) -> Dict[str, Any]:
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data_source": "unavailable",
+            "markets": [],
+            "alerts": [],
+        }
+
+
+# Module-level singleton
+_cot_engine = COTPositioningEngine()
+
+
+def get_cot_positioning() -> Dict[str, Any]:
+    """Get COT positioning data for all markets."""
+    return _cot_engine.get_cot_positioning()
+
+
+def get_market_positioning(ticker: str) -> Optional[Dict[str, Any]]:
+    """Get COT positioning for a specific market."""
+    return _cot_engine.get_market_positioning(ticker)

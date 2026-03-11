@@ -2,7 +2,7 @@ import type { RotationAlert } from '../../hooks/useRotationAlerts';
 import { useAlertSummary } from '../../hooks/useRotationAlerts';
 
 interface AlertBadgeProps {
-  alerts: RotationAlert[] | undefined;
+  alerts?: RotationAlert[] | undefined;
   isLoading?: boolean;
 }
 

@@ -1,20 +1,186 @@
 """
 News Ingestion Service - Pull and process financial news from free sources.
 
-Fetches headlines via yfinance news API, deduplicates, scores, and aggregates
+Fetches headlines via feedparser RSS feeds, deduplicates, scores, and aggregates
 sentiment across tickers and time windows.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from decimal import Decimal
 import logging
 from sqlmodel import Session
+import feedparser
+import time
 
 from backend.repositories.sentiment_repo import SentimentRepository
 from backend.services.sentiment_engine import SentimentEngine, calculate_dedup_hash
 
 logger = logging.getLogger(__name__)
+
+# RSS feed sources
+RSS_FEEDS = {
+    "MarketWatch": "https://feeds.marketwatch.com/marketwatch/topstories/",
+    "CNBC": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+    "Yahoo Finance": "https://finance.yahoo.com/news/rss",
+    "Reuters": "https://feeds.reuters.com/reuters/businessNews",
+}
+
+# Ticker to company keywords mapping
+TICKER_KEYWORDS = {
+    # Technology Sector ETF
+    "XLK": ["technology", "tech", "software", "semiconductor", "semiconductor"],
+    # Healthcare Sector ETF
+    "XLV": ["healthcare", "health", "pharmaceutical", "pharma", "medical", "biotech"],
+    # Energy Sector ETF
+    "XLE": ["energy", "oil", "gas", "petroleum", "coal", "renewable"],
+    # Financials Sector ETF
+    "XLF": ["finance", "financial", "bank", "banking", "insurance", "mortgage"],
+    # Industrials Sector ETF
+    "XLI": ["industrial", "manufacturing", "aerospace", "defense", "supply chain"],
+    # Consumer Discretionary ETF
+    "XLY": ["consumer", "retail", "restaurant", "hotel", "automotive"],
+    # Consumer Staples ETF
+    "XLP": ["staples", "food", "beverage", "grocery", "consumer staples"],
+    # Materials Sector ETF
+    "XLB": ["materials", "mining", "metals", "chemical", "steel"],
+    # Real Estate ETF
+    "XLRE": ["real estate", "reit", "property", "housing", "commercial"],
+    # Utilities Sector ETF
+    "XLU": ["utility", "utilities", "power", "electric", "water"],
+    # Nasdaq 100 ETF
+    "QQQ": ["nasdaq", "tech", "technology", "growth"],
+    # S&P 500 ETF
+    "SPY": ["s&p", "sp500", "market", "stocks", "wall street", "equities", "market"],
+}
+
+# Module-level cache with TTL
+_rss_cache = {
+    "articles": [],
+    "fetch_time": None,
+    "ttl_seconds": 600,  # 10 minutes
+}
+
+
+def _is_cache_valid() -> bool:
+    """Check if RSS cache is still valid."""
+    fetch_time = _rss_cache.get("fetch_time")
+    if fetch_time is None:
+        return False
+    elapsed = time.time() - fetch_time
+    return elapsed < _rss_cache.get("ttl_seconds", 600)
+
+
+def _match_ticker(headline: str) -> str:
+    """
+    Match article headline against ticker keywords to determine relevant ticker.
+
+    Args:
+        headline: Article headline text
+
+    Returns:
+        Ticker symbol (or "SPY" if no match)
+    """
+    headline_lower = headline.lower()
+
+    for ticker, keywords in TICKER_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword.lower() in headline_lower:
+                return ticker
+
+    return "SPY"  # Default to general market news
+
+
+def fetch_rss_articles(max_per_source: int = 10) -> List[Dict[str, Any]]:
+    """
+    Fetch articles from all RSS feeds.
+
+    Uses module-level cache with 10-minute TTL to avoid hammering feeds.
+
+    Args:
+        max_per_source: Maximum articles to fetch from each source
+
+    Returns:
+        List of article dictionaries with keys:
+        - headline: Article title
+        - source: Source name (MarketWatch, CNBC, etc.)
+        - published_at: datetime object
+        - url: Article URL
+        - body_snippet: Summary text
+    """
+    # Check cache
+    if _is_cache_valid():
+        logger.info("Using cached RSS articles")
+        return _rss_cache["articles"]
+
+    articles = []
+
+    for source_name, feed_url in RSS_FEEDS.items():
+        try:
+            logger.info(f"Fetching RSS feed from {source_name}: {feed_url}")
+            feed = feedparser.parse(feed_url)
+
+            if feed.bozo:
+                logger.warning(f"Feed parsing issues for {source_name}: {feed.bozo_exception}")
+
+            article_count = 0
+            for entry in feed.entries:
+                if article_count >= max_per_source:
+                    break
+
+                try:
+                    # Extract published date
+                    published_at = datetime.now(timezone.utc)
+                    if hasattr(entry, "published_parsed") and entry.published_parsed:
+                        published_at = datetime.fromtimestamp(
+                            time.mktime(entry.published_parsed),
+                            tz=timezone.utc
+                        )
+                    elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
+                        published_at = datetime.fromtimestamp(
+                            time.mktime(entry.updated_parsed),
+                            tz=timezone.utc
+                        )
+
+                    # Extract body snippet
+                    body_snippet = ""
+                    if hasattr(entry, "summary"):
+                        body_snippet = entry.summary[:500]
+                    elif hasattr(entry, "description"):
+                        body_snippet = entry.description[:500]
+
+                    # feedparser entries support both attr and dict access
+                    title = getattr(entry, "title", "") or entry.get("title", "")
+                    link = getattr(entry, "link", "") or entry.get("link", "")
+
+                    article = {
+                        "headline": title,
+                        "title": title,  # alias for smart_analysis compatibility
+                        "source": source_name,
+                        "publisher": source_name,  # alias for frontend compat
+                        "published_at": published_at.isoformat() if isinstance(published_at, datetime) else str(published_at),
+                        "publishedAt": published_at.isoformat() if isinstance(published_at, datetime) else str(published_at),
+                        "url": link,
+                        "body_snippet": body_snippet,
+                    }
+
+                    articles.append(article)
+                    article_count += 1
+
+                except Exception as e:
+                    logger.warning(f"Error processing entry from {source_name}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error fetching RSS feed from {source_name}: {e}")
+            continue
+
+    # Update cache
+    _rss_cache["articles"] = articles
+    _rss_cache["fetch_time"] = time.time()
+
+    logger.info(f"Fetched {len(articles)} articles from RSS feeds")
+    return articles
 
 
 class NewsIngestionService:
@@ -27,13 +193,13 @@ class NewsIngestionService:
 
     def ingest_news(self, tickers: List[str]) -> Dict[str, Any]:
         """
-        Pull headlines from yfinance news API for specified tickers.
+        Pull headlines from RSS feeds and match them to tickers.
 
         Process:
-        1. Iterate through tickers
-        2. Fetch news from yfinance.Ticker.news
+        1. Fetch articles from RSS feeds using feedparser
+        2. Match articles to tickers via keyword matching
         3. Extract headline, source, published_at, url
-        4. Return raw articles for processing
+        4. Return raw articles organized by ticker
 
         Args:
             tickers: List of ticker symbols
@@ -44,49 +210,66 @@ class NewsIngestionService:
             - articles_by_ticker: Dict of ticker -> article list
             - errors: List of error messages
         """
-        import yfinance as yf
-
         stats = {
             "articles_fetched": 0,
             "articles_by_ticker": {},
             "errors": [],
         }
 
+        # Initialize empty lists for all tickers
         for ticker in tickers:
-            try:
-                stock = yf.Ticker(ticker)
-                news = stock.news
+            stats["articles_by_ticker"][ticker] = []
 
-                if not news or len(news) == 0:
-                    logger.info(f"No news found for {ticker}")
-                    stats["articles_by_ticker"][ticker] = []
+        try:
+            # Fetch all articles from RSS feeds
+            rss_articles = fetch_rss_articles(max_per_source=10)
+
+            if not rss_articles:
+                logger.warning("No articles fetched from RSS feeds")
+                return stats
+
+            # Match articles to tickers and organize
+            for rss_article in rss_articles:
+                try:
+                    # Match article to a ticker based on headline keywords
+                    matched_ticker = _match_ticker(rss_article["headline"])
+
+                    # Only include if ticker is in requested list
+                    if matched_ticker not in stats["articles_by_ticker"]:
+                        # Ticker not requested, but include anyway for tracking
+                        pass
+
+                    pub_at = rss_article.get("published_at", datetime.now(timezone.utc))
+                    if isinstance(pub_at, datetime):
+                        pub_at = pub_at.isoformat()
+
+                    article = {
+                        "ticker": matched_ticker,
+                        "headline": rss_article.get("headline", ""),
+                        "source": rss_article.get("source", "unknown"),
+                        "published_at": pub_at,
+                        "publishedAt": pub_at,
+                        "url": rss_article.get("url", ""),
+                        "body_snippet": rss_article.get("body_snippet", ""),
+                    }
+
+                    # Add to matched ticker
+                    if matched_ticker not in stats["articles_by_ticker"]:
+                        stats["articles_by_ticker"][matched_ticker] = []
+
+                    stats["articles_by_ticker"][matched_ticker].append(article)
+                    stats["articles_fetched"] += 1
+
+                except Exception as e:
+                    logger.warning(f"Error processing RSS article: {e}")
+                    stats["errors"].append(f"Article processing: {str(e)}")
                     continue
 
-                articles = []
-                for item in news:
-                    try:
-                        article = {
-                            "ticker": ticker,
-                            "headline": item.get("title", ""),
-                            "source": item.get("source", "unknown"),
-                            "published_at": datetime.fromtimestamp(
-                                item.get("providerPublishTime", 0),
-                                tz=timezone.utc
-                            ),
-                            "url": item.get("link", ""),
-                            "body_snippet": item.get("summary", "")[:500],  # First 500 chars
-                        }
-                        articles.append(article)
-                        stats["articles_fetched"] += 1
-                    except Exception as e:
-                        logger.warning(f"Error processing article for {ticker}: {e}")
-                        continue
+            logger.info(f"Ingested {stats['articles_fetched']} articles from RSS feeds")
 
-                stats["articles_by_ticker"][ticker] = articles
-
-            except Exception as e:
-                logger.error(f"Error fetching news for {ticker}: {e}")
-                stats["errors"].append(f"{ticker}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error fetching RSS feeds: {e}")
+            stats["errors"].append(f"RSS fetch: {str(e)}")
 
         return stats
 

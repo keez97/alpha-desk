@@ -1,13 +1,24 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+import asyncio
 import json
 import logging
+
+
+def _json_serial(obj):
+    """JSON serializer for objects not serializable by default."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 from backend.database import get_session
 from backend.models.cache import MorningBriefCache, MorningReportCache
 from backend.config import CACHE_TTL_HOURS
-from backend.services.data_provider import get_macro_data, get_sector_data
+from backend.services.data_provider import get_macro_data, get_sector_data, get_sector_chart_data
 from backend.services.claude_service import generate_morning_drivers, generate_morning_report
+from backend.services.market_breadth_engine import calculate_breadth
+from backend.services.regime_detector import detect_regime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/morning-brief", tags=["morning-brief"])
@@ -16,23 +27,29 @@ REPORT_CACHE_TTL_HOURS = 4  # Morning report refreshes every 4 hours
 
 
 @router.get("/macro")
-def get_macro(session: Session = Depends(get_session)):
-    """Get macro indicators (VIX, yields, commodities, etc.)"""
-    macro_data = get_macro_data()
+async def get_macro(session: Session = Depends(get_session)):
+    """Get macro indicators (VIX, yields, commodities, etc.) with regime detection."""
+    macro_data = await asyncio.to_thread(get_macro_data)
+    try:
+        regime = await asyncio.to_thread(detect_regime, macro_data)
+    except Exception as e:
+        logger.warning(f"Regime detection failed: {e}")
+        regime = {"regime": "neutral", "confidence": 50, "signals": []}
     return {
         "timestamp": datetime.utcnow().isoformat(),
-        "data": macro_data
+        "data": macro_data,
+        "regime": regime
     }
 
 
 @router.get("/sectors")
-def get_sectors(period: str = "1D", session: Session = Depends(get_session)):
-    """Get sector performance data with normalized charts."""
-    sector_data = get_sector_data(period=period)
+async def get_sectors(period: str = "1D", session: Session = Depends(get_session)):
+    """Get sector performance data with actual prices and real dates."""
+    sector_data = await asyncio.to_thread(get_sector_chart_data, period=period)
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "period": period,
-        "sectors": sector_data
+        "sectors": sector_data.get("sectors", [])
     }
 
 
@@ -68,7 +85,7 @@ async def get_drivers(session: Session = Depends(get_session)):
         expires_at = datetime.utcnow() + timedelta(hours=CACHE_TTL_HOURS)
         cache_entry = MorningBriefCache(
             cache_key=cache_key,
-            data_json=json.dumps(drivers),
+            data_json=json.dumps(drivers, default=_json_serial),
             expires_at=expires_at
         )
         session.add(cache_entry)
@@ -116,7 +133,7 @@ async def refresh_drivers(session: Session = Depends(get_session)):
         expires_at = datetime.utcnow() + timedelta(hours=CACHE_TTL_HOURS)
         cache_entry = MorningBriefCache(
             cache_key=cache_key,
-            data_json=json.dumps(drivers),
+            data_json=json.dumps(drivers, default=_json_serial),
             expires_at=expires_at
         )
         session.add(cache_entry)
@@ -166,7 +183,7 @@ async def get_morning_report(session: Session = Depends(get_session)):
         expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
         cache_entry = MorningReportCache(
             cache_key=cache_key,
-            data_json=json.dumps(report),
+            data_json=json.dumps(report, default=_json_serial),
             expires_at=expires_at
         )
         session.add(cache_entry)
@@ -214,7 +231,7 @@ async def refresh_morning_report(session: Session = Depends(get_session)):
         expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
         cache_entry = MorningReportCache(
             cache_key=cache_key,
-            data_json=json.dumps(report),
+            data_json=json.dumps(report, default=_json_serial),
             expires_at=expires_at
         )
         session.add(cache_entry)
@@ -230,3 +247,138 @@ async def refresh_morning_report(session: Session = Depends(get_session)):
         "timestamp": datetime.utcnow().isoformat(),
         "data": report
     }
+
+
+@router.get("/breadth")
+async def get_breadth():
+    """Get market breadth metrics (advance/decline, McClellan, breadth thrust)."""
+    try:
+        breadth = await asyncio.to_thread(calculate_breadth)
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": breadth
+        }
+    except Exception as e:
+        logger.error(f"Error calculating breadth: {e}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {"error": str(e), "signal": "neutral", "advances": 0, "declines": 0, "total": 0, "ad_ratio": 1.0}
+        }
+
+
+@router.post("/report/custom")
+async def custom_report(body: dict):
+    """Generate a custom morning report with selected topics."""
+    from backend.services.smart_analysis import generate_custom_report
+    topics = body.get("topics", ["market_snapshot", "sector_rotation", "macro_pulse", "week_ahead"])
+    today = datetime.utcnow().date().isoformat()
+    try:
+        macro = get_macro_data()
+        sectors = get_sector_data(period="1D")
+        report = generate_custom_report(today, macro, sectors, topics)
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": report
+        }
+    except Exception as e:
+        logger.error(f"Error generating custom report: {e}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": {},
+            "error": str(e)
+        }
+
+
+@router.get("/all")
+async def get_all_morning_brief(session: Session = Depends(get_session)):
+    """Aggregate endpoint – returns ALL morning brief panel data in one response.
+    Avoids 16+ concurrent browser requests which triggers VM rate-limiting.
+    """
+    from backend.services.vix_term_structure import get_vix_term_structure
+    from backend.services.sector_transitions import get_sector_transitions
+    from backend.services.sentiment_velocity import get_sentiment_velocity
+    from backend.services.options_flow import get_options_flow
+    from backend.services.earnings_brief import get_earnings_brief
+    from backend.services.cot_positioning import get_cot_positioning
+    from backend.services.scenario_risk import get_scenario_risk_data
+    from backend.services.cross_asset_momentum import get_momentum_spillover
+    from backend.services.overnight_returns import get_overnight_returns
+    from backend.services.data_provider import get_sector_data
+    from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
+
+    async def safe(name, fn, *args, **kwargs):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(fn, *args, **kwargs),
+                timeout=2.0  # 2s per service — cached calls return in <100ms
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[all] {name} timed out (2s)")
+            return None
+        except Exception as e:
+            logger.warning(f"[all] {name} failed: {e}")
+            return None
+
+    # Fetch services SEQUENTIALLY to avoid thread contention / GIL starvation.
+    # With in-memory caches warm, each returns in <100ms so total is ~1-2s.
+    logger.info("[all] Starting aggregate fetch (sequential)")
+    macro_raw = await safe("macro", get_macro_data)
+    regime_raw = await safe("regime", detect_regime, macro_raw or {})
+    breadth_raw = await safe("breadth", calculate_breadth)
+    vix_raw = await safe("vix", get_vix_term_structure)
+    sectors_raw = await safe("sectors", get_sector_chart_data, "1D")
+    sector_perf_raw = await safe("sector_perf", get_sector_data, "1D")
+    transitions_raw = await safe("transitions", get_sector_transitions)
+    rrg_raw = await safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10)
+    sentiment_raw = await safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"])
+    options_raw = await safe("options", get_options_flow)
+    earnings_raw = await safe("earnings", get_earnings_brief)
+    positioning_raw = await safe("positioning", get_cot_positioning)
+    risk_raw = await safe("risk", get_scenario_risk_data)
+    spillover_raw = await safe("spillover", get_momentum_spillover)
+    overnight_raw = await safe("overnight", get_overnight_returns)
+    logger.info("[all] Done")
+
+    ts = datetime.utcnow().isoformat()
+
+    # Build enhanced sectors from sector_perf + rrg
+    enhanced_sectors = []
+    rrg_sectors = (rrg_raw or {}).get("sectors", [])
+    rrg_lookup = {s["ticker"]: s for s in rrg_sectors}
+    for sector in (sector_perf_raw or []):
+        ticker = sector.get("ticker")
+        rrg_info = rrg_lookup.get(ticker, {})
+        pct_change = sector.get("daily_pct_change", 0) or 0
+        enhanced_sectors.append({
+            "ticker": ticker,
+            "name": sector.get("sector") or sector.get("name") or ticker,
+            "price": sector.get("price", 0),
+            "change": sector.get("daily_change", 0),
+            "pct_change": pct_change,
+            "rs_ratio": rrg_info.get("rs_ratio", round(100 + pct_change * 2, 2)),
+            "rs_momentum": rrg_info.get("rs_momentum", round(pct_change * 5, 2)),
+            "quadrant": rrg_info.get("quadrant", "Unknown"),
+            "tail_length": rrg_info.get("tail_length", 0),
+            "quadrant_age": rrg_info.get("quadrant_age", 0),
+            "rs_trend": rrg_info.get("rs_trend", "flat"),
+            "rotation_direction": rrg_info.get("rotation_direction", "clockwise"),
+        })
+
+    result = {
+        "timestamp": ts,
+        "macro": {"timestamp": ts, "data": macro_raw or {}, "regime": regime_raw or {"regime": "neutral", "confidence": 50, "signals": []}},
+        "breadth": {"timestamp": ts, "data": breadth_raw or {}},
+        "vix_term_structure": vix_raw or {},
+        "sectors": {"timestamp": ts, "period": "1D", "sectors": (sectors_raw or {}).get("sectors", [])},
+        "enhanced_sectors": {"timestamp": ts, "period": "1D", "sectors": enhanced_sectors},
+        "sector_transitions": transitions_raw or {},
+        "sentiment_velocity": sentiment_raw or {},
+        "options_flow": options_raw or {},
+        "earnings_brief": earnings_raw or {},
+        "cot_positioning": positioning_raw or {},
+        "scenario_risk": risk_raw or {},
+        "momentum_spillover": spillover_raw or {},
+        "overnight_returns": overnight_raw or {},
+    }
+
+    return json.loads(json.dumps(result, default=_json_serial))

@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Query
 from datetime import datetime
 from backend.services.correlation_engine import (
@@ -9,7 +10,7 @@ router = APIRouter(prefix="/api/correlation", tags=["correlation"])
 
 
 @router.get("/matrix")
-def get_correlation_matrix(lookback: int = Query(90, ge=30, le=365)):
+async def get_correlation_matrix(lookback: int = Query(90, ge=30, le=365)):
     """
     Get correlation matrix for all sector ETFs.
 
@@ -27,7 +28,7 @@ def get_correlation_matrix(lookback: int = Query(90, ge=30, le=365)):
         lookback_days: int
     }
     """
-    result = calculate_correlation_matrix(lookback_days=lookback)
+    result = await asyncio.to_thread(calculate_correlation_matrix, lookback_days=lookback)
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
@@ -37,7 +38,7 @@ def get_correlation_matrix(lookback: int = Query(90, ge=30, le=365)):
 
 
 @router.get("/pairs")
-def get_pairs_trades(lookback: int = Query(90, ge=30, le=365)):
+async def get_pairs_trades(lookback: int = Query(90, ge=30, le=365)):
     """
     Get identified pairs trade opportunities only.
 
@@ -46,7 +47,7 @@ def get_pairs_trades(lookback: int = Query(90, ge=30, le=365)):
 
     Returns pairs_trades array with mean-reversion opportunities.
     """
-    result = calculate_correlation_matrix(lookback_days=lookback)
+    result = await asyncio.to_thread(calculate_correlation_matrix, lookback_days=lookback)
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
@@ -56,7 +57,7 @@ def get_pairs_trades(lookback: int = Query(90, ge=30, le=365)):
 
 
 @router.get("/pair/{ticker1}/{ticker2}")
-def get_pair_analysis(
+async def get_pair_analysis(
     ticker1: str,
     ticker2: str,
     lookback: int = Query(90, ge=30, le=365)
@@ -73,7 +74,7 @@ def get_pair_analysis(
 
     Returns detailed spread analysis and correlation metrics.
     """
-    result = get_pair_details(ticker1, ticker2, lookback_days=lookback)
+    result = await asyncio.to_thread(get_pair_details, ticker1, ticker2, lookback_days=lookback)
 
     return {
         "timestamp": datetime.utcnow().isoformat(),

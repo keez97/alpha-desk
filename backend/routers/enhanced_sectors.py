@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends
 from datetime import datetime
 import logging
@@ -11,15 +12,15 @@ router = APIRouter(prefix="/api", tags=["enhanced-sectors"])
 
 
 @router.get("/enhanced-sectors")
-def get_enhanced_sectors(period: str = "1D"):
+async def get_enhanced_sectors(period: str = "1D"):
     """Return sector data enriched with RRG positioning."""
     try:
         # Get sector performance from yfinance
-        sector_data = get_sector_data(period=period)
+        sector_data = await asyncio.to_thread(get_sector_data, period=period)
 
         # Get RRG data from rrg_calculator
         tickers = list(SECTOR_ETFS.keys())
-        rrg_data = calculate_rrg(tickers, benchmark="SPY", weeks=10)
+        rrg_data = await asyncio.to_thread(calculate_rrg, tickers, "SPY", 10)
 
         # Create lookup for RRG data
         rrg_sectors = rrg_data.get("sectors", [])
@@ -40,6 +41,10 @@ def get_enhanced_sectors(period: str = "1D"):
                 quadrant = rrg_info.get("quadrant", "Unknown")
                 rs_ratio = rrg_info.get("rs_ratio", 100)
                 rs_momentum = rrg_info.get("rs_momentum", 0)
+                tail_length = rrg_info.get("tail_length", 0)
+                quadrant_age = rrg_info.get("quadrant_age", 0)
+                rs_trend = rrg_info.get("rs_trend", "flat")
+                rotation_direction = rrg_info.get("rotation_direction", "clockwise")
             else:
                 # Infer from performance when RRG is unavailable
                 if pct_change > 1.0:
@@ -52,6 +57,10 @@ def get_enhanced_sectors(period: str = "1D"):
                     quadrant = "Deteriorating"
                 rs_ratio = round(100 + (pct_change * 2), 2)
                 rs_momentum = round(pct_change * 5, 2)
+                tail_length = round(abs(pct_change) * 2, 2)
+                quadrant_age = 1
+                rs_trend = "up" if pct_change > 0 else "down"
+                rotation_direction = "clockwise"
 
             enhanced_sectors.append({
                 "ticker": ticker,
@@ -62,6 +71,10 @@ def get_enhanced_sectors(period: str = "1D"):
                 "rs_ratio": rs_ratio,
                 "rs_momentum": rs_momentum,
                 "quadrant": quadrant,
+                "tail_length": tail_length,
+                "quadrant_age": quadrant_age,
+                "rs_trend": rs_trend,
+                "rotation_direction": rotation_direction,
             })
 
         return {
@@ -80,10 +93,10 @@ def get_enhanced_sectors(period: str = "1D"):
 
 
 @router.get("/stock/{ticker}/factors")
-def get_stock_factors(ticker: str):
+async def get_stock_factors(ticker: str):
     """Calculate factor exposures for a stock."""
     try:
-        factors = calculate_stock_factors(ticker)
+        factors = await asyncio.to_thread(calculate_stock_factors, ticker)
 
         return {
             "timestamp": datetime.utcnow().isoformat(),

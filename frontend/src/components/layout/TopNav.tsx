@@ -31,7 +31,7 @@ export function TopNav() {
         <div className="flex items-center gap-1">
           <div className="flex gap-0.5">
           {navItems.map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive = location.pathname === item.path || (item.path === '/' && location.pathname === '/morning-brief');
             return (
               <button
                 key={item.path}

@@ -4,7 +4,9 @@ from typing import Dict, List, Any
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from backend.services.data_provider import get_history
+from backend.services import fds_client as fds
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +20,26 @@ SECTOR_ETFS = {
     "XLRE": "Real Estate",
     "XLI": "Industrials",
     "XLU": "Utilities",
-    "XLCQ": "Communication Services",
     "XLC": "Communication Services",
 }
 
 # Simple in-memory cache with TTL
 _rrg_cache = {}
 _CACHE_TTL = 300  # 5 minutes
+
+
+def _get_history_cascade(ticker: str, days: int = 365) -> list:
+    """Fetch price history: FDS (Tier 1) → data_provider (Tier 2)."""
+    if fds.is_available():
+        try:
+            end_date = (datetime.utcnow().date() - timedelta(days=1)).isoformat()
+            start_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+            records = fds.get_historical_prices(ticker, start_date, end_date)
+            if records and len(records) >= 20:
+                return records
+        except Exception as e:
+            logger.debug(f"FDS history {ticker}: {e}")
+    return get_history(ticker, period="1y")
 
 
 def calculate_rrg(
@@ -43,7 +58,7 @@ def calculate_rrg(
                 return cached_data
 
         # Fetch benchmark data (single call)
-        benchmark_history = get_history(benchmark, period="1y")
+        benchmark_history = _get_history_cascade(benchmark)
         if not benchmark_history:
             return {"error": f"Could not fetch {benchmark} data", "sectors": []}
 
@@ -59,7 +74,7 @@ def calculate_rrg(
         def fetch_ticker_history(ticker):
             """Fetch history for a single ticker."""
             try:
-                history = get_history(ticker, period="1y")
+                history = _get_history_cascade(ticker)
                 return ticker, history
             except Exception as e:
                 logger.error(f"Error fetching {ticker}: {e}")
@@ -121,6 +136,36 @@ def calculate_rrg(
 
                 sector_name = SECTOR_ETFS.get(ticker, ticker)
 
+                # ── Enhanced metrics ──
+                # Tail length: Euclidean distance traveled over last 4 trail points
+                tail_length = 0.0
+                if len(trail) >= 2:
+                    for j in range(1, min(5, len(trail))):
+                        dx = trail[-j]["rs_ratio"] - trail[-j - 1 if j < len(trail) else 0]["rs_ratio"]
+                        dy = trail[-j]["rs_momentum"] - trail[-j - 1 if j < len(trail) else 0]["rs_momentum"]
+                        tail_length += (dx**2 + dy**2) ** 0.5
+
+                # Quadrant age: count consecutive trail points in same quadrant
+                quadrant_age = 0
+                for pt in reversed(trail):
+                    pt_q = determine_quadrant(pt["rs_ratio"], pt["rs_momentum"])
+                    if pt_q == quadrant:
+                        quadrant_age += 1
+                    else:
+                        break
+
+                # RS trend: slope of RS-Ratio over last 4 weeks
+                recent_rs = [pt["rs_ratio"] for pt in trail[-4:]] if len(trail) >= 4 else [pt["rs_ratio"] for pt in trail]
+                rs_trend = "up" if len(recent_rs) >= 2 and recent_rs[-1] > recent_rs[0] else "down"
+
+                # Rotation direction: clockwise vs counter-clockwise
+                rotation_direction = "clockwise"
+                if len(trail) >= 3:
+                    p1, p2, p3 = trail[-3], trail[-2], trail[-1]
+                    cross = (p2["rs_ratio"] - p1["rs_ratio"]) * (p3["rs_momentum"] - p1["rs_momentum"]) - \
+                            (p2["rs_momentum"] - p1["rs_momentum"]) * (p3["rs_ratio"] - p1["rs_ratio"])
+                    rotation_direction = "clockwise" if cross < 0 else "counter-clockwise"
+
                 results.append({
                     "ticker": ticker,
                     "sector": sector_name,
@@ -128,6 +173,10 @@ def calculate_rrg(
                     "rs_momentum": float(current_rs_momentum),
                     "quadrant": quadrant,
                     "trail": trail,
+                    "tail_length": round(tail_length, 2),
+                    "quadrant_age": quadrant_age,
+                    "rs_trend": rs_trend,
+                    "rotation_direction": rotation_direction,
                 })
             except Exception as e:
                 logger.error(f"Error processing {ticker}: {e}")

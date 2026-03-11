@@ -17,7 +17,6 @@ const SECTOR_COLORS: Record<string, string> = {
   XLI: '#ec4899',   // pink
   XLU: '#84cc16',   // lime
   XLC: '#6366f1',   // indigo
-  XLCQ: '#6366f1',  // indigo (same as XLC)
 };
 
 // Quadrant background colors

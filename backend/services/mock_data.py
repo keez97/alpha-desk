@@ -135,14 +135,6 @@ MOCK_SECTOR_DATA = [
         "chart_data": [100.0, 100.1, 100.3, 100.5, 100.7, 100.9, 101.1, 101.3, 101.5, 101.7, 101.9, 102.1, 102.3, 102.5, 102.7, 102.9, 103.1, 103.3, 103.5, 103.7],
     },
     {
-        "ticker": "XLCQ",
-        "sector": "Communication Services",
-        "price": 178.45,
-        "daily_change": 2.65,
-        "daily_pct_change": 1.51,
-        "chart_data": [100.0, 100.5, 101.0, 101.4, 101.9, 102.4, 102.9, 103.3, 103.8, 104.3, 104.8, 105.2, 105.7, 106.2, 106.7, 107.1, 107.6, 108.1, 108.6, 109.0],
-    },
-    {
         "ticker": "XLC",
         "sector": "Communication Services",
         "price": 179.12,
@@ -971,20 +963,147 @@ MOCK_RRG_DATA = [
             {"week": 9, "rs_ratio": 1.00, "rs_momentum": 0.5},
         ],
     },
-    {
-        "ticker": "XLCQ",
-        "sector": "Communication Services",
-        "trail": [
-            {"week": 0, "rs_ratio": 1.00, "rs_momentum": 0.8},
-            {"week": 1, "rs_ratio": 1.01, "rs_momentum": 1.5},
-            {"week": 2, "rs_ratio": 1.01, "rs_momentum": 2.2},
-            {"week": 3, "rs_ratio": 1.02, "rs_momentum": 2.9},
-            {"week": 4, "rs_ratio": 1.02, "rs_momentum": 3.6},
-            {"week": 5, "rs_ratio": 1.03, "rs_momentum": 4.2},
-            {"week": 6, "rs_ratio": 1.03, "rs_momentum": 4.8},
-            {"week": 7, "rs_ratio": 1.04, "rs_momentum": 5.3},
-            {"week": 8, "rs_ratio": 1.04, "rs_momentum": 5.8},
-            {"week": 9, "rs_ratio": 1.05, "rs_momentum": 6.3},
-        ],
-    },
 ]
+
+# Options Flow & Gamma Exposure mock data
+MOCK_OPTIONS_FLOW = {
+    "timestamp": datetime.utcnow().isoformat(),
+    "ticker": "SPY",
+    "spot_price": 575.82,
+    "iv_skew": 0.15,  # Slight put skew
+    "put_call_ratio": 1.08,  # Slightly more puts
+    "volume_imbalance": 0.95,  # Slightly more puts
+    "gex_signal": "positive",
+    "gex_value": 125.5,
+    "total_call_volume": 4250000,
+    "total_put_volume": 4590000,
+    "total_call_oi": 12500000,
+    "total_put_oi": 13200000,
+    "signal": "neutral",
+    "details": [
+        "Slightly elevated put volume (1.08x ratio)",
+        "Put skew present (IV skew: 0.15)",
+        "GEX positive (125.5)",
+        "Balanced call-put dynamic",
+    ],
+    "expiry": "2026-03-21",
+}
+
+# Cross-Asset Momentum Spillover mock data
+MOCK_MOMENTUM_SPILLOVER = {
+    "timestamp": datetime.utcnow().isoformat(),
+    "assets": [
+        {
+            "ticker": "SPY",
+            "name": "S&P 500",
+            "asset_class": "Equities",
+            "momentum_1m": 0.0325,
+            "momentum_3m": 0.0845,
+            "state": "positive",
+        },
+        {
+            "ticker": "TLT",
+            "name": "US Bonds (7-10yr)",
+            "asset_class": "Fixed Income",
+            "momentum_1m": 0.0182,
+            "momentum_3m": 0.0421,
+            "state": "positive",
+        },
+        {
+            "ticker": "GLD",
+            "name": "Gold",
+            "asset_class": "Commodities",
+            "momentum_1m": 0.0125,
+            "momentum_3m": 0.0312,
+            "state": "positive",
+        },
+        {
+            "ticker": "USO",
+            "name": "Oil",
+            "asset_class": "Commodities",
+            "momentum_1m": -0.0245,
+            "momentum_3m": 0.0156,
+            "state": "neutral",
+        },
+        {
+            "ticker": "UUP",
+            "name": "US Dollar",
+            "asset_class": "Currencies",
+            "momentum_1m": -0.0165,
+            "momentum_3m": -0.0082,
+            "state": "negative",
+        },
+        {
+            "ticker": "BTC-USD",
+            "name": "Bitcoin",
+            "asset_class": "Crypto",
+            "momentum_1m": 0.1250,
+            "momentum_3m": 0.2850,
+            "state": "positive",
+        },
+    ],
+    "signals": [
+        {
+            "description": "Bond momentum positive — equity outlook favorable",
+            "type": "bullish",
+            "confidence": 0.7,
+            "based_on": ["TLT"],
+        },
+        {
+            "description": "Broad momentum alignment: Multiple asset classes rallying",
+            "type": "bullish",
+            "confidence": 0.75,
+            "based_on": ["SPY", "TLT", "GLD", "BTC-USD"],
+        },
+    ],
+    "matrix": {
+        "positive_count": 4,
+        "negative_count": 1,
+        "neutral_count": 1,
+    },
+}
+
+# VIX Term Structure mock data
+MOCK_VIX_TERM_STRUCTURE = {
+    "vix_spot": 15.45,
+    "vix3m": 15.82,
+    "ratio": 1.024,
+    "state": "contango",
+    "magnitude": 2.4,
+    "percentile": 38,
+    "roll_yield": 0.0018,
+    "signal": "bullish",
+    "history": [
+        {"date": "2026-02-03", "ratio": 1.018, "vix": 15.20},
+        {"date": "2026-02-04", "ratio": 1.019, "vix": 15.25},
+        {"date": "2026-02-05", "ratio": 1.020, "vix": 15.30},
+        {"date": "2026-02-06", "ratio": 1.021, "vix": 15.32},
+        {"date": "2026-02-07", "ratio": 1.022, "vix": 15.35},
+        {"date": "2026-02-10", "ratio": 1.023, "vix": 15.38},
+        {"date": "2026-02-11", "ratio": 1.023, "vix": 15.40},
+        {"date": "2026-02-12", "ratio": 1.024, "vix": 15.42},
+        {"date": "2026-02-13", "ratio": 1.025, "vix": 15.45},
+        {"date": "2026-03-01", "ratio": 1.018, "vix": 15.20},
+        {"date": "2026-03-02", "ratio": 1.021, "vix": 15.35},
+        {"date": "2026-03-03", "ratio": 1.023, "vix": 15.40},
+        {"date": "2026-03-04", "ratio": 1.025, "vix": 15.45},
+        {"date": "2026-03-05", "ratio": 1.024, "vix": 15.45},
+    ]
+}
+
+# Upgraded regime detection mock data
+MOCK_UPGRADED_REGIME = {
+    "regime": "bull",
+    "confidence": 72,
+    "bull_score": 4,
+    "bear_score": 1,
+    "signals": [
+        {"name": "VIX", "value": "15.5", "reading": "Normal", "bias": "bull"},
+        {"name": "Yield Curve", "value": "-0.40%", "reading": "Positive", "bias": "bull"},
+        {"name": "S&P 500", "value": "+1.49%", "reading": "Rallying", "bias": "bull"},
+        {"name": "Haven Demand", "value": "$2915", "reading": "Low", "bias": "bull"},
+    ],
+    "recession_probability": 22.5,
+    "correlation_regime": "normal",
+    "macro_surprise_score": 0.35,
+}

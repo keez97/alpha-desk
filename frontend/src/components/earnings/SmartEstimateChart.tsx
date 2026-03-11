@@ -62,9 +62,8 @@ export function SmartEstimateChart({ data, isLoading }: SmartEstimateChartProps)
             formatter={(value) => (typeof value === 'number' ? `$${value.toFixed(2)}` : value)}
           />
           <Legend
-            wrapperStyle={{ paddingTop: '12px' }}
+            wrapperStyle={{ paddingTop: '12px', fontSize: '11px' }}
             iconType="square"
-            wrapperStyle={{ fontSize: '11px' }}
           />
           <Bar dataKey="consensus" fill="#525252" name="Consensus" />
           <Bar dataKey="smart_estimate" fill="#d4d4d4" name="SmartEstimate" />

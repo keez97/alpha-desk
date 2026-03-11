@@ -1,34 +1,87 @@
-// AlphaDesk API client - v2 cache bust
+// AlphaDesk API client - v4 aggregate-first
 import axios, { AxiosError } from 'axios';
 import type { AxiosInstance } from 'axios';
 
+// In dev: '/api' proxied by Vite. In prod: full Railway URL from env.
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
 const api: AxiosInstance = axios.create({
-  baseURL: '/api',
-  timeout: 60000, // Increased for LLM calls
+  baseURL: API_BASE,
+  timeout: 120000, // 2 min for LLM calls and slow cold starts
 });
+
+// ── Response pre-cache ────────────────────────────────────
+// The aggregate endpoint fetches all data in a single request.
+// Individual fetchXxx() functions call api.get(path) — this cache
+// intercepts those calls and returns pre-fetched data, eliminating
+// the need for additional HTTP requests.
+const _preCache = new Map<string, any>();
+
+/** Seed the response cache from the /morning-brief/all aggregate. */
+export function seedApiCache(allData: any) {
+  const mapping: Record<string, any> = {
+    '/morning-brief/macro': allData.macro,
+    '/morning-brief/breadth': allData.breadth,
+    '/vix-term-structure': allData.vix_term_structure,
+    '/morning-brief/sectors': allData.sectors,
+    '/enhanced-sectors': allData.enhanced_sectors,
+    '/sector-transitions': allData.sector_transitions,
+    '/sentiment-velocity': allData.sentiment_velocity,
+    '/options-flow': allData.options_flow,
+    '/earnings-brief': allData.earnings_brief,
+    '/cot-positioning': allData.cot_positioning,
+    '/scenario-risk': allData.scenario_risk,
+    '/momentum-spillover': allData.momentum_spillover,
+    '/overnight-returns': allData.overnight_returns,
+  };
+  for (const [path, data] of Object.entries(mapping)) {
+    if (data) _preCache.set(path, data);
+  }
+  console.log(`[api] Seeded pre-cache with ${_preCache.size} endpoints`);
+}
+
+// Override api.get to check pre-cache first, then fall back to HTTP
+const _originalGet = api.get.bind(api);
+(api as any).get = async function (url: string, config?: any) {
+  const pathOnly = url.split('?')[0];
+  const cached = _preCache.get(pathOnly);
+  if (cached) {
+    _preCache.delete(pathOnly);
+    return { data: cached, status: 200, statusText: 'OK', headers: {}, config: config || {} };
+  }
+  return _originalGet(url, config);
+};
 
 api.interceptors.response.use(
   (response: any) => response,
-  async (error: AxiosError) => {
-    const config = error.config as any;
-    if (!config || config._retry) {
-      console.error('API Error:', error.message);
-      return Promise.reject(error);
-    }
-    // Retry once on network errors or 5xx
-    if (!error.response || (error.response.status >= 500)) {
-      config._retry = true;
-      return api(config);
-    }
-    console.error('API Error:', error.message);
+  (error: AxiosError) => {
+    console.error('API Error:', error.config?.url, error.message);
     return Promise.reject(error);
   }
 );
 
+export default api;
+
 // ── Types ──────────────────────────────────────────────────
+export interface RegimeSignal {
+  name: string;
+  value: string;
+  reading: string;
+  bias: 'bull' | 'bear' | 'neutral';
+}
+
+export interface RegimeData {
+  regime: 'bull' | 'bear' | 'neutral';
+  confidence: number;
+  bullScore: number;
+  bearScore: number;
+  signals: RegimeSignal[];
+}
+
 export interface MacroData {
   timestamp: string;
   indicators: { name: string; value: number; change: number }[];
+  regime?: RegimeData;
 }
 
 export interface SectorData {
@@ -38,14 +91,35 @@ export interface SectorData {
   change: number;
   changePercent: number;
   chartData?: number[];
+  chartDates?: string[];
+}
+
+export interface DriverMetric {
+  label: string;
+  value: string;
+  direction: 'up' | 'down' | 'flat';
+}
+
+export interface NewsArticleForDriver {
+  title: string;
+  url: string;
+  publisher: string;
+  publishedAt: string | null;
+  ticker?: string;
 }
 
 export interface Driver {
   headline: string;
   explanation: string;
+  keyData: string;
+  marketImplications: string;
   sources: string[];
   sentiment?: string;
   impactScore?: number;
+  contrarianSignal?: string | null;
+  affectedAssets: string[];
+  newsArticles: NewsArticleForDriver[];
+  metrics: DriverMetric[];
 }
 
 export interface DriverResponse {
@@ -206,9 +280,21 @@ export async function fetchMacro(): Promise<MacroData> {
   const indicators = Object.entries(raw.data || {}).map(([ticker, info]: [string, any]) => ({
     name: MACRO_NAMES[ticker] || ticker,
     value: info.price ?? 0,
-    change: info.pct_change ?? 0,
+    change: info.pct_change,
   }));
-  return { timestamp: raw.timestamp, indicators };
+  const regime = raw.regime ? {
+    regime: raw.regime.regime || 'neutral',
+    confidence: raw.regime.confidence ?? 50,
+    bullScore: raw.regime.bull_score ?? 0,
+    bearScore: raw.regime.bear_score ?? 0,
+    signals: (raw.regime.signals || []).map((s: any) => ({
+      name: s.name || '',
+      value: s.value || '',
+      reading: s.reading || '',
+      bias: s.bias || 'neutral',
+    })),
+  } : undefined;
+  return { timestamp: raw.timestamp, indicators, regime };
 }
 
 // ── Sectors ────────────────────────────────────────────────
@@ -221,23 +307,43 @@ export async function fetchSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Pr
     change: s.daily_change ?? s.change ?? 0,
     changePercent: s.daily_pct_change ?? s.changePercent ?? 0,
     chartData: s.chart_data || [],
+    chartDates: s.chart_dates || [],
   }));
 }
 
 // ── Drivers ────────────────────────────────────────────────
+function _mapDriver(d: any): Driver {
+  return {
+    headline: d.headline || d.title || 'Untitled',
+    explanation: d.explanation || d.market_implications || '',
+    keyData: d.key_data || '',
+    marketImplications: d.market_implications || '',
+    sources: d.sources || (d.url ? [d.url] : []),
+    sentiment: d.sentiment || d.impact,
+    impactScore: d.impact_score,
+    contrarianSignal: d.contrarian_signal || null,
+    affectedAssets: d.affected_assets || [],
+    newsArticles: (d.news_articles || []).map((a: any) => ({
+      title: a.title || '',
+      url: a.url || '',
+      publisher: a.publisher || 'Unknown',
+      publishedAt: a.published_at || null,
+      ticker: a.ticker || '',
+    })),
+    metrics: (d.metrics || []).map((m: any) => ({
+      label: m.label || '',
+      value: m.value || '',
+      direction: m.direction || 'flat',
+    })),
+  };
+}
+
 export async function fetchDrivers(): Promise<DriverResponse> {
   const { data: raw } = await api.get('/morning-brief/drivers');
   const driversData = raw.data || raw;
   const drivers = Array.isArray(driversData) ? driversData : (driversData.drivers || []);
   return {
-    drivers: drivers.map((d: any) => ({
-      headline: d.headline || d.title || 'Untitled',
-      explanation: d.explanation || '',
-      sources: d.sources || (d.url ? [d.url] : []),
-      sentiment: d.sentiment,
-      impactScore: d.impact_score,
-      sourceName: d.source,
-    })),
+    drivers: drivers.map(_mapDriver),
     timestamp: raw.timestamp,
   };
 }
@@ -247,13 +353,7 @@ export async function refreshDrivers(): Promise<DriverResponse> {
   const driversData = raw.data || raw;
   const drivers = Array.isArray(driversData) ? driversData : (driversData.drivers || []);
   return {
-    drivers: drivers.map((d: any) => ({
-      headline: d.headline || d.title || 'Untitled',
-      explanation: d.explanation || '',
-      sources: d.sources || (d.url ? [d.url] : []),
-      sentiment: d.sentiment,
-      impactScore: d.impact_score,
-    })),
+    drivers: drivers.map(_mapDriver),
     timestamp: raw.timestamp,
   };
 }
@@ -263,6 +363,116 @@ export async function fetchMorningReport(): Promise<Record<string, MorningReport
   const { data: raw } = await api.get('/morning-brief/report');
   const reportData = raw.data || raw;
   // Normalize — extract only sections that have title+content
+  const result: Record<string, MorningReportSection> = {};
+  for (const [key, value] of Object.entries(reportData)) {
+    if (value && typeof value === 'object' && 'title' in (value as any) && 'content' in (value as any)) {
+      const v = value as any;
+      result[key] = { title: v.title, content: v.content };
+    }
+  }
+  return result;
+}
+
+// ── Market Breadth ────────────────────────────────────────
+export interface BreadthData {
+  advances: number;
+  declines: number;
+  unchanged: number;
+  total: number;
+  adRatio: number;
+  pctAdvancing: number;
+  pctDeclining: number;
+  breadthThrust: boolean;
+  mcclellan: number;
+  netAdvances: number;
+  signal: string;
+  sampleSize: number;
+}
+
+export async function fetchBreadth(): Promise<BreadthData> {
+  const { data: raw } = await api.get('/morning-brief/breadth');
+  const d = raw.data || raw;
+  return {
+    advances: d.advances ?? 0,
+    declines: d.declines ?? 0,
+    unchanged: d.unchanged ?? 0,
+    total: d.total ?? 0,
+    adRatio: d.ad_ratio ?? 1,
+    pctAdvancing: d.pct_advancing ?? 50,
+    pctDeclining: d.pct_declining ?? 50,
+    breadthThrust: d.breadth_thrust ?? false,
+    mcclellan: d.mcclellan ?? 0,
+    netAdvances: d.net_advances ?? 0,
+    signal: d.signal || 'neutral',
+    sampleSize: d.sample_size ?? 0,
+  };
+}
+
+// ── VIX Term Structure ─────────────────────────────────────
+export interface VixTermStructureHistoryItem {
+  date?: string;
+  ratio: number;
+  vix: number;
+}
+
+export interface VixTermStructureData {
+  vixSpot: number;
+  vix3m: number;
+  ratio: number;
+  state: 'contango' | 'backwardation';
+  magnitude: number;
+  percentile: number;
+  rollYield: number;
+  signal: 'bullish' | 'bearish' | 'neutral';
+  history: VixTermStructureHistoryItem[];
+}
+
+export async function fetchVixTermStructure(): Promise<VixTermStructureData> {
+  const { data: raw } = await api.get('/vix-term-structure');
+  const d = raw.data || raw;
+  return {
+    vixSpot: d.vix_spot ?? 0,
+    vix3m: d.vix3m ?? 0,
+    ratio: d.ratio ?? 1,
+    state: d.state || 'contango',
+    magnitude: d.magnitude ?? 0,
+    percentile: d.percentile ?? 50,
+    rollYield: d.roll_yield ?? 0,
+    signal: d.signal || 'neutral',
+    history: (d.history || []).map((h: any) => ({
+      date: h.date,
+      ratio: h.ratio ?? 1,
+      vix: h.vix ?? 0,
+    })),
+  };
+}
+
+// ── Upgraded Regime Data ───────────────────────────────────
+export interface UpgradedRegimeData extends RegimeData {
+  recessionProbability: number;
+  correlationRegime: string;
+  macroSurpriseScore: number;
+}
+
+export async function fetchUpgradedRegime(): Promise<UpgradedRegimeData> {
+  const { data: raw } = await api.get('/morning-brief/macro');
+  const regime = raw.regime || {};
+  return {
+    regime: regime.regime || 'neutral',
+    confidence: regime.confidence ?? 50,
+    bullScore: regime.bull_score ?? 0,
+    bearScore: regime.bear_score ?? 0,
+    signals: regime.signals || [],
+    recessionProbability: regime.recession_probability ?? 50,
+    correlationRegime: regime.correlation_regime || 'normal',
+    macroSurpriseScore: regime.macro_surprise_score ?? 0,
+  };
+}
+
+// ── Custom Report ─────────────────────────────────────────
+export async function fetchCustomReport(topics: string[]): Promise<Record<string, MorningReportSection>> {
+  const { data: raw } = await api.post('/morning-brief/report/custom', { topics });
+  const reportData = raw.data || raw;
   const result: Record<string, MorningReportSection> = {};
   for (const [key, value] of Object.entries(reportData)) {
     if (value && typeof value === 'object' && 'title' in (value as any) && 'content' in (value as any)) {
@@ -692,8 +902,6 @@ export const createFactor = (data: any) =>
 export const getFactorScores = (id: number) =>
   api.get(`/factors/${id}/scores`).then((r) => r.data);
 
-export default api;
-
 // ── Model Settings ─────────────────────────────────────────
 export interface ModelInfo {
   key: string;
@@ -1009,11 +1217,137 @@ export async function getScreenPresets(): Promise<ScreenPresetsResponse> {
   return data;
 }
 
+// ── Overnight Returns ──────────────────────────────────────
+export interface OvernightGapIndex {
+  ticker: string;
+  name: string;
+  overnight_return_pct: number;
+  avg_overnight: number;
+  std_overnight: number;
+  z_score: number;
+  is_outlier: boolean;
+  direction: 'up' | 'down';
+}
+
+export interface OvernightReturnsSummary {
+  total_tracked: number;
+  gaps_up: number;
+  gaps_down: number;
+  net_direction: 'up' | 'down' | 'neutral';
+  notable_gaps: Array<{
+    ticker: string;
+    overnight_return_pct: number;
+    z_score: number;
+    direction: 'up' | 'down';
+  }>;
+}
+
+export interface OvernightReturnsData {
+  timestamp: string;
+  indices: OvernightGapIndex[];
+  summary: OvernightReturnsSummary;
+}
+
+export async function fetchOvernightReturns(): Promise<OvernightReturnsData> {
+  const { data: raw } = await api.get('/overnight-returns');
+  const d = raw.data || {};
+  return {
+    timestamp: raw.timestamp || d.timestamp || new Date().toISOString(),
+    indices: (d.indices || []).map((i: any) => ({
+      ticker: i.ticker,
+      name: i.name || i.ticker,
+      overnight_return_pct: i.overnight_return_pct ?? 0,
+      avg_overnight: i.avg_overnight ?? 0,
+      std_overnight: i.std_overnight ?? 0,
+      z_score: i.z_score ?? 0,
+      is_outlier: i.is_outlier ?? false,
+      direction: i.direction || 'up',
+    })),
+    summary: {
+      total_tracked: d.summary?.total_tracked ?? 0,
+      gaps_up: d.summary?.gaps_up ?? 0,
+      gaps_down: d.summary?.gaps_down ?? 0,
+      net_direction: d.summary?.net_direction || 'neutral',
+      notable_gaps: (d.summary?.notable_gaps || []).map((g: any) => ({
+        ticker: g.ticker,
+        overnight_return_pct: g.overnight_return_pct ?? 0,
+        z_score: g.z_score ?? 0,
+        direction: g.direction || 'up',
+      })),
+    },
+  };
+}
+
+// ── Earnings Brief ─────────────────────────────────────────
+export interface EarningsBriefItem {
+  ticker: string;
+  name: string;
+  earnings_date: string;
+  days_until: number;
+  pre_drift_pct: number;
+  pre_drift_signal: boolean;
+  sector: string;
+}
+
+export interface EarningsCluster {
+  week: string;
+  sector: string;
+  count: number;
+  tickers: string[];
+}
+
+export interface EarningsBriefAlert {
+  ticker: string;
+  alert_type: 'pre_earnings_surge' | 'pre_earnings_decline';
+  pre_drift_pct: number;
+  earnings_date: string;
+}
+
+export interface EarningsBriefData {
+  timestamp: string;
+  upcoming: EarningsBriefItem[];
+  clusters: EarningsCluster[];
+  alerts: EarningsBriefAlert[];
+}
+
+export async function fetchEarningsBrief(): Promise<EarningsBriefData> {
+  const { data: raw } = await api.get('/earnings-brief');
+  const d = raw.data || {};
+  return {
+    timestamp: raw.timestamp || d.timestamp || new Date().toISOString(),
+    upcoming: (d.upcoming || []).map((u: any) => ({
+      ticker: u.ticker,
+      name: u.name || u.ticker,
+      earnings_date: u.earnings_date,
+      days_until: u.days_until ?? 0,
+      pre_drift_pct: u.pre_drift_pct ?? 0,
+      pre_drift_signal: u.pre_drift_signal ?? false,
+      sector: u.sector || 'Unknown',
+    })),
+    clusters: (d.clusters || []).map((c: any) => ({
+      week: c.week,
+      sector: c.sector,
+      count: c.count ?? 0,
+      tickers: c.tickers || [],
+    })),
+    alerts: (d.alerts || []).map((a: any) => ({
+      ticker: a.ticker,
+      alert_type: a.alert_type || 'pre_earnings_surge',
+      pre_drift_pct: a.pre_drift_pct ?? 0,
+      earnings_date: a.earnings_date,
+    })),
+  };
+}
+
 // ── Enhanced Sectors ────────────────────────────────────────
 export interface EnhancedSectorData extends SectorData {
   rsRatio: number;
   rsMomentum: number;
   quadrant: string;
+  tailLength: number;
+  quadrantAge: number;
+  rsTrend: 'up' | 'down' | 'flat';
+  rotationDirection: 'clockwise' | 'counter-clockwise';
 }
 
 export async function fetchEnhancedSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Promise<EnhancedSectorData[]> {
@@ -1027,6 +1361,10 @@ export async function fetchEnhancedSectors(period: '1D' | '5D' | '1M' | '3M' = '
     rsRatio: s.rs_ratio ?? 100,
     rsMomentum: s.rs_momentum ?? 0,
     quadrant: s.quadrant || 'Unknown',
+    tailLength: s.tail_length ?? 0,
+    quadrantAge: s.quadrant_age ?? 0,
+    rsTrend: s.rs_trend || 'flat',
+    rotationDirection: s.rotation_direction || 'clockwise',
     chartData: s.chart_data || [],
   }));
 }
@@ -1047,4 +1385,338 @@ export async function fetchStockFactors(ticker: string): Promise<StockFactorData
     percentile: f.percentile ?? 50,
     signal: f.signal || 'neutral',
   }));
+}
+
+// ── Sector Transitions ──────────────────────────────────────────
+export interface FactorDecomposition {
+  ticker: string;
+  name: string;
+  beta_contribution: number;
+  size_contribution: number;
+  value_contribution: number;
+  momentum_contribution: number;
+}
+
+export interface Transition {
+  ticker: string;
+  name: string;
+  from_quadrant: string;
+  to_quadrant: string;
+  transition_date: string;
+  significance: number;
+}
+
+export interface CycleOverlay {
+  current_phase: string;
+  favorable_sectors: string[];
+  unfavorable_sectors: string[];
+  recession_probability: number;
+}
+
+export interface SectorTransitionsData {
+  timestamp: string;
+  transitions: Transition[];
+  factor_decomposition: FactorDecomposition[];
+  cycle_overlay: CycleOverlay;
+}
+
+export async function fetchSectorTransitions(): Promise<SectorTransitionsData> {
+  const { data: raw } = await api.get('/sector-transitions');
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    transitions: (raw.transitions || []).map((t: any) => ({
+      ticker: t.ticker,
+      name: t.name,
+      from_quadrant: t.from_quadrant,
+      to_quadrant: t.to_quadrant,
+      transition_date: t.transition_date,
+      significance: t.significance ?? 0,
+    })),
+    factor_decomposition: (raw.factor_decomposition || []).map((f: any) => ({
+      ticker: f.ticker,
+      name: f.name,
+      beta_contribution: f.beta_contribution ?? 0,
+      size_contribution: f.size_contribution ?? 0,
+      value_contribution: f.value_contribution ?? 0,
+      momentum_contribution: f.momentum_contribution ?? 0,
+    })),
+    cycle_overlay: {
+      current_phase: raw.cycle_overlay?.current_phase || 'unknown',
+      favorable_sectors: raw.cycle_overlay?.favorable_sectors || [],
+      unfavorable_sectors: raw.cycle_overlay?.unfavorable_sectors || [],
+      recession_probability: raw.cycle_overlay?.recession_probability ?? 50,
+    },
+  };
+}
+
+// ── Scenario Risk ──────────────────────────────────────────
+export interface HistoricalAnalog {
+  period: string;
+  similarity_score: number;
+  subsequent_5d_return: number;
+  subsequent_10d_return: number;
+  subsequent_20d_return: number;
+}
+
+export interface Scenario {
+  name: string;
+  description: string;
+  estimated_impact_pct: number;
+  probability: number;
+  severity: string;
+}
+
+export interface ScenarioRiskData {
+  timestamp: string;
+  var_95_historical: number;
+  var_95_regime_adjusted: number;
+  current_regime: string;
+  historical_analogs: HistoricalAnalog[];
+  scenarios: Scenario[];
+}
+
+export async function fetchScenarioRisk(): Promise<ScenarioRiskData> {
+  const { data: raw } = await api.get('/scenario-risk');
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    var_95_historical: raw.var_95_historical ?? 0,
+    var_95_regime_adjusted: raw.var_95_regime_adjusted ?? 0,
+    current_regime: raw.current_regime || 'unknown',
+    historical_analogs: (raw.historical_analogs || []).map((a: any) => ({
+      period: a.period,
+      similarity_score: a.similarity_score ?? 0,
+      subsequent_5d_return: a.subsequent_5d_return ?? 0,
+      subsequent_10d_return: a.subsequent_10d_return ?? 0,
+      subsequent_20d_return: a.subsequent_20d_return ?? 0,
+    })),
+    scenarios: (raw.scenarios || []).map((s: any) => ({
+      name: s.name,
+      description: s.description,
+      estimated_impact_pct: s.estimated_impact_pct ?? 0,
+      probability: s.probability ?? 0,
+      severity: s.severity || 'mild',
+    })),
+  };
+}
+
+// ── Options Flow ──────────────────────────────────────────
+export interface OptionsFlowData {
+  timestamp: string;
+  ticker: string;
+  spot_price: number;
+  iv_skew: number;
+  put_call_ratio: number;
+  volume_imbalance: number;
+  gex_signal: 'positive' | 'negative' | 'neutral';
+  gex_value: number;
+  total_call_volume: number;
+  total_put_volume: number;
+  total_call_oi: number;
+  total_put_oi: number;
+  signal: 'bullish' | 'bearish' | 'neutral';
+  details: string[];
+  expiry: string;
+}
+
+export async function fetchOptionsFlow(): Promise<OptionsFlowData> {
+  const { data: raw } = await api.get('/options-flow');
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    ticker: raw.ticker || 'SPX',
+    spot_price: raw.spot_price ?? 0,
+    iv_skew: raw.iv_skew ?? 0,
+    put_call_ratio: raw.put_call_ratio ?? 1,
+    volume_imbalance: raw.volume_imbalance ?? 1,
+    gex_signal: raw.gex_signal || 'neutral',
+    gex_value: raw.gex_value ?? 0,
+    total_call_volume: raw.total_call_volume ?? 0,
+    total_put_volume: raw.total_put_volume ?? 0,
+    total_call_oi: raw.total_call_oi ?? 0,
+    total_put_oi: raw.total_put_oi ?? 0,
+    signal: raw.signal || 'neutral',
+    details: raw.details || [],
+    expiry: raw.expiry || '',
+  };
+}
+
+// ── Momentum Spillover ──────────────────────────────────────
+export interface AssetMomentum {
+  ticker: string;
+  name: string;
+  asset_class: string;
+  momentum_1m: number;
+  momentum_3m: number;
+  state: 'positive' | 'negative' | 'neutral';
+}
+
+export interface MomentumSignal {
+  description: string;
+  type: 'bullish' | 'bearish' | 'warning';
+  confidence: number;
+  based_on: string[];
+}
+
+export interface MomentumMatrix {
+  positive_count: number;
+  negative_count: number;
+  neutral_count: number;
+}
+
+export interface MomentumSpilloverData {
+  timestamp: string;
+  assets: AssetMomentum[];
+  signals: MomentumSignal[];
+  matrix: MomentumMatrix;
+}
+
+export async function fetchMomentumSpillover(): Promise<MomentumSpilloverData> {
+  const { data: raw } = await api.get('/momentum-spillover');
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    assets: (raw.assets || []).map((a: any) => ({
+      ticker: a.ticker,
+      name: a.name,
+      asset_class: a.asset_class,
+      momentum_1m: a.momentum_1m ?? 0,
+      momentum_3m: a.momentum_3m ?? 0,
+      state: a.state || 'neutral',
+    })),
+    signals: (raw.signals || []).map((s: any) => ({
+      description: s.description,
+      type: s.type || 'warning',
+      confidence: s.confidence ?? 0,
+      based_on: s.based_on || [],
+    })),
+    matrix: {
+      positive_count: raw.matrix?.positive_count ?? 0,
+      negative_count: raw.matrix?.negative_count ?? 0,
+      neutral_count: raw.matrix?.neutral_count ?? 0,
+    },
+  };
+}
+
+// ── Sentiment Velocity ──────────────────────────────────────
+export interface Headline {
+  headline: string;
+  ticker?: string;
+  source?: string;
+  link?: string;
+  sentiment: number;
+  label?: 'positive' | 'negative' | 'neutral';
+  confidence?: number;
+  published_at: string;
+}
+
+export interface SentimentDistribution {
+  positive: number;
+  negative: number;
+  neutral: number;
+}
+
+export interface HistoryPoint {
+  date: string;
+  sentiment: number;
+  news_count: number;
+}
+
+export interface SentimentVelocityData {
+  timestamp: string;
+  scoring_model?: string;
+  aggregate_score: number;
+  velocity: number;
+  velocity_signal: 'accelerating' | 'decelerating' | 'stable';
+  contrarian_flag: 'overbought' | 'oversold' | null;
+  news_density: number;
+  attention_level: 'normal' | 'elevated' | 'extreme';
+  top_headlines: Headline[];
+  history_5d: HistoryPoint[];
+  sentiment_distribution?: SentimentDistribution;
+}
+
+export async function fetchSentimentVelocity(tickers?: string): Promise<SentimentVelocityData> {
+  const url = tickers ? `/sentiment-velocity?tickers=${tickers}` : '/sentiment-velocity';
+  const { data: raw } = await api.get(url);
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    scoring_model: raw.scoring_model || undefined,
+    aggregate_score: raw.aggregate_score ?? 0,
+    velocity: raw.velocity ?? 0,
+    velocity_signal: raw.velocity_signal || 'stable',
+    contrarian_flag: raw.contrarian_flag || null,
+    news_density: raw.news_density ?? 0,
+    attention_level: raw.attention_level || 'normal',
+    top_headlines: (raw.top_headlines || []).map((h: any) => ({
+      headline: h.headline,
+      ticker: h.ticker,
+      source: h.source,
+      link: h.link,
+      sentiment: h.sentiment ?? 0,
+      label: h.label,
+      confidence: h.confidence,
+      published_at: h.published_at,
+    })),
+    history_5d: (raw.history_5d || []).map((p: any) => ({
+      date: p.date,
+      sentiment: p.sentiment ?? 0,
+      news_count: p.news_count ?? 0,
+    })),
+    sentiment_distribution: raw.sentiment_distribution || undefined,
+  };
+}
+
+// ── COT Positioning ──────────────────────────────────────────
+export interface MarketPositioning {
+  name: string;
+  ticker: string;
+  commercial_net: number;
+  speculative_net: number;
+  commercial_percentile: number;
+  speculative_percentile: number;
+  extreme_flag:
+    | 'commercial_extreme_long'
+    | 'commercial_extreme_short'
+    | 'speculative_extreme_long'
+    | 'speculative_extreme_short'
+    | null;
+  divergence: boolean;
+}
+
+export interface PositioningAlert {
+  ticker: string;
+  market_name: string;
+  type: 'extreme_positioning' | 'divergence';
+  severity: 'high' | 'medium';
+  message: string;
+  bias: 'bullish' | 'bearish' | 'neutral';
+}
+
+export interface PositioningData {
+  timestamp: string;
+  markets: MarketPositioning[];
+  alerts: PositioningAlert[];
+}
+
+export async function fetchPositioning(): Promise<PositioningData> {
+  const { data: raw } = await api.get('/cot-positioning');
+  return {
+    timestamp: raw.timestamp || new Date().toISOString(),
+    markets: (raw.markets || []).map((m: any) => ({
+      name: m.name,
+      ticker: m.ticker,
+      commercial_net: m.commercial_net ?? 0,
+      speculative_net: m.speculative_net ?? 0,
+      commercial_percentile: m.commercial_percentile ?? 0,
+      speculative_percentile: m.speculative_percentile ?? 0,
+      extreme_flag: m.extreme_flag || null,
+      divergence: m.divergence ?? false,
+    })),
+    alerts: (raw.alerts || []).map((a: any) => ({
+      ticker: a.ticker,
+      market_name: a.market_name,
+      type: a.type || 'extreme_positioning',
+      severity: a.severity || 'medium',
+      message: a.message,
+      bias: a.bias || 'neutral',
+    })),
+  };
 }

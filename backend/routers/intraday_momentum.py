@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Query
 from datetime import datetime
 import logging
@@ -9,7 +10,7 @@ router = APIRouter(prefix="/api/intraday-momentum", tags=["intraday-momentum"])
 
 
 @router.get("/scan")
-def scan_intraday_momentum(
+async def scan_intraday_momentum(
     interval: str = Query("5m", description="5m or 15m"),
     benchmark: str = Query("SPY", description="RRG benchmark"),
     weeks: int = Query(10, description="RRG calculation weeks"),
@@ -27,7 +28,8 @@ def scan_intraday_momentum(
                 "error": "interval must be '5m' or '15m'",
             }
 
-        result = IntradayMomentumEngine.scan_intraday_momentum(
+        result = await asyncio.to_thread(
+            IntradayMomentumEngine.scan_intraday_momentum,
             interval=interval, benchmark=benchmark, weeks=weeks
         )
 
@@ -42,7 +44,7 @@ def scan_intraday_momentum(
 
 
 @router.get("/{ticker}")
-def get_ticker_detail(
+async def get_ticker_detail(
     ticker: str,
     interval: str = Query("5m", description="5m or 15m"),
 ):
@@ -59,7 +61,7 @@ def get_ticker_detail(
                 "error": "interval must be '5m' or '15m'",
             }
 
-        result = IntradayMomentumEngine.get_ticker_detail(ticker, interval)
+        result = await asyncio.to_thread(IntradayMomentumEngine.get_ticker_detail, ticker, interval)
 
         return result
     except Exception as e:

@@ -6,5 +6,7 @@ export function useRRG(benchmark: string = 'SPY', weeks: number = 52) {
     queryKey: ['rrg', benchmark, weeks],
     queryFn: () => fetchRRG(benchmark, weeks),
     staleTime: 10 * 60 * 1000,
+    retry: 2,
+    retryDelay: 3000,
   });
 }

@@ -11,4 +11,10 @@ dist/
 .coverage
 htmlcov/
 venv/
+venv_mac/
 env/
+.full-stack-feature*/
+c_year.txt
+FinComYY.txt
+=1.40.0
+ux_report.js

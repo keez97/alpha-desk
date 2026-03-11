@@ -19,10 +19,16 @@ export function ModelSelector() {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchModels().then((res) => {
-      setCurrent(res.current);
-      setAvailable(res.available.map((m) => m.key));
-    });
+    fetchModels()
+      .then((res) => {
+        setCurrent(res.current);
+        setAvailable(res.available.map((m) => m.key));
+      })
+      .catch(() => {
+        // Silently fail — model selector is non-critical
+        setCurrent('claude-sonnet-4');
+        setAvailable(['claude-sonnet-4']);
+      });
   }, []);
 
   useEffect(() => {

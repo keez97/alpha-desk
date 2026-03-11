@@ -16,8 +16,11 @@ import { Correlation } from './pages/Correlation';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
+      retry: 2,
+      retryDelay: (attempt: number) => Math.min(2000 * 2 ** attempt, 15000),
       refetchOnWindowFocus: false,
+      staleTime: 5 * 60 * 1000,    // 5 minutes - don't re-fetch if data is fresh
+      gcTime: 30 * 60 * 1000,      // 30 minutes - keep cached data around
     },
   },
 });
@@ -29,6 +32,7 @@ function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/" element={<MorningBrief />} />
+            <Route path="/morning-brief" element={<MorningBrief />} />
             <Route path="/screener" element={<Screener />} />
             <Route path="/weekly-report" element={<WeeklyReport />} />
             <Route path="/portfolio" element={<Portfolio />} />

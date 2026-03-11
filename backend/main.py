@@ -18,6 +18,8 @@ from backend.routers import (
     events,
     earnings,
     sentiment,
+    sentiment_velocity,
+    cot_positioning,
     confluence,
     confluence_backtest,
     quant_screener,
@@ -28,6 +30,13 @@ from backend.routers import (
     intraday_momentum,
     correlation,
     earnings_confluence,
+    overnight_returns,
+    earnings_brief,
+    options_flow,
+    cross_asset_momentum,
+    sector_transitions,
+    scenario_risk,
+    vix_term_structure,
 )
 
 app = FastAPI(
@@ -36,10 +45,24 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS middleware - restrict to local development origins
+# CORS middleware
+import os as _os
+_allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:3000",
+]
+# Add production frontend URL from env
+_frontend_url = _os.getenv("FRONTEND_URL", "")
+if _frontend_url:
+    _allowed_origins.append(_frontend_url)
+# Also allow any *.vercel.app subdomain during development
+_allowed_origins.append("https://*.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5177", "http://localhost:3000"],
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -61,6 +84,8 @@ app.include_router(data_ingestion.router)
 app.include_router(events.router)
 app.include_router(earnings.router)
 app.include_router(sentiment.router)
+app.include_router(sentiment_velocity.router)
+app.include_router(cot_positioning.router)
 app.include_router(confluence.router)
 app.include_router(confluence_backtest.router)
 app.include_router(quant_screener.router)
@@ -71,6 +96,13 @@ app.include_router(notifications.router)
 app.include_router(intraday_momentum.router)
 app.include_router(correlation.router)
 app.include_router(earnings_confluence.router)
+app.include_router(overnight_returns.router)
+app.include_router(earnings_brief.router)
+app.include_router(options_flow.router)
+app.include_router(cross_asset_momentum.router)
+app.include_router(sector_transitions.router)
+app.include_router(scenario_risk.router)
+app.include_router(vix_term_structure.router)
 
 
 @app.on_event("startup")

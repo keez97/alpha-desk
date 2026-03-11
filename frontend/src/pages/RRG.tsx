@@ -58,6 +58,13 @@ export function RRG() {
             <LoadingState message="Loading RRG data..." />
           ) : error ? (
             <ErrorState error={error} onRetry={() => refetch()} />
+          ) : data && (!data.sectors || data.sectors.length === 0) ? (
+            <div className="text-center p-8">
+              <p className="text-amber-400 font-bold">RRG data temporarily unavailable</p>
+              <p className="text-sm text-neutral-400 mt-2">
+                Price data sources are rate-limited. Sector rotations are available on the Morning Brief page.
+              </p>
+            </div>
           ) : data ? (
             <RRGChart data={data} />
           ) : null}

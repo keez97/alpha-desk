@@ -38,7 +38,9 @@ def _period_to_dates(period: str) -> tuple[str, str]:
     Returns:
         Tuple of (start_date, end_date) as ISO strings (YYYY-MM-DD)
     """
-    end_date = datetime.now().date()
+    # Use yesterday as end_date to avoid FDS "end_date must be today or older" errors
+    # when our VM clock is ahead of FDS market-time clock
+    end_date = datetime.now().date() - timedelta(days=1)
 
     if period == "1y":
         start_date = end_date - timedelta(days=365)
@@ -49,7 +51,7 @@ def _period_to_dates(period: str) -> tuple[str, str]:
     elif period == "1mo":
         start_date = end_date - timedelta(days=30)
     elif period == "5d":
-        start_date = end_date - timedelta(days=5)
+        start_date = end_date - timedelta(days=7)  # extra buffer for weekends
     else:
         # Default to 1 year
         start_date = end_date - timedelta(days=365)
@@ -170,12 +172,14 @@ def get_macro_data() -> Dict:
     """
     Get macro economic data from FRED and yfinance.
 
+    Tier 1.5 (FDS) provides stock-based macro tickers (SPY, QQQ, IWM) with real daily changes.
     Tier 2 (FRED) provides Treasury yields, VIX, Dollar, Oil, etc.
     Tier 3 (yfinance) provides fallback for tickers FRED doesn't cover.
 
     Returns:
         Dict with ticker keys (e.g., "^TNX", "^VIX") mapping to
         {"price": ..., "change": ..., "pct_change": ...}
+        pct_change can be None if change data is unavailable.
         Returns empty dict if unavailable.
     """
     cache_key = "macro:all"
@@ -205,16 +209,34 @@ def get_macro_data() -> Dict:
                 fred_value = fred_snapshot[fred_series].get("value")
                 if fred_value is not None:
                     # Build result in the format expected
+                    # FRED doesn't provide daily change — set to None so frontend displays "N/A"
                     result[ticker_key] = {
                         "price": float(fred_value),
-                        "change": 0.0,  # FRED doesn't provide daily change
-                        "pct_change": 0.0,  # Calculate if we have previous value
+                        "change": None,
+                        "pct_change": None,
                     }
                     logger.debug(f"Macro {ticker_key} served from FRED (Tier 2)")
             except Exception as e:
                 logger.warning(f"Error processing FRED data for {fred_series}: {e}")
 
-    # Tier 3: yfinance for tickers FRED doesn't cover
+    # Tier 1.5: FDS for stock-based macro tickers (with real daily changes)
+    fds_macro_tickers = ["SPY", "QQQ", "IWM"]
+    if fds.is_available():
+        for ticker in fds_macro_tickers:
+            if ticker not in result:
+                try:
+                    snapshot = fds.get_price_snapshot(ticker)
+                    if snapshot and snapshot.get("price"):
+                        result[ticker] = {
+                            "price": snapshot["price"],
+                            "change": snapshot.get("change") or 0,
+                            "pct_change": snapshot.get("pct_change") or 0,
+                        }
+                        logger.debug(f"Macro {ticker} served from FDS (Tier 1.5)")
+                except Exception:
+                    pass
+
+    # Tier 3: yfinance for tickers FRED and FDS don't cover
     fallback_tickers = ["GC=F", "BTC-USD", "SPY", "QQQ", "IWM"]
 
     for ticker in fallback_tickers:
@@ -232,7 +254,7 @@ def get_macro_data() -> Dict:
                 logger.warning(f"yfinance macro fetch failed for {ticker}: {e}")
 
     if result:
-        logger.info(f"Macro data served from FRED/yfinance (mixed tiers)")
+        logger.info(f"Macro data served from FDS/FRED/yfinance (mixed tiers)")
         cache.set(cache_key, result, CACHE_TTL_MACRO)
         return result
 
@@ -273,6 +295,105 @@ def get_sector_data(period: str = "1D") -> List[Dict]:
 
     logger.warning("Could not fetch sector data from any tier")
     return []
+
+
+def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
+    """
+    Get sector ETF chart data with actual prices and real dates.
+
+    Uses FDS cascade for actual close prices with ISO dates instead of normalized values.
+
+    Args:
+        period: Period for chart data ("1D", "5D", "1M", "3M")
+
+    Returns:
+        Dict with period and sectors list containing:
+        - ticker, sector name, latest price, daily change
+        - chart_data: actual close prices (not normalized)
+        - chart_dates: ISO date strings (YYYY-MM-DD)
+    """
+    cache_key = f"sector_chart:{period}"
+
+    # Check cache first
+    cached_result = cache.get(cache_key)
+    if cached_result is not None:
+        logger.debug(f"Sector chart data (period={period}) served from cache")
+        return cached_result
+
+    # Map period to yfinance period parameter
+    period_map = {
+        "1D": "5d",
+        "5D": "5d",
+        "1M": "1mo",
+        "3M": "3mo",
+    }
+    yf_period = period_map.get(period, "1mo")
+
+    # Sector ETF mapping
+    sector_etfs = {
+        "XLK": "Information Technology",
+        "XLV": "Healthcare",
+        "XLF": "Financials",
+        "XLY": "Consumer Discretionary",
+        "XLP": "Consumer Staples",
+        "XLE": "Energy",
+        "XLRE": "Real Estate",
+        "XLI": "Industrials",
+        "XLU": "Utilities",
+        "XLC": "Communication Services",
+    }
+
+    sectors = []
+
+    for ticker, sector_name in sector_etfs.items():
+        try:
+            # Get historical data using FDS cascade
+            history = get_history(ticker, period=yf_period, interval="1d")
+
+            if not history or len(history) == 0:
+                logger.warning(f"No history data for {ticker}")
+                continue
+
+            # Extract chart data and dates
+            # FDS uses "time" field, yfinance uses "date" — handle both
+            chart_data = [h.get("close", 0) for h in history]
+            chart_dates = [h.get("date", h.get("time", "")) for h in history]
+
+            # Get current quote for price and change
+            quote = get_quote(ticker)
+
+            current_price = quote.get("price", 0)
+            daily_change = quote.get("change", 0)
+            daily_pct_change = quote.get("pct_change", 0)
+
+            sectors.append({
+                "ticker": ticker,
+                "sector": sector_name,
+                "price": current_price,
+                "daily_change": daily_change,
+                "daily_pct_change": daily_pct_change,
+                "chart_data": chart_data,
+                "chart_dates": chart_dates,
+            })
+
+            logger.debug(f"Sector chart data for {ticker} ({sector_name}) retrieved: {len(chart_data)} data points")
+
+        except Exception as e:
+            logger.warning(f"Error fetching sector chart data for {ticker}: {e}")
+            continue
+
+    result = {
+        "period": period,
+        "sectors": sectors,
+    }
+
+    if sectors:
+        logger.info(f"Sector chart data (period={period}) served from FDS/yfinance cascade")
+        cache.set(cache_key, result, CACHE_TTL_SECTOR)
+        return result
+
+    logger.warning(f"Could not fetch sector chart data for period {period}")
+    return {"period": period, "sectors": []}
 
 
 def get_fundamentals(ticker: str) -> Dict:

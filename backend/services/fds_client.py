@@ -5,7 +5,9 @@ Covers prices, earnings, metrics, and snapshots in addition to financial stateme
 """
 
 import logging
+import re
 import time
+import threading
 from typing import Dict, List, Optional
 
 import httpx
@@ -17,8 +19,13 @@ logger = logging.getLogger(__name__)
 # Base configuration
 BASE_URL = "https://api.financialdatasets.ai"
 TIMEOUT = 15
-MAX_RETRIES = 3
+MAX_RETRIES = 4
 RETRY_BACKOFF = 1.0  # seconds
+
+# Global rate limiter — max 1 request per 0.5 seconds
+_rate_lock = threading.Lock()
+_last_request_time = 0.0
+_MIN_REQUEST_INTERVAL = 0.5  # seconds between requests
 
 # Track if we've already logged the "API key not available" warning
 _API_KEY_WARNING_LOGGED = False
@@ -59,8 +66,17 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
     headers = _get_headers()
 
     for attempt in range(MAX_RETRIES):
+        # Global rate limiting to avoid 429s
+        global _last_request_time
+        with _rate_lock:
+            now = time.time()
+            elapsed = now - _last_request_time
+            if elapsed < _MIN_REQUEST_INTERVAL:
+                time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+            _last_request_time = time.time()
+
         try:
-            with httpx.Client(timeout=TIMEOUT) as client:
+            with httpx.Client(timeout=TIMEOUT, follow_redirects=True) as client:
                 if method.upper() == "GET":
                     response = client.get(url, headers=headers, params=params)
                 else:
@@ -70,8 +86,29 @@ def _make_request(method: str, endpoint: str, params: Optional[Dict] = None) -> 
                 return response.json()
 
         except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            body = e.response.text
+
+            # Handle 429 rate limiting — extract wait time from response
+            if status == 429:
+                wait_match = re.search(r"(\d+)\s*seconds?", body)
+                wait_time = int(wait_match.group(1)) + 2 if wait_match else 30
+                logger.warning(f"Rate limited on {endpoint}, waiting {wait_time}s")
+                time.sleep(wait_time)
+                continue
+
+            # Don't retry 400 Bad Request (e.g. invalid date) — it won't change
+            if status == 400:
+                logger.error(f"Bad request on {method} {endpoint}: {body}")
+                return None
+
+            # Don't retry 402 Insufficient credits — won't resolve
+            if status == 402:
+                logger.error(f"Insufficient credits on {method} {endpoint}")
+                return None
+
             logger.error(
-                f"HTTP error on {method} {endpoint}: {e.response.status_code} - {e.response.text}"
+                f"HTTP error on {method} {endpoint}: {status} - {body}"
             )
             if attempt < MAX_RETRIES - 1:
                 wait_time = RETRY_BACKOFF * (2 ** attempt)
@@ -118,14 +155,17 @@ def get_price_snapshot(ticker: str) -> Dict:
         if not data:
             return {}
 
+        # API wraps in "snapshot" key
+        snapshot = data.get("snapshot", data)
+
         # Map FDS response to standardized format (matching yfinance get_quote shape)
         result = {
             "ticker": ticker,
-            "price": data.get("last_price"),
-            "change": data.get("change"),
-            "pct_change": data.get("pct_change"),
-            "volume": data.get("volume"),
-            "name": data.get("name"),
+            "price": snapshot.get("price") or snapshot.get("last_price"),
+            "change": snapshot.get("day_change") or snapshot.get("change"),
+            "pct_change": snapshot.get("day_change_percent") or snapshot.get("pct_change"),
+            "volume": snapshot.get("volume"),
+            "name": snapshot.get("name"),
         }
 
         return result
@@ -155,11 +195,10 @@ def get_historical_prices(
         return []
 
     try:
-        endpoint = "/prices/historical"
+        endpoint = "/prices"
         params = {
             "ticker": ticker,
             "interval": interval,
-            "interval_multiplier": 1,
             "start_date": start,
             "end_date": end,
         }
@@ -168,14 +207,19 @@ def get_historical_prices(
         if not data:
             return []
 
-        # Extract price records from response
-        records = data.get("records", [])
+        # Extract price records — API uses "prices" key
+        records = data.get("prices", data.get("records", []))
         result = []
 
         for record in records:
+            # API uses "time" field, normalize to "date"
+            date_val = record.get("time", record.get("date", ""))
+            if isinstance(date_val, str) and "T" in date_val:
+                date_val = date_val.split("T")[0]
+
             result.append(
                 {
-                    "date": record.get("date"),
+                    "date": date_val,
                     "open": record.get("open"),
                     "high": record.get("high"),
                     "low": record.get("low"),

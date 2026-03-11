@@ -61,11 +61,14 @@ export function useCorrelationMatrix(lookback: number = 90) {
     queryKey: ['correlationMatrix', lookback],
     queryFn: async () => {
       const { data } = await axios.get<CorrelationData>(
-        `/api/correlation/matrix?lookback=${lookback}`
+        `/api/correlation/matrix?lookback=${lookback}`,
+        { timeout: 15000 } // 15 second timeout
       );
       return data;
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: 1,
+    retryDelay: 5000, // 5 second delay between retries
   });
 }
 
@@ -80,11 +83,14 @@ export function usePairsTrades(lookback: number = 90) {
     queryKey: ['pairsTrades', lookback],
     queryFn: async () => {
       const { data } = await axios.get(
-        `/api/correlation/pairs?lookback=${lookback}`
+        `/api/correlation/pairs?lookback=${lookback}`,
+        { timeout: 15000 } // 15 second timeout
       );
       return data;
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: 1,
+    retryDelay: 5000, // 5 second delay between retries
   });
 }
 
@@ -100,10 +106,13 @@ export function usePairDetails(
     queryKey: ['pairDetails', ticker1, ticker2, lookback],
     queryFn: async () => {
       const { data } = await axios.get<PairDetails>(
-        `/api/correlation/pair/${ticker1}/${ticker2}?lookback=${lookback}`
+        `/api/correlation/pair/${ticker1}/${ticker2}?lookback=${lookback}`,
+        { timeout: 15000 } // 15 second timeout
       );
       return data;
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: 1,
+    retryDelay: 5000, // 5 second delay between retries
   });
 }

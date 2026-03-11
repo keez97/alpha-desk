@@ -87,7 +87,7 @@ export function Events() {
           <EventDetail
             event={eventDetail || null}
             isLoading={detailLoading}
-            alphaDecay={alphaDecay}
+            alphaDecay={alphaDecay ?? undefined}
             onDelete={handleDelete}
             isDeleting={isDeleting}
           />

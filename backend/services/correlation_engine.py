@@ -2,13 +2,40 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Tuple
 import logging
+from datetime import datetime, timedelta
 from backend.services.data_provider import get_history
 from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
+from backend.services import fds_client
 
 logger = logging.getLogger(__name__)
 
 # Sector ETFs for correlation analysis
 SECTOR_TICKERS = list(SECTOR_ETFS.keys())
+
+
+def _get_history_cascade(ticker: str, days: int = 365) -> list:
+    """
+    Fetch price history: FDS (Tier 1) → data_provider (Tier 2).
+
+    Args:
+        ticker: Stock ticker symbol
+        days: Number of days to look back
+
+    Returns:
+        List of price records with at least 20 data points, or empty list on failure
+    """
+    if fds_client.is_available():
+        try:
+            end_date = (datetime.utcnow().date() - timedelta(days=1)).isoformat()
+            start_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+            records = fds_client.get_historical_prices(ticker, start_date, end_date)
+            if records and len(records) >= 20:
+                # Normalize: FDS uses 'date' field (which is what we need)
+                return records
+        except Exception as e:
+            logger.debug(f"FDS history {ticker}: {e}")
+    # Fallback to data_provider
+    return get_history(ticker, period="1y")
 
 
 def calculate_correlation_matrix(
@@ -37,8 +64,8 @@ def calculate_correlation_matrix(
 
         for ticker in SECTOR_TICKERS:
             try:
-                history = get_history(ticker, period="1y")
-                if not history or len(history) < lookback_days:
+                history = _get_history_cascade(ticker)
+                if not history or len(history) < 20:
                     logger.warning(f"Insufficient data for {ticker}")
                     continue
 
@@ -122,7 +149,12 @@ def _identify_pairs_trades(
 
     try:
         # Get RRG data to check quadrants
-        rrg_data = calculate_rrg(tickers)
+        try:
+            rrg_data = calculate_rrg(tickers)
+        except Exception as e:
+            logger.warning(f"RRG calculation failed for pairs analysis: {e}")
+            return pairs_trades
+
         if "error" in rrg_data or not rrg_data.get("sectors"):
             logger.warning("Could not fetch RRG data for pairs analysis")
             return pairs_trades
@@ -232,8 +264,8 @@ def get_pair_details(
     """
     try:
         # Fetch price data
-        history1 = get_history(ticker1, period="1y")
-        history2 = get_history(ticker2, period="1y")
+        history1 = _get_history_cascade(ticker1)
+        history2 = _get_history_cascade(ticker2)
 
         if not history1 or not history2:
             return {"error": f"Could not fetch data for {ticker1} or {ticker2}"}
