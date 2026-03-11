@@ -464,11 +464,43 @@ export async function fetchVixTermStructure(): Promise<VixTermStructureData> {
   };
 }
 
-// ── Upgraded Regime Data ───────────────────────────────────
+// ── Upgraded Regime Data (Institutional-grade) ─────────────
+export interface RegimeLayerData {
+  score: number;
+  weight: number;
+  weighted_contribution: number;
+  signals: RegimeSignal[];
+  details: Record<string, any>;
+}
+
+export interface WindhamState {
+  state: string;
+  label: string;
+  risk_level: string;
+  description: string;
+}
+
+export interface AlphaInsight {
+  category: string;
+  signal: string;
+  action: string;
+  conviction: string;
+}
+
 export interface UpgradedRegimeData extends RegimeData {
   recessionProbability: number;
   correlationRegime: string;
   macroSurpriseScore: number;
+  compositeScore: number;
+  windham: WindhamState;
+  layers: Record<string, RegimeLayerData>;
+  alphaInsights: AlphaInsight[];
+  systemicRisk: {
+    turbulenceIndex: number | null;
+    turbulencePercentile: number | null;
+    absorptionRatio: number | null;
+    absorptionPercentile: number | null;
+  };
 }
 
 export async function fetchUpgradedRegime(): Promise<UpgradedRegimeData> {
@@ -483,6 +515,16 @@ export async function fetchUpgradedRegime(): Promise<UpgradedRegimeData> {
     recessionProbability: regime.recession_probability ?? 50,
     correlationRegime: regime.correlation_regime || 'normal',
     macroSurpriseScore: regime.macro_surprise_score ?? 0,
+    compositeScore: regime.composite_score ?? 0,
+    windham: regime.windham || { state: 'resilient-calm', label: 'Normal Markets', risk_level: 'low', description: '' },
+    layers: regime.layers || {},
+    alphaInsights: regime.alpha_insights || [],
+    systemicRisk: {
+      turbulenceIndex: regime.systemic_risk?.turbulence_index ?? null,
+      turbulencePercentile: regime.systemic_risk?.turbulence_percentile ?? null,
+      absorptionRatio: regime.systemic_risk?.absorption_ratio ?? null,
+      absorptionPercentile: regime.systemic_risk?.absorption_percentile ?? null,
+    },
   };
 }
 
@@ -1489,6 +1531,10 @@ export interface Scenario {
   estimated_impact_pct: number;
   probability: number;
   severity: string;
+  probability_reasoning?: string;
+  affected_sectors?: string[];
+  historical_analog?: string;
+  key_indicators?: string[];
 }
 
 export interface ScenarioRiskData {
@@ -1697,6 +1743,8 @@ export interface MarketPositioning {
   speculative_net: number;
   commercial_percentile: number;
   speculative_percentile: number;
+  insight?: string;
+  bias?: string;
   extreme_flag:
     | 'commercial_extreme_long'
     | 'commercial_extreme_short'
@@ -1719,6 +1767,7 @@ export interface PositioningData {
   timestamp: string;
   markets: MarketPositioning[];
   alerts: PositioningAlert[];
+  summary?: string;
 }
 
 export async function fetchPositioning(): Promise<PositioningData> {
