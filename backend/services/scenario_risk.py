@@ -6,6 +6,7 @@ Data source cascade for price history:
   1. financialdatasets.ai (FDS) — reliable, paid API
   2. yfinance — fallback, rate-limited
 """
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _scenario_cache: Dict[str, Any] = {}
 _CACHE_TTL = 1800  # 30 minutes
+_CLAUDE_CACHE_TTL = 14400  # 4 hours for Claude-generated scenarios
 
 
 def calculate_var_95(returns: np.ndarray, regime: str = "neutral") -> float:
@@ -173,6 +175,71 @@ def find_historical_analogs() -> List[Dict[str, Any]]:
         return []
 
 
+def _parse_json_array_from_text(text: str) -> list | None:
+    """Try to extract a JSON array from text."""
+    try:
+        json_start = text.find("[")
+        json_end = text.rfind("]") + 1
+        if json_start >= 0 and json_end > json_start:
+            json_str = text[json_start:json_end]
+            parsed = json.loads(json_str)
+            if isinstance(parsed, list):
+                return parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def _generate_scenarios_with_claude(macro_data: dict) -> list:
+    """
+    Generate scenarios using Claude. Returns list of scenario dicts or empty list on failure.
+
+    Uses separate 4-hour cache from main scenario cache.
+    Falls back to empty list on any error (will trigger hardcoded scenarios fallback).
+    """
+    from backend.services.claude_service import _call_llm, USE_MOCK
+    from backend.prompts.scenario_prompts import get_scenario_generation_prompt
+
+    # In mock mode, don't call Claude
+    if USE_MOCK:
+        logger.info("Claude scenario generation skipped (mock mode)")
+        return []
+
+    try:
+        # Build prompt from macro data
+        prompt = get_scenario_generation_prompt(macro_data)
+
+        # System prompt for scenario generation
+        system_prompt = "You are a senior risk analyst at a macro hedge fund. Generate stress scenarios based on current market data. Return only valid JSON."
+
+        # Call Claude with Haiku (fast, cheap for scenario generation)
+        # Note: _call_llm uses the configured model from config.get_model_id()
+        text_content = _call_llm(system_prompt, prompt, max_tokens=1500)
+
+        if not text_content:
+            logger.warning("Claude returned empty response for scenarios")
+            return []
+
+        # Parse JSON array from response
+        parsed = _parse_json_array_from_text(text_content)
+
+        if not parsed or not isinstance(parsed, list):
+            logger.warning(f"Claude response was not a valid JSON array: {text_content[:200]}")
+            return []
+
+        # Validate that we have at least some scenarios
+        if len(parsed) > 0:
+            logger.info(f"Claude generated {len(parsed)} scenarios successfully")
+            return parsed
+        else:
+            logger.warning("Claude returned empty scenario list")
+            return []
+
+    except Exception as e:
+        logger.warning(f"Claude scenario generation failed: {e}")
+        return []
+
+
 def calculate_scenario_impacts() -> List[Dict[str, Any]]:
     """
     Calculate estimated portfolio impacts under specific stress scenarios:
@@ -228,43 +295,93 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
     """Fast version for /all endpoint — only scenarios, zero network calls.
     Skips VaR and analogs which need 365d price history and can take >15s.
     Accepts pre-fetched macro_data to avoid calling get_macro_data().
+
+    Flow:
+    1. Check Claude cache (4-hour TTL) for pre-generated scenarios
+    2. If not cached, try Claude generation (with fallback to hardcoded)
+    3. Return scenarios with VaR metrics
     """
     now = time.time()
     cache_key = "scenario_risk_fast"
+    claude_cache_key = "scenario_risk_claude"
 
+    # Check main cache first (30-min TTL)
     if cache_key in _scenario_cache:
         cached = _scenario_cache[cache_key]
         if now - cached["ts"] < _CACHE_TTL:
             return cached["data"]
 
     scenarios = []
+    var_95_historical = 0.0
+    var_95_regime_adjusted = 0.0
+    current_regime = "unknown"
+
     try:
         if macro_data:
             # Use pre-fetched macro data — no network calls
             vix = macro_data.get("^VIX", {}).get("price", 20.0)
-            scenarios = [
-                {
-                    "name": "VIX 2σ Spike",
-                    "description": f"Volatility increases to {vix * 2:.0f}",
-                    "estimated_impact_pct": -2.5,
-                    "probability": 0.15,
-                    "severity": "moderate",
-                },
-                {
-                    "name": "100bp Yield Steepen",
-                    "description": "Yield curve steepens by 100bp",
-                    "estimated_impact_pct": -1.5,
-                    "probability": 0.20,
-                    "severity": "mild",
-                },
-                {
-                    "name": "10% Correction",
-                    "description": "S&P 500 declines 10%",
-                    "estimated_impact_pct": -10.0,
-                    "probability": 0.25,
-                    "severity": "high",
-                },
-            ]
+
+            # Determine regime based on VIX
+            if vix > 25:
+                current_regime = "bear"
+            elif vix < 15:
+                current_regime = "bull"
+            else:
+                current_regime = "neutral"
+
+            # VIX-based VaR approximation
+            # VaR_95 = -(VIX / 100) * sqrt(1/252) * 1.65 * 100  (as a percentage)
+            var_95_historical = -((vix / 100.0) * np.sqrt(1.0 / 252.0) * 1.65 * 100.0)
+
+            # Regime-adjusted: multiply by 1.3 if VIX > 25 (bear regime)
+            if vix > 25:
+                var_95_regime_adjusted = var_95_historical * 1.3
+            else:
+                var_95_regime_adjusted = var_95_historical
+
+            # Try Claude-generated scenarios with separate 4-hour cache
+            if claude_cache_key in _scenario_cache:
+                claude_cached = _scenario_cache[claude_cache_key]
+                if now - claude_cached["ts"] < _CLAUDE_CACHE_TTL:
+                    logger.info("Using cached Claude scenarios")
+                    scenarios = claude_cached["data"]
+
+            # If not in Claude cache, try to generate
+            if not scenarios:
+                logger.info("Generating new Claude scenarios")
+                claude_scenarios = _generate_scenarios_with_claude(macro_data)
+
+                if claude_scenarios and len(claude_scenarios) > 0:
+                    # Cache the Claude result
+                    _scenario_cache[claude_cache_key] = {"ts": now, "data": claude_scenarios}
+                    scenarios = claude_scenarios
+                    logger.info(f"Successfully cached {len(scenarios)} Claude scenarios")
+                else:
+                    # Fall back to hardcoded scenarios
+                    logger.info("Claude failed, using hardcoded scenarios as fallback")
+                    scenarios = [
+                        {
+                            "name": "VIX 2σ Spike",
+                            "description": f"Volatility increases to {vix * 2:.0f}",
+                            "estimated_impact_pct": -2.5,
+                            "probability": 0.15,
+                            "severity": "moderate",
+                        },
+                        {
+                            "name": "100bp Yield Steepen",
+                            "description": "Yield curve steepens by 100bp",
+                            "estimated_impact_pct": -1.5,
+                            "probability": 0.20,
+                            "severity": "mild",
+                        },
+                        {
+                            "name": "10% Correction",
+                            "description": "S&P 500 declines 10%",
+                            "estimated_impact_pct": -10.0,
+                            "probability": 0.25,
+                            "severity": "high",
+                        },
+                    ]
         else:
             scenarios = calculate_scenario_impacts()
     except Exception as e:
@@ -272,9 +389,9 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
 
     result = {
         "timestamp": pd.Timestamp.utcnow().isoformat(),
-        "var_95_historical": 0.0,
-        "var_95_regime_adjusted": 0.0,
-        "current_regime": "unknown",
+        "var_95_historical": var_95_historical,
+        "var_95_regime_adjusted": var_95_regime_adjusted,
+        "current_regime": current_regime,
         "historical_analogs": [],
         "scenarios": scenarios,
     }

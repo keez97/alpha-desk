@@ -236,7 +236,7 @@ def get_macro_data() -> Dict:
                     pass
 
     # Tier 3: yfinance for tickers FRED and FDS don't cover
-    fallback_tickers = ["GC=F", "BTC-USD", "SPY", "QQQ", "IWM"]
+    fallback_tickers = ["GC=F", "BTC-USD", "SPY", "QQQ", "IWM", "XLF", "XLK", "XLE", "XLV"]
 
     for ticker in fallback_tickers:
         if ticker not in result:

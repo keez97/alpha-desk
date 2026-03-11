@@ -154,7 +154,7 @@ def get_macro_data() -> Dict[str, Any]:
 
     def _fetch():
         try:
-            tickers = ["^TNX", "^IRX", "^VIX", "DX-Y.NYB", "GC=F", "CL=F", "BTC-USD", "SPY", "QQQ", "IWM"]
+            tickers = ["^TNX", "^IRX", "^VIX", "DX-Y.NYB", "GC=F", "CL=F", "BTC-USD", "SPY", "QQQ", "IWM", "XLF", "XLK", "XLE", "XLV"]
             result = {}
             consecutive_failures = 0
 

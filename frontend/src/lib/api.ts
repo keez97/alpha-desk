@@ -273,6 +273,7 @@ const MACRO_NAMES: Record<string, string> = {
   '^TNX': '10Y Yield', '^IRX': '3M Yield', '^VIX': 'VIX',
   'DX-Y.NYB': 'Dollar', 'GC=F': 'Gold', 'CL=F': 'Crude Oil',
   'BTC-USD': 'Bitcoin', 'SPY': 'S&P 500', 'QQQ': 'Nasdaq', 'IWM': 'Russell 2000',
+  'XLF': 'Financials', 'XLK': 'Technology', 'XLE': 'Energy', 'XLV': 'Healthcare',
 };
 
 export async function fetchMacro(): Promise<MacroData> {

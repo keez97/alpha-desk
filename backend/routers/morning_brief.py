@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, date
 import asyncio
 import json
 import logging
+from backend.services.data_provider import get_macro_data
 
 
 def _json_serial(obj):
@@ -316,6 +317,145 @@ async def custom_report(body: dict):
             "data": {},
             "error": str(e)
         }
+
+
+@router.get("/scenario-drilldown")
+async def scenario_drilldown(scenario_name: str, session: Session = Depends(get_session)):
+    """Fetch detailed drill-down analysis for a specific scenario.
+
+    Takes scenario_name as query parameter and returns transmission mechanism,
+    historical precedent, positioning ideas, and leading indicators.
+
+    Uses 1-hour cache per scenario name.
+    """
+    import asyncio
+    from backend.services.scenario_risk import get_scenario_risk_fast
+    from backend.services.claude_service import _call_llm, USE_MOCK
+    from backend.prompts.scenario_prompts import get_scenario_drilldown_prompt
+
+    cache_key = f"scenario_drilldown_{scenario_name}"
+
+    # Check cache first
+    try:
+        cached = session.exec(
+            select(MorningBriefCache).where(
+                MorningBriefCache.cache_key == cache_key,
+                MorningBriefCache.expires_at > datetime.utcnow()
+            )
+        ).first()
+
+        if cached:
+            return {
+                "timestamp": datetime.utcnow().isoformat(),
+                "scenario_name": scenario_name,
+                "cached": True,
+                "data": json.loads(cached.data_json)
+            }
+    except Exception as e:
+        logger.warning(f"Cache read failed for drilldown, generating fresh: {e}")
+
+    # Get current macro data and scenarios
+    try:
+        macro_data = await asyncio.to_thread(get_macro_data)
+        risk_data = await asyncio.to_thread(get_scenario_risk_fast, macro_data)
+        scenarios = risk_data.get("scenarios", [])
+    except Exception as e:
+        logger.warning(f"Failed to fetch macro data: {e}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "scenario_name": scenario_name,
+            "error": "Could not fetch scenario data"
+        }
+
+    # Find the matching scenario
+    matching_scenario = None
+    for scenario in scenarios:
+        if scenario.get("name", "").lower() == scenario_name.lower():
+            matching_scenario = scenario
+            break
+
+    if not matching_scenario:
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "scenario_name": scenario_name,
+            "error": f"Scenario '{scenario_name}' not found"
+        }
+
+    # Generate drill-down using Claude if available
+    if USE_MOCK:
+        # Basic fallback response in mock mode
+        drilldown_data = {
+            "transmission_mechanism": f"In {scenario_name}, market conditions would deteriorate through cascading effects on portfolio composition.",
+            "historical_precedent": "Similar scenarios have occurred during previous market stress periods.",
+            "portfolio_positioning": [
+                "Consider defensive positioning",
+                "Reduce risk exposure gradually",
+                "Monitor daily market indicators"
+            ],
+            "leading_indicators": [
+                "Watch volatility measures",
+                "Monitor correlation changes",
+                "Track breadth signals"
+            ],
+            "counter_argument": "Market pricing may already be reflecting these risks."
+        }
+    else:
+        try:
+            # Build drill-down prompt and call Claude
+            prompt = get_scenario_drilldown_prompt(matching_scenario, macro_data)
+
+            system_prompt = "You are a senior macro strategist analyzing stress scenarios for a hedge fund. Provide detailed, actionable analysis."
+
+            # Use Sonnet for higher quality drill-down analysis
+            text_content = _call_llm(system_prompt, prompt, max_tokens=2000)
+
+            # Parse JSON response
+            try:
+                drilldown_data = json.loads(text_content)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                json_start = text_content.find("{")
+                json_end = text_content.rfind("}") + 1
+                if json_start >= 0 and json_end > json_start:
+                    json_str = text_content[json_start:json_end]
+                    drilldown_data = json.loads(json_str)
+                else:
+                    raise ValueError("Could not parse Claude response as JSON")
+
+        except Exception as e:
+            logger.warning(f"Claude drill-down failed: {e}")
+            # Basic fallback
+            drilldown_data = {
+                "transmission_mechanism": f"In {scenario_name}, market conditions would deteriorate through cascading effects.",
+                "historical_precedent": "Similar scenarios have occurred during previous market stress periods.",
+                "portfolio_positioning": ["Consider defensive positioning"],
+                "leading_indicators": ["Watch volatility measures"],
+                "counter_argument": "Market pricing may already be reflecting these risks."
+            }
+
+    # Cache result (best-effort)
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=1)  # 1-hour cache for drill-down
+        cache_entry = MorningBriefCache(
+            cache_key=cache_key,
+            data_json=json.dumps(drilldown_data, default=_json_serial),
+            expires_at=expires_at
+        )
+        session.add(cache_entry)
+        session.commit()
+    except Exception as e:
+        logger.warning(f"Cache write failed for drilldown: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "scenario_name": scenario_name,
+        "cached": False,
+        "data": drilldown_data
+    }
 
 
 @router.get("/all")

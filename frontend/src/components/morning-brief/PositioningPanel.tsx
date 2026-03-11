@@ -13,12 +13,12 @@ function PositioningBar({
   speculativePct: number;
   extremeFlag: string | null;
 }) {
-  // Commercial bar - left side (0% at center, negative = left)
-  const commColor = commercialPct > 50 ? 'bg-blue-500/70' : 'bg-blue-400/50';
+  // Commercial bar - left side (0% at center, negative = left) - Green (emerald)
+  const commColor = commercialPct > 50 ? 'bg-emerald-600/70' : 'bg-emerald-400/50';
   const commWidth = Math.abs(commercialPct - 50);
 
-  // Speculative bar - right side (0% at center, positive = right)
-  const specColor = speculativePct > 50 ? 'bg-purple-500/70' : 'bg-purple-400/50';
+  // Speculative bar - right side (0% at center, positive = right) - Amber/Orange
+  const specColor = speculativePct > 50 ? 'bg-amber-500/70' : 'bg-amber-400/50';
   const specWidth = Math.abs(speculativePct - 50);
 
   // Extreme flag styling
@@ -43,10 +43,10 @@ function PositioningBar({
       </div>
 
       {/* Positioning bar */}
-      <div className="flex h-5 items-center gap-1 rounded bg-neutral-800">
+      <div className="flex h-5 items-center gap-1 rounded bg-neutral-800" title="Commercial (Hedgers) on left, Speculative (Large Traders) on right">
         {/* Commercial (left side) */}
         {commercialPct > 50 && (
-          <div className="flex-shrink-0 bg-blue-600/70" style={{ width: `${(commercialPct - 50) * 2}%` }} />
+          <div className="flex-shrink-0 bg-emerald-600/70" style={{ width: `${(commercialPct - 50) * 2}%` }} />
         )}
 
         {/* Center divider */}
@@ -54,17 +54,45 @@ function PositioningBar({
 
         {/* Speculative (right side) */}
         {speculativePct > 50 && (
-          <div className="flex-shrink-0 bg-purple-600/70" style={{ width: `${(speculativePct - 50) * 2}%` }} />
+          <div className="flex-shrink-0 bg-amber-500/70" style={{ width: `${(speculativePct - 50) * 2}%` }} />
         )}
       </div>
 
       {/* Percentile labels */}
       <div className="flex justify-between text-[9px] text-neutral-600">
-        <span>C: {commercialPct}%</span>
-        <span>S: {speculativePct}%</span>
+        <span>Hedgers: {commercialPct}th pctl</span>
+        <span>Specs: {speculativePct}th pctl</span>
       </div>
     </div>
   );
+}
+
+function getPlainEnglish(message: string, bias: 'bullish' | 'bearish' | 'neutral'): string {
+  if (message.includes('reversal')) {
+    if (bias === 'bearish') {
+      return 'Smart money is positioning for a downturn. Consider reducing risk.';
+    } else if (bias === 'bullish') {
+      return 'Smart money is turning bullish. A price recovery may be ahead.';
+    }
+  }
+
+  if (message.includes('divergence')) {
+    if (bias === 'bearish') {
+      return 'Price is rising but institutional positioning disagrees. Caution warranted.';
+    } else if (bias === 'bullish') {
+      return 'Price is falling but institutions are accumulating. Could be a buying opportunity.';
+    }
+  }
+
+  if (message.includes('extreme')) {
+    if (bias === 'bearish') {
+      return 'Positioning is at extreme bearish levels. Historically, this often precedes a reversal upward.';
+    } else if (bias === 'bullish') {
+      return 'Positioning is at extreme bullish levels. Historically, this often precedes a pullback.';
+    }
+  }
+
+  return 'Monitor this market closely for potential shifts.';
 }
 
 function AlertBadge({
@@ -82,6 +110,7 @@ function AlertBadge({
       : 'border-amber-600/50 bg-amber-900/20 text-amber-400';
 
   const biasIcon = bias === 'bullish' ? '📈' : bias === 'bearish' ? '📉' : '➡️';
+  const plainEnglish = getPlainEnglish(message, bias);
 
   return (
     <div className={`rounded border p-2 text-xs space-y-1 ${colors}`}>
@@ -89,6 +118,7 @@ function AlertBadge({
         <span className="text-sm">{biasIcon}</span>
         <div className="flex-1 leading-snug">{message}</div>
       </div>
+      <div className="text-neutral-300 italic pl-6">{plainEnglish}</div>
     </div>
   );
 }
@@ -113,12 +143,12 @@ export function PositioningPanel() {
       {/* Legend */}
       <div className="flex gap-3 text-xs text-neutral-500">
         <div className="flex items-center gap-1">
-          <div className="h-2 w-2 rounded-full bg-blue-500" />
-          <span>Commercial</span>
+          <div className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span>Hedgers (Commercial)</span>
         </div>
         <div className="flex items-center gap-1">
-          <div className="h-2 w-2 rounded-full bg-purple-500" />
-          <span>Speculative</span>
+          <div className="h-2 w-2 rounded-full bg-amber-500" />
+          <span>Speculators (Large Traders)</span>
         </div>
       </div>
 
@@ -154,7 +184,7 @@ export function PositioningPanel() {
 
       {/* Info footer */}
       <div className="border-t border-neutral-800 pt-2 text-[9px] text-neutral-600">
-        Percentiles vs 1-year range • Extremes (90th/10th) show reversal risk
+        Percentiles vs 52-week range • Extreme positioning (above 90th or below 10th percentile) often signals mean-reversion risk
       </div>
     </div>
   );
