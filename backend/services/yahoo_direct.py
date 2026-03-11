@@ -21,7 +21,7 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 
-import requests
+import httpx
 
 from backend.services.cache import TTLCache
 
@@ -33,12 +33,11 @@ _CACHE_TTL_HISTORY = 1800    # 30 min for history
 
 _BASE_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 
-_session = requests.Session()
-_session.headers.update({
+_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/120.0.0.0 Safari/537.36",
-})
+}
 
 # Independent rate-limit tracking
 _rate_limited_until = 0
@@ -63,8 +62,8 @@ def _reset_failures():
 def _record_failure():
     global _consecutive_failures
     _consecutive_failures += 1
-    if _consecutive_failures >= 4:
-        _mark_rate_limited(90)
+    if _consecutive_failures >= 8:
+        _mark_rate_limited(60)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +91,9 @@ def _fetch_chart(
     try:
         url = f"{_BASE_URL}/{ticker}"
         params = {"interval": interval, "range": range_str}
-        resp = _session.get(url, params=params, timeout=timeout)
+
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.get(url, headers=_HEADERS, params=params)
 
         if resp.status_code == 429:
             _mark_rate_limited(120)
@@ -114,7 +115,7 @@ def _fetch_chart(
         _cache.set(cache_key, parsed, _CACHE_TTL_QUOTE if range_str == "1d" else _CACHE_TTL_HISTORY)
         return parsed
 
-    except requests.Timeout:
+    except httpx.TimeoutException:
         _record_failure()
         logger.warning("yahoo_direct %s: timeout", ticker)
         return None
@@ -272,16 +273,30 @@ def get_overnight_return(ticker: str) -> Optional[Dict[str, float]]:
 # ---------------------------------------------------------------------------
 def batch_quotes(tickers: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    Fetch quotes for multiple tickers. Returns dict keyed by ticker.
-    Stops early if rate-limited.
+    Fetch quotes for multiple tickers concurrently. Returns dict keyed by ticker.
+    Uses ThreadPoolExecutor for parallel fetching.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if _is_rate_limited():
+        return {}
+
     results = {}
-    for ticker in tickers:
-        if _is_rate_limited():
-            break
-        quote = get_quote(ticker)
-        if quote:
-            results[ticker] = quote
+
+    def _fetch_one(ticker: str):
+        return ticker, get_quote(ticker)
+
+    with ThreadPoolExecutor(max_workers=min(len(tickers), 8)) as executor:
+        futures = {executor.submit(_fetch_one, t): t for t in tickers}
+        for future in as_completed(futures, timeout=30):
+            try:
+                ticker, quote = future.result(timeout=15)
+                if quote:
+                    results[ticker] = quote
+            except Exception as e:
+                ticker = futures[future]
+                logger.debug(f"batch_quotes failed for {ticker}: {e}")
+
     return results
 
 

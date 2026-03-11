@@ -14,6 +14,7 @@ from typing import Dict, List, Any, Optional
 import numpy as np
 import pandas as pd
 from backend.services import fds_client as fds
+from backend.services import yahoo_direct as yd
 from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
 from backend.services.regime_detector import detect_regime
 from backend.services.yfinance_service import get_history, get_macro_data
@@ -92,7 +93,16 @@ def detect_quadrant_transitions() -> List[Dict[str, Any]]:
 
 
 def _get_history_cascade(ticker: str, days: int = 365) -> List[Dict]:
-    """Fetch price history using FDS → yfinance cascade."""
+    """Fetch price history using yahoo_direct → FDS → yfinance cascade."""
+    # Tier 0: yahoo_direct (fastest, no library overhead)
+    try:
+        records = yd.get_history(ticker, range_str="1y", interval="1d")
+        if records and len(records) >= 20:
+            return records
+    except Exception as e:
+        logger.debug(f"yahoo_direct history {ticker}: {e}")
+
+    # Tier 1: FDS
     if fds.is_available():
         try:
             end_date = (datetime.utcnow().date() - timedelta(days=1)).isoformat()
@@ -102,6 +112,8 @@ def _get_history_cascade(ticker: str, days: int = 365) -> List[Dict]:
                 return records
         except Exception as e:
             logger.debug(f"FDS history {ticker}: {e}")
+
+    # Tier 3: yfinance (last resort)
     hist = get_history(ticker, period="1y")
     return hist if hist else []
 

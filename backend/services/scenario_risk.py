@@ -14,6 +14,7 @@ from typing import Dict, List, Any
 import numpy as np
 import pandas as pd
 from backend.services import fds_client as fds
+from backend.services import yahoo_direct as yd
 from backend.services.yfinance_service import get_history, get_macro_data
 from backend.services.regime_detector import detect_regime
 
@@ -42,7 +43,15 @@ def calculate_var_95(returns: np.ndarray, regime: str = "neutral") -> float:
 
 
 def _get_price_history_cascade(ticker: str, days: int = 365) -> List[Dict]:
-    """Fetch price history using FDS → yfinance cascade."""
+    """Fetch price history using yahoo_direct → FDS → yfinance cascade."""
+    # --- Tier 0: yahoo_direct (fastest) ---
+    try:
+        records = yd.get_history(ticker, range_str="1y", interval="1d")
+        if records and len(records) >= 50:
+            return records
+    except Exception as e:
+        logger.debug(f"yahoo_direct history {ticker}: {e}")
+
     # --- Tier 1: FDS ---
     if fds.is_available():
         try:
@@ -54,7 +63,7 @@ def _get_price_history_cascade(ticker: str, days: int = 365) -> List[Dict]:
         except Exception as e:
             logger.debug(f"FDS history {ticker}: {e}")
 
-    # --- Tier 2: yfinance ---
+    # --- Tier 3: yfinance (last resort) ---
     hist = get_history(ticker, period="1y")
     return hist if hist else []
 

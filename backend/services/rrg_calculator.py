@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from backend.services.data_provider import get_history
 from backend.services import fds_client as fds
+from backend.services import yahoo_direct as yd
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,16 @@ _CACHE_TTL = 300  # 5 minutes
 
 
 def _get_history_cascade(ticker: str, days: int = 365) -> list:
-    """Fetch price history: FDS (Tier 1) → data_provider (Tier 2)."""
+    """Fetch price history: yahoo_direct (Tier 0) → FDS (Tier 1) → data_provider (Tier 2)."""
+    # Tier 0: yahoo_direct
+    try:
+        records = yd.get_history(ticker, range_str="1y", interval="1d")
+        if records and len(records) >= 20:
+            return records
+    except Exception as e:
+        logger.debug(f"yahoo_direct history {ticker}: {e}")
+
+    # Tier 1: FDS
     if fds.is_available():
         try:
             end_date = (datetime.utcnow().date() - timedelta(days=1)).isoformat()
@@ -39,6 +49,8 @@ def _get_history_cascade(ticker: str, days: int = 365) -> list:
                 return records
         except Exception as e:
             logger.debug(f"FDS history {ticker}: {e}")
+
+    # Tier 3: data_provider (yfinance)
     return get_history(ticker, period="1y")
 
 

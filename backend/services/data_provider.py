@@ -17,6 +17,7 @@ from backend.services.cache import cache
 from backend.services import fds_client as fds
 from backend.services import fred_client as fred
 from backend.services import yfinance_service as yf_svc
+from backend.services import yahoo_direct as yd
 from backend.config import (
     CACHE_TTL_QUOTE,
     CACHE_TTL_HISTORY,
@@ -80,18 +81,28 @@ def get_quote(ticker: str) -> Dict:
         logger.debug(f"Quote for {ticker} served from cache")
         return cached_result
 
+    # Tier 0: yahoo_direct (fastest, no library overhead)
+    try:
+        result = yd.get_quote(ticker)
+        if result and result.get("price"):
+            logger.info(f"Quote for {ticker} served from yahoo_direct (Tier 0)")
+            cache.set(cache_key, result, CACHE_TTL_QUOTE)
+            return result
+    except Exception as e:
+        logger.warning(f"yahoo_direct quote fetch failed for {ticker}: {e}")
+
     # Tier 1: FDS
     if fds.is_available():
         try:
             result = fds.get_price_snapshot(ticker)
-            if result:
+            if result and result.get("price"):
                 logger.info(f"Quote for {ticker} served from FDS (Tier 1)")
                 cache.set(cache_key, result, CACHE_TTL_QUOTE)
                 return result
         except Exception as e:
             logger.warning(f"FDS quote fetch failed for {ticker}: {e}")
 
-    # Tier 3: yfinance (fallback)
+    # Tier 3: yfinance (last resort)
     try:
         result = yf_svc.get_quote(ticker)
         if result:
@@ -141,9 +152,22 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d") -> List[D
             logger.warning(f"yfinance history fetch failed for {ticker}: {e}")
         return []
 
-    # For daily data, try Tier 1 first
-    start_date, end_date = _period_to_dates(period)
+    # Map period to Yahoo range string
+    yahoo_range_map = {"1y": "1y", "6mo": "6mo", "3mo": "3mo", "1mo": "1mo", "5d": "5d"}
+    yahoo_range = yahoo_range_map.get(period, period)
 
+    # Tier 0: yahoo_direct
+    try:
+        result = yd.get_history(ticker, range_str=yahoo_range, interval=interval)
+        if result:
+            logger.info(f"History for {ticker} served from yahoo_direct (Tier 0)")
+            cache.set(cache_key, result, CACHE_TTL_HISTORY)
+            return result
+    except Exception as e:
+        logger.warning(f"yahoo_direct history fetch failed for {ticker}: {e}")
+
+    # Tier 1: FDS
+    start_date, end_date = _period_to_dates(period)
     if fds.is_available():
         try:
             result = fds.get_historical_prices(ticker, start=start_date, end=end_date, interval="day")
@@ -154,7 +178,7 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d") -> List[D
         except Exception as e:
             logger.warning(f"FDS history fetch failed for {ticker}: {e}")
 
-    # Tier 3: yfinance (fallback)
+    # Tier 3: yfinance (last resort)
     try:
         result = yf_svc.get_history(ticker, period=period, interval=interval)
         if result:
@@ -218,56 +242,23 @@ def get_macro_data() -> Dict:
             except Exception as e:
                 logger.warning(f"Error processing FRED data for {fred_series}: {e}")
 
-    # Tier 1.5: FDS for stock-based macro tickers (with real daily changes)
-    fds_macro_tickers = {
-        "SPY": "SPY", "QQQ": "QQQ", "IWM": "IWM",
-        "GLD": "GC=F",   # Gold ETF → maps to Gold key
-        "IBIT": "BTC-USD",  # Bitcoin ETF → maps to Bitcoin key
-    }
-    if fds.is_available():
-        for fds_ticker, display_key in fds_macro_tickers.items():
-            if display_key not in result:
-                try:
-                    snapshot = fds.get_price_snapshot(fds_ticker)
-                    if snapshot and snapshot.get("price"):
-                        result[display_key] = {
-                            "price": snapshot["price"],
-                            "change": snapshot.get("change") or 0,
-                            "pct_change": snapshot.get("pct_change") or 0,
-                        }
-                        logger.debug(f"Macro {display_key} served from FDS via {fds_ticker} (Tier 1.5)")
-                except Exception:
-                    pass
+    # Tier 0: yahoo_direct for equity/commodity/crypto tickers (parallel batch)
+    equity_tickers = ["SPY", "QQQ", "IWM", "GC=F", "BTC-USD"]
+    missing_equities = [t for t in equity_tickers if t not in result]
 
-    # Tier 3: yfinance for tickers FRED and FDS don't cover (parallel fetching)
-    fallback_tickers = [t for t in ["GC=F", "BTC-USD", "SPY", "QQQ", "IWM", "XLF", "XLK", "XLE", "XLV"] if t not in result]
-
-    if fallback_tickers:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        def _fetch_yf_quote(ticker):
-            try:
-                quote = yf_svc.get_quote(ticker)
-                if quote and "price" in quote:
-                    return ticker, {
-                        "price": quote.get("price", 0),
+    if missing_equities:
+        try:
+            yd_quotes = yd.batch_quotes(missing_equities)
+            for ticker, quote in yd_quotes.items():
+                if quote and quote.get("price"):
+                    result[ticker] = {
+                        "price": quote["price"],
                         "change": quote.get("change", 0),
                         "pct_change": quote.get("pct_change", 0),
                     }
-            except Exception as e:
-                logger.debug(f"yfinance macro fetch failed for {ticker}: {e}")
-            return ticker, None
-
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(_fetch_yf_quote, t): t for t in fallback_tickers}
-            for future in as_completed(futures, timeout=8):
-                try:
-                    ticker, data = future.result(timeout=6)
-                    if data:
-                        result[ticker] = data
-                        logger.debug(f"Macro {ticker} served from yfinance (Tier 3)")
-                except Exception:
-                    pass
+                    logger.debug(f"Macro {ticker} served from yahoo_direct (Tier 0)")
+        except Exception as e:
+            logger.warning(f"yahoo_direct batch macro fetch failed: {e}")
 
     if result:
         logger.info(f"Macro data served from FDS/FRED/yfinance (mixed tiers)")
@@ -299,7 +290,40 @@ def get_sector_data(period: str = "1D") -> List[Dict]:
         logger.debug(f"Sector data (period={period}) served from cache")
         return cached_result
 
-    # Tier 3: yfinance only (no FRED/FDS tier)
+    # Tier 0: yahoo_direct sector charts
+    sector_etfs = {
+        "XLK": "Information Technology", "XLV": "Healthcare",
+        "XLF": "Financials", "XLY": "Consumer Discretionary",
+        "XLP": "Consumer Staples", "XLE": "Energy",
+        "XLRE": "Real Estate", "XLI": "Industrials",
+        "XLU": "Utilities", "XLC": "Communication Services",
+    }
+    try:
+        # Map period format (1D→5d, 5D→10d, etc.)
+        range_map = {"1D": "5d", "5D": "10d", "1M": "1mo", "3M": "3mo", "1Y": "1y"}
+        range_str = range_map.get(period, "1mo")
+        yd_quotes = yd.batch_quotes(list(sector_etfs.keys()))
+        if yd_quotes and len(yd_quotes) >= 5:
+            result = []
+            for ticker, name in sector_etfs.items():
+                q = yd_quotes.get(ticker)
+                if q:
+                    result.append({
+                        "ticker": ticker,
+                        "sector": name,
+                        "price": q.get("price", 0),
+                        "daily_change": q.get("change", 0),
+                        "daily_pct_change": q.get("pct_change", 0),
+                        "chart_data": [],  # Basic sector data doesn't need chart_data
+                    })
+            if result:
+                logger.info(f"Sector data served from yahoo_direct (Tier 0)")
+                cache.set(cache_key, result, CACHE_TTL_SECTOR)
+                return result
+    except Exception as e:
+        logger.warning(f"yahoo_direct sector fetch failed: {e}")
+
+    # Tier 3: yfinance fallback
     try:
         result = yf_svc.get_sector_data(period=period)
         if result:
@@ -314,29 +338,30 @@ def get_sector_data(period: str = "1D") -> List[Dict]:
 
 
 def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_days: int = 0, fds_days: int = 30) -> Optional[Dict]:
-    """Fetch chart data for a single sector ETF. Uses FDS → yfinance cascade."""
+    """Fetch chart data for a single sector ETF. Uses yahoo_direct → FDS → yfinance cascade."""
     try:
-        # Tier 1: FDS with proper date range for the requested period
-        history = None
-        if fds.is_available():
+        # Map yf_period to yahoo range string
+        range_map = {"5d": "5d", "1mo": "1mo", "3mo": "3mo", "6mo": "6mo", "1y": "1y"}
+        range_str = range_map.get(yf_period, "1mo")
+
+        # Tier 0: yahoo_direct (fastest)
+        history = yd.get_history(ticker, range_str=range_str, interval="1d")
+
+        # Tier 1: FDS fallback
+        if not history and fds.is_available():
             try:
                 from datetime import datetime as dt
                 end_date = (dt.utcnow().date() - timedelta(days=1)).isoformat()
                 start_date = (dt.utcnow().date() - timedelta(days=fds_days)).isoformat()
                 history = fds.get_historical_prices(ticker, start=start_date, end=end_date)
-                if history and len(history) >= 2:
-                    logger.debug(f"Fetched {len(history)} days of FDS data for {ticker}")
-                else:
-                    history = None
             except Exception as e:
                 logger.debug(f"FDS fetch failed for {ticker}: {e}")
-                history = None
 
-        # Tier 2: yfinance fallback
+        # Tier 3: yfinance last resort
         if not history:
-            history = get_history(ticker, period=yf_period, interval="1d")
+            history = yf_svc.get_history(ticker, period=yf_period, interval="1d")
 
-        if not history or len(history) == 0:
+        if not history or len(history) < 2:
             logger.warning(f"No history data for {ticker}")
             return None
 
@@ -347,7 +372,8 @@ def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_day
         chart_data = [h.get("close", 0) for h in history]
         chart_dates = [h.get("date", h.get("time", "")) for h in history]
 
-        quote = get_quote(ticker)
+        # Get price + daily change from yahoo_direct quote
+        quote = yd.get_quote(ticker) or {}
 
         # Compute daily change from chart data if quote is empty
         daily_pct_change = quote.get("pct_change", 0)
@@ -357,7 +383,7 @@ def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_day
         return {
             "ticker": ticker,
             "sector": sector_name,
-            "price": quote.get("price", 0),
+            "price": quote.get("price", chart_data[-1] if chart_data else 0),
             "daily_change": quote.get("change", 0),
             "daily_pct_change": daily_pct_change,
             "chart_data": chart_data,
