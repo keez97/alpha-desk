@@ -31,80 +31,66 @@ def _strip_html(text: str) -> str:
 
 
 # ─── DuckDuckGo News Search ────────────────────────────────────────────
+_ddgs_instance = None
+
+def _get_ddgs():
+    """Get or create shared DDGS instance."""
+    global _ddgs_instance
+    if _ddgs_instance is None:
+        try:
+            from duckduckgo_search import DDGS
+            _ddgs_instance = DDGS()
+        except ImportError:
+            logger.warning("duckduckgo_search not installed, DDG news unavailable")
+            return None
+    return _ddgs_instance
+
+
 def _search_ddg_news(query: str, max_results: int = 8) -> List[Dict[str, Any]]:
     """
-    Search DuckDuckGo for recent news articles.
+    Search DuckDuckGo for recent news articles using duckduckgo_search library.
 
-    Uses the DDG HTML search (no API key needed). Parses news results
-    and returns structured article data.
+    Uses the dedicated news endpoint for real, timestamped headlines.
     """
     articles = []
     try:
-        # DuckDuckGo news search via their lite/html endpoint
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        ddgs = _get_ddgs()
+        if ddgs is None:
+            return articles
 
-        # Use DDG instant answers API for news
-        params = {
-            "q": query,
-            "format": "json",
-            "t": "alphaDesk",
-            "no_redirect": "1",
-        }
+        results = ddgs.news(query, max_results=max_results, timelimit="d")
+        for r in results:
+            headline = r.get("title", "").strip()
+            if not headline or len(headline) < 10:
+                continue
+            articles.append({
+                "headline": headline[:200],
+                "source": r.get("source", "News"),
+                "url": r.get("url", ""),
+                "snippet": r.get("body", "")[:300],
+                "published_at": r.get("date", datetime.now(timezone.utc).isoformat()),
+            })
+    except Exception as e:
+        logger.warning(f"DDG news search failed for '{query}': {e}")
 
-        with httpx.Client(timeout=8.0, follow_redirects=True) as client:
-            resp = client.get("https://api.duckduckgo.com/", params=params, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                # DDG API returns RelatedTopics
-                for topic in data.get("RelatedTopics", [])[:max_results]:
-                    if isinstance(topic, dict) and topic.get("Text"):
+    # Fallback: try text search if news returns nothing
+    if not articles:
+        try:
+            ddgs = _get_ddgs()
+            if ddgs:
+                results = ddgs.text(f"{query} news today", max_results=max_results, timelimit="d")
+                for r in results:
+                    title = r.get("title", "").strip()
+                    if title and len(title) > 15:
                         articles.append({
-                            "headline": topic.get("Text", "")[:200],
-                            "source": "DuckDuckGo",
-                            "url": topic.get("FirstURL", ""),
+                            "headline": title[:200],
+                            "source": "Web Search",
+                            "url": r.get("href", ""),
+                            "snippet": r.get("body", "")[:300],
                             "published_at": datetime.now(timezone.utc).isoformat(),
                         })
-
-            # Also try DDG news search via HTML scraping as backup
-            if len(articles) < 3:
-                news_resp = client.get(
-                    "https://html.duckduckgo.com/html/",
-                    params={"q": f"{query} news today", "t": "alphaDesk"},
-                    headers=headers,
-                )
-                if news_resp.status_code == 200:
-                    # Simple regex to extract result snippets
-                    text = news_resp.text
-                    # Extract result snippets
-                    snippets = re.findall(
-                        r'class="result__snippet"[^>]*>(.*?)</a',
-                        text, re.DOTALL
-                    )
-                    titles = re.findall(
-                        r'class="result__a"[^>]*>(.*?)</a',
-                        text, re.DOTALL
-                    )
-                    urls = re.findall(
-                        r'class="result__url"[^>]*href="([^"]*)"',
-                        text
-                    )
-
-                    for i, title in enumerate(titles[:max_results]):
-                        clean_title = _strip_html(title).strip()
-                        if clean_title and len(clean_title) > 15:
-                            articles.append({
-                                "headline": clean_title[:200],
-                                "source": "Web Search",
-                                "url": urls[i] if i < len(urls) else "",
-                                "snippet": _strip_html(snippets[i])[:300] if i < len(snippets) else "",
-                                "published_at": datetime.now(timezone.utc).isoformat(),
-                            })
-
-    except Exception as e:
-        logger.warning(f"DDG search failed for '{query}': {e}")
+        except Exception as e:
+            logger.warning(f"DDG text search fallback failed: {e}")
 
     return articles
 

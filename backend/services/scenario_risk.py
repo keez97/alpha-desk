@@ -391,11 +391,9 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
             historical_analogs = analog_cached["data"]
 
     if not historical_analogs:
-        # Try quick analog computation using FDS-cached SPY data
+        # Try quick analog computation using yahoo_direct SPY history
         try:
-            from backend.services.cache import cache as global_cache
-            # Check if SPY history is already in global cache
-            spy_cached = global_cache.get("history:SPY:1y:1d")
+            spy_cached = yd.get_history("SPY", range_str="1y", interval="1d")
             if spy_cached and len(spy_cached) >= 100:
                 prices = [h["close"] for h in spy_cached]
                 ma50 = np.mean(prices[-50:]) if len(prices) >= 50 else prices[-1]
