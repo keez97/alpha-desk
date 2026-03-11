@@ -373,12 +373,70 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"Scenario risk fast failed: {e}")
 
+    # Try to include historical analogs from cache or quick computation
+    historical_analogs = []
+    analog_cache_key = "historical_analogs_cache"
+    if analog_cache_key in _scenario_cache:
+        analog_cached = _scenario_cache[analog_cache_key]
+        if now - analog_cached["ts"] < _CACHE_TTL:
+            historical_analogs = analog_cached["data"]
+
+    if not historical_analogs:
+        # Try quick analog computation using FDS-cached SPY data
+        try:
+            from backend.services.cache import cache as global_cache
+            # Check if SPY history is already in global cache
+            spy_cached = global_cache.get("history:SPY:1y:1d")
+            if spy_cached and len(spy_cached) >= 100:
+                prices = [h["close"] for h in spy_cached]
+                ma50 = np.mean(prices[-50:]) if len(prices) >= 50 else prices[-1]
+                current_momentum = (prices[-1] - ma50) / ma50 * 100
+
+                analogs_list = []
+                window_size = 20
+                for i in range(len(spy_cached) - window_size - 20):
+                    window_prices = prices[i : i + window_size]
+                    period_ma = np.mean(window_prices)
+                    period_momentum = (window_prices[-1] - period_ma) / period_ma * 100
+
+                    future_prices = prices[i + window_size : i + window_size + 20]
+                    if len(future_prices) < 20:
+                        continue
+
+                    momentum_diff = abs(current_momentum - period_momentum)
+                    vix_diff = abs(vix - 20.0)
+                    similarity = max(0, 100 - (vix_diff * 2 + momentum_diff * 1.5))
+
+                    if similarity > 40:
+                        start_date = spy_cached[i].get("date", str(i))
+                        end_idx = min(i + window_size, len(spy_cached) - 1)
+                        end_date = spy_cached[end_idx].get("date", str(end_idx))
+
+                        ret_5d = (future_prices[4] / window_prices[-1] - 1) * 100
+                        ret_10d = (future_prices[9] / window_prices[-1] - 1) * 100
+                        ret_20d = (future_prices[19] / window_prices[-1] - 1) * 100
+
+                        analogs_list.append({
+                            "period": f"{start_date} to {end_date}",
+                            "similarity_score": round(similarity, 1),
+                            "subsequent_5d_return": round(ret_5d, 2),
+                            "subsequent_10d_return": round(ret_10d, 2),
+                            "subsequent_20d_return": round(ret_20d, 2),
+                        })
+
+                analogs_list.sort(key=lambda x: x["similarity_score"], reverse=True)
+                historical_analogs = analogs_list[:3]
+                if historical_analogs:
+                    _scenario_cache[analog_cache_key] = {"ts": now, "data": historical_analogs}
+        except Exception as e:
+            logger.debug(f"Quick analog computation failed: {e}")
+
     result = {
         "timestamp": pd.Timestamp.utcnow().isoformat(),
         "var_95_historical": round(var_95_historical, 2),
         "var_95_regime_adjusted": round(var_95_regime_adjusted, 2),
         "current_regime": current_regime,
-        "historical_analogs": [],
+        "historical_analogs": historical_analogs,
         "scenarios": scenarios,
     }
 

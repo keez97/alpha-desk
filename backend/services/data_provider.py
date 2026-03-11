@@ -219,19 +219,23 @@ def get_macro_data() -> Dict:
                 logger.warning(f"Error processing FRED data for {fred_series}: {e}")
 
     # Tier 1.5: FDS for stock-based macro tickers (with real daily changes)
-    fds_macro_tickers = ["SPY", "QQQ", "IWM"]
+    fds_macro_tickers = {
+        "SPY": "SPY", "QQQ": "QQQ", "IWM": "IWM",
+        "GLD": "GC=F",   # Gold ETF → maps to Gold key
+        "IBIT": "BTC-USD",  # Bitcoin ETF → maps to Bitcoin key
+    }
     if fds.is_available():
-        for ticker in fds_macro_tickers:
-            if ticker not in result:
+        for fds_ticker, display_key in fds_macro_tickers.items():
+            if display_key not in result:
                 try:
-                    snapshot = fds.get_price_snapshot(ticker)
+                    snapshot = fds.get_price_snapshot(fds_ticker)
                     if snapshot and snapshot.get("price"):
-                        result[ticker] = {
+                        result[display_key] = {
                             "price": snapshot["price"],
                             "change": snapshot.get("change") or 0,
                             "pct_change": snapshot.get("pct_change") or 0,
                         }
-                        logger.debug(f"Macro {ticker} served from FDS (Tier 1.5)")
+                        logger.debug(f"Macro {display_key} served from FDS via {fds_ticker} (Tier 1.5)")
                 except Exception:
                     pass
 
@@ -254,7 +258,7 @@ def get_macro_data() -> Dict:
 
     if result:
         logger.info(f"Macro data served from FDS/FRED/yfinance (mixed tiers)")
-        cache.set(cache_key, result, CACHE_TTL_MACRO)
+        cache.set(cache_key, result, max(CACHE_TTL_MACRO, 1800))  # At least 30 min cache
         return result
 
     logger.warning("Could not fetch macro data from any tier")
@@ -332,12 +336,17 @@ def _fetch_single_sector(ticker: str, sector_name: str, yf_period: str, trim_day
 
         quote = get_quote(ticker)
 
+        # Compute daily change from chart data if quote is empty
+        daily_pct_change = quote.get("pct_change", 0)
+        if not daily_pct_change and len(chart_data) >= 2 and chart_data[-2] > 0:
+            daily_pct_change = round((chart_data[-1] / chart_data[-2] - 1) * 100, 2)
+
         return {
             "ticker": ticker,
             "sector": sector_name,
             "price": quote.get("price", 0),
             "daily_change": quote.get("change", 0),
-            "daily_pct_change": quote.get("pct_change", 0),
+            "daily_pct_change": daily_pct_change,
             "chart_data": chart_data,
             "chart_dates": chart_dates,
         }
@@ -400,8 +409,8 @@ def get_sector_chart_data(period: str = "1M") -> Dict[str, Any]:
 
     sectors = []
 
-    # Fetch all sectors concurrently (3 workers to respect FDS rate limits)
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    # Fetch all sectors concurrently (5 workers to respect FDS rate limits)
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {
             executor.submit(_fetch_single_sector, ticker, name, yf_period, trim_days, fds_days): ticker
             for ticker, name in sector_etfs.items()

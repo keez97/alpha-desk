@@ -603,69 +603,82 @@ def get_sentiment_velocity(tickers: Optional[List[str]] = None) -> Dict[str, Any
 
 
 def get_sentiment_velocity_fast(macro_data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Fast version for /all endpoint — generates sentiment from macro data, no RSS.
+    """Fast version for /all endpoint — uses web search for real headlines.
 
-    RSS feeds are blocked from Railway cloud IPs, so the full sentiment velocity
-    pipeline always times out. This function generates directionally accurate
-    sentiment from already-cached macro data (fetched in /all Batch 1).
+    Tries web search (DDG + RSS) first for real headlines, falls back to
+    synthetic headlines from macro data if web search returns nothing.
     """
     now = datetime.now(timezone.utc)
 
     # Use provided macro data or empty dict
     macro = macro_data or {}
 
-    # Derive sentiment from VIX and price action
-    vix_data = macro.get("^VIX", {})
-    vix_price = vix_data.get("price", 20.0)
-    vix_change = vix_data.get("pct_change", 0)
-    spy_data = macro.get("SPY", {})
-    spy_change = spy_data.get("pct_change", 0)
-    qqq_data = macro.get("QQQ", {})
-    qqq_change = qqq_data.get("pct_change", 0)
+    # Try to get real headlines from web search (same pipeline as market drivers)
+    real_headlines = []
+    try:
+        from backend.services.web_search import search_market_news
+        articles = search_market_news(macro_data=macro, max_total=15)
+        if articles:
+            for article in articles:
+                headline_text = article.get("headline", article.get("title", ""))
+                if not headline_text:
+                    continue
+                # Score with keywords (fast, no FinBERT needed)
+                score_data = _score_with_keywords(headline_text)
+                real_headlines.append({
+                    "headline": headline_text,
+                    "source": article.get("source", "Web"),
+                    "published_at": article.get("published_at", now.isoformat()),
+                    "link": article.get("url", ""),
+                    "ticker": "SPY",
+                    "sentiment": score_data["sentiment"],
+                    "label": score_data["label"],
+                    "confidence": score_data["confidence"],
+                })
+    except Exception as e:
+        logger.warning(f"Web search for sentiment headlines failed: {e}")
 
-    # Compute aggregate score from market data (-1 to +1)
-    # High VIX = negative sentiment, positive price action = positive sentiment
-    vix_sentiment = max(-1.0, min(1.0, -0.02 * (vix_price - 20)))  # VIX 20 = neutral
-    price_sentiment = max(-1.0, min(1.0, (spy_change + qqq_change) * 0.2))
-    aggregate = round(max(-1.0, min(1.0, vix_sentiment * 0.4 + price_sentiment * 0.6)), 3)
-
-    # Generate synthetic headlines from macro data
-    headlines = []
-
-    if vix_price > 30:
-        headlines.append({"headline": f"Market volatility surges as VIX hits {vix_price:.1f}", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.8, "label": "negative", "confidence": 0.7})
-        headlines.append({"headline": "Fear gauge signals elevated risk", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.6, "label": "negative", "confidence": 0.6})
-    elif vix_price > 20:
-        headlines.append({"headline": f"VIX at {vix_price:.1f} signals cautious sentiment", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.3, "label": "negative", "confidence": 0.6})
+    # Fall back to synthetic if no real headlines found
+    if real_headlines:
+        headlines = real_headlines
+        scoring_model = "keyword-scored-web"
     else:
-        headlines.append({"headline": f"Market calm with VIX at {vix_price:.1f}", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": 0.3, "label": "positive", "confidence": 0.5})
+        # Extract VIX and price data for synthetic fallback
+        vix_data = macro.get("^VIX", {})
+        vix_price = vix_data.get("price", 20.0)
+        spy_data = macro.get("SPY", {})
+        spy_change = spy_data.get("pct_change", 0)
+        qqq_data = macro.get("QQQ", {})
+        qqq_change = qqq_data.get("pct_change", 0)
 
-    if spy_change > 1.0:
-        headlines.append({"headline": f"S&P 500 rallies {spy_change:.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": 0.7, "label": "positive", "confidence": 0.7})
-    elif spy_change > 0:
-        headlines.append({"headline": f"S&P 500 edges up {spy_change:.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": 0.3, "label": "positive", "confidence": 0.5})
-    elif spy_change > -1.0:
-        headlines.append({"headline": f"S&P 500 dips {abs(spy_change):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.3, "label": "negative", "confidence": 0.5})
+        headlines = []
+        scoring_model = "market-data-derived"
+
+        if vix_price > 30:
+            headlines.append({"headline": f"Market volatility surges as VIX hits {vix_price:.1f}", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.8, "label": "negative", "confidence": 0.7})
+        elif vix_price > 20:
+            headlines.append({"headline": f"VIX at {vix_price:.1f} signals cautious sentiment", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.3, "label": "negative", "confidence": 0.6})
+        else:
+            headlines.append({"headline": f"Market calm with VIX at {vix_price:.1f}", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": 0.3, "label": "positive", "confidence": 0.5})
+
+        if spy_change > 1.0:
+            headlines.append({"headline": f"S&P 500 rallies {spy_change:.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": 0.7, "label": "positive", "confidence": 0.7})
+        elif spy_change > 0:
+            headlines.append({"headline": f"S&P 500 edges up {spy_change:.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": 0.3, "label": "positive", "confidence": 0.5})
+        elif spy_change > -1.0:
+            headlines.append({"headline": f"S&P 500 dips {abs(spy_change):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.3, "label": "negative", "confidence": 0.5})
+        else:
+            headlines.append({"headline": f"S&P 500 drops {abs(spy_change):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.7, "label": "negative", "confidence": 0.7})
+
+        vix_price = vix_data.get("price", 20.0)
+        vix_change = vix_data.get("pct_change", 0)
+
+    # Calculate aggregate from headlines
+    if headlines:
+        total_sent = sum(h.get("sentiment", 0) for h in headlines)
+        aggregate = round(max(-1.0, min(1.0, total_sent / len(headlines))), 3)
     else:
-        headlines.append({"headline": f"S&P 500 drops {abs(spy_change):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.7, "label": "negative", "confidence": 0.7})
-
-    if abs(qqq_change) > 1.0:
-        direction = "surges" if qqq_change > 0 else "drops"
-        sent = 0.6 if qqq_change > 0 else -0.6
-        label = "positive" if qqq_change > 0 else "negative"
-        headlines.append({"headline": f"Nasdaq {direction} {abs(qqq_change):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "QQQ", "sentiment": sent, "label": label, "confidence": 0.6})
-
-    # Treasury data
-    tnx = macro.get("^TNX", {})
-    if tnx.get("price", 0) > 4.5:
-        headlines.append({"headline": f"10Y yield at {tnx['price']:.2f}% pressures growth", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.4, "label": "negative", "confidence": 0.5})
-
-    # Oil
-    oil = macro.get("CL=F", {})
-    oil_chg = oil.get("pct_change", 0)
-    if abs(oil_chg) > 1.5:
-        direction = "surges" if oil_chg > 0 else "drops"
-        headlines.append({"headline": f"Crude oil {direction} {abs(oil_chg):.1f}%", "source": "Market Data", "published_at": now.isoformat(), "link": "", "ticker": "SPY", "sentiment": -0.2 if oil_chg > 0 else 0.1, "label": "neutral", "confidence": 0.4})
+        aggregate = 0.0
 
     # Sentiment distribution
     dist = {"positive": 0, "negative": 0, "neutral": 0}
@@ -674,7 +687,8 @@ def get_sentiment_velocity_fast(macro_data: Optional[Dict] = None) -> Dict[str, 
         if label in dist:
             dist[label] += 1
 
-    # Velocity (simple: positive spy change = accelerating)
+    # Velocity
+    spy_change = macro.get("SPY", {}).get("pct_change", 0) or 0
     velocity = round(spy_change * 0.3, 2)
     if velocity > 0.5:
         velocity_signal = "accelerating"
@@ -690,9 +704,11 @@ def get_sentiment_velocity_fast(macro_data: Optional[Dict] = None) -> Dict[str, 
     elif aggregate < -0.7 and spy_change > 1.0:
         contrarian = "oversold"
 
+    vix_price = macro.get("^VIX", {}).get("price", 20.0) or 20.0
+
     return {
         "timestamp": now.isoformat(),
-        "scoring_model": "market-data-derived",
+        "scoring_model": scoring_model,
         "aggregate_score": aggregate,
         "velocity": velocity,
         "velocity_signal": velocity_signal,

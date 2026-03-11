@@ -451,14 +451,56 @@ class COTPositioningEngine:
                 else:
                     logger.warning(f"No CFTC data found for {ticker} ({search})")
 
+            # Generate insight text per market
+            for market in markets_out:
+                comm_pct = market.get("commercial_percentile", 50)
+                spec_pct = market.get("speculative_percentile", 50)
+                name = market["name"]
+
+                if comm_pct >= 80 and spec_pct <= 30:
+                    market["insight"] = f"Commercials heavily long while speculators are short — historically bullish signal for {name}"
+                    market["bias"] = "bullish"
+                elif comm_pct <= 20 and spec_pct >= 70:
+                    market["insight"] = f"Commercials short while speculators heavily long — historically bearish signal for {name}"
+                    market["bias"] = "bearish"
+                elif comm_pct >= 70:
+                    market["insight"] = f"Commercial positioning at P{comm_pct} — strong hands accumulating {name}"
+                    market["bias"] = "bullish"
+                elif spec_pct >= 80:
+                    market["insight"] = f"Speculative positioning at P{spec_pct} — crowded long trade in {name}"
+                    market["bias"] = "bearish"
+                elif spec_pct <= 20:
+                    market["insight"] = f"Speculative positioning at P{spec_pct} — potential contrarian buy opportunity in {name}"
+                    market["bias"] = "bullish"
+                elif market.get("divergence"):
+                    market["insight"] = f"Commercial/Speculative divergence detected — watch for reversal in {name}"
+                    market["bias"] = "neutral"
+                else:
+                    market["insight"] = f"Positioning neutral — no extreme signals in {name}"
+                    market["bias"] = "neutral"
+
             # Generate alerts
             alerts = _generate_alerts(markets_out)
+
+            # Generate overall summary
+            bullish_markets = [m["name"] for m in markets_out if m.get("bias") == "bullish"]
+            bearish_markets = [m["name"] for m in markets_out if m.get("bias") == "bearish"]
+
+            summary_parts = []
+            if bullish_markets:
+                summary_parts.append(f"Bullish signals in {', '.join(bullish_markets)}")
+            if bearish_markets:
+                summary_parts.append(f"Bearish signals in {', '.join(bearish_markets)}")
+            if not summary_parts:
+                summary_parts.append("No extreme positioning signals across tracked markets")
+            summary = ". ".join(summary_parts) + "."
 
             result = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "data_source": "CFTC Disaggregated Combined + TFF Combined",
                 "markets": markets_out,
                 "alerts": alerts,
+                "summary": summary,
             }
 
             self.cache.set(cache_key, result, _CACHE_TTL)

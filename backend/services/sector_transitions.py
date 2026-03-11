@@ -160,6 +160,18 @@ def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
     Fetches shared factor data (SPY, IWM, IWD, IWF) only once, then each sector once.
     Uses concurrent fetching for speed.
     """
+    # Cache check at the start
+    cache_key = "factor_decomposition_batch"
+    now = time.time()
+    if cache_key in _transitions_cache:
+        cached = _transitions_cache[cache_key]
+        if now - cached["ts"] < _CACHE_TTL:
+            # Return cached results, filtering to requested tickers
+            cached_results = cached["data"]
+            cached_lookup = {r["ticker"]: r for r in cached_results}
+            filtered = [cached_lookup.get(t, {"ticker": t, "name": SECTOR_ETFS.get(t, t), **_empty_factors()}) for t in tickers]
+            return filtered
+
     # All tickers we need to fetch (shared factors + sectors)
     shared_tickers = ["SPY", "IWM", "IWD", "IWF"]
     all_tickers = list(set(shared_tickers + tickers))
@@ -185,19 +197,31 @@ def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
         logger.error(f"Concurrent history fetch failed: {e}")
 
     # Check shared data is available
-    if not all(t in histories for t in shared_tickers):
-        logger.warning("Missing shared factor data, returning empty factors")
-        return [{"ticker": t, "name": SECTOR_ETFS.get(t, t), **_empty_factors()} for t in tickers]
+    missing_shared = [t for t in shared_tickers if t not in histories]
+    if missing_shared:
+        logger.warning(f"Missing shared factor data: {missing_shared}")
+        if "SPY" not in histories:
+            # SPY is essential — can't compute any factors without it
+            logger.warning("SPY missing — returning empty factors")
+            return [{"ticker": t, "name": SECTOR_ETFS.get(t, t), **_empty_factors()} for t in tickers]
+        # Proceed with partial factors (size/value may be None)
 
     # Build shared series once
     spy_s = _make_series(histories["SPY"])
-    iwm_s = _make_series(histories["IWM"])
-    iwd_s = _make_series(histories["IWD"])
-    iwf_s = _make_series(histories["IWF"])
     spy_ret = spy_s.pct_change().dropna()
-    iwm_ret = iwm_s.pct_change().dropna()
-    iwd_ret = iwd_s.pct_change().dropna()
-    iwf_ret = iwf_s.pct_change().dropna()
+
+    iwm_ret = None
+    if "IWM" in histories:
+        iwm_s = _make_series(histories["IWM"])
+        iwm_ret = iwm_s.pct_change().dropna()
+
+    iwd_ret = None
+    iwf_ret = None
+    if "IWD" in histories and "IWF" in histories:
+        iwd_s = _make_series(histories["IWD"])
+        iwf_s = _make_series(histories["IWF"])
+        iwd_ret = iwd_s.pct_change().dropna()
+        iwf_ret = iwf_s.pct_change().dropna()
 
     results = []
     for ticker in tickers:
@@ -209,9 +233,13 @@ def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
             ticker_s = _make_series(histories[ticker])
             ticker_ret = ticker_s.pct_change().dropna()
 
-            common_dates = spy_ret.index.intersection(
-                ticker_ret.index
-            ).intersection(iwm_ret.index).intersection(iwd_ret.index).intersection(iwf_ret.index)
+            common_dates = spy_ret.index.intersection(ticker_ret.index)
+
+            # Intersect with available factor ETFs only
+            if iwm_ret is not None:
+                common_dates = common_dates.intersection(iwm_ret.index)
+            if iwd_ret is not None and iwf_ret is not None:
+                common_dates = common_dates.intersection(iwd_ret.index).intersection(iwf_ret.index)
 
             if len(common_dates) < 20:
                 results.append({"ticker": ticker, "name": SECTOR_ETFS.get(ticker, ticker), **_empty_factors()})
@@ -220,20 +248,30 @@ def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
             recent_dates = common_dates[-252:]
             spy_r = spy_ret[recent_dates]
             ticker_r = ticker_ret[recent_dates]
-            iwm_r = iwm_ret[recent_dates]
-            iwd_r = iwd_ret[recent_dates]
-            iwf_r = iwf_ret[recent_dates]
 
             cov_beta = np.cov(ticker_r, spy_r)[0, 1]
             var_spy = np.var(spy_r)
             beta = cov_beta / var_spy if var_spy > 0 else 1.0
-            size_factor = (iwm_r - spy_r).mean() * 252
-            value_factor = (iwd_r - iwf_r).mean() * 252
-            momentum_return = (ticker_s.iloc[-1] / ticker_s.iloc[0] - 1) * 100
-
             beta_contribution = round((beta - 1.0) * spy_ret.mean() * 252 * 100, 2)
-            size_contribution = round(size_factor * 100, 2)
-            value_contribution = round(value_factor * 100, 2)
+
+            # Size factor (requires IWM)
+            if iwm_ret is not None:
+                iwm_r = iwm_ret[recent_dates]
+                size_factor = (iwm_r - spy_r).mean() * 252
+                size_contribution = round(size_factor * 100, 2)
+            else:
+                size_contribution = 0.0
+
+            # Value factor (requires IWD and IWF)
+            if iwd_ret is not None and iwf_ret is not None:
+                iwd_r = iwd_ret[recent_dates]
+                iwf_r = iwf_ret[recent_dates]
+                value_factor = (iwd_r - iwf_r).mean() * 252
+                value_contribution = round(value_factor * 100, 2)
+            else:
+                value_contribution = 0.0
+
+            momentum_return = (ticker_s.iloc[-1] / ticker_s.iloc[0] - 1) * 100
             momentum_contribution = round(momentum_return * 0.2, 2)
 
             results.append({
@@ -252,6 +290,8 @@ def decompose_factors_batch(tickers: List[str]) -> List[Dict[str, Any]]:
             logger.error(f"Error decomposing factors for {ticker}: {e}")
             results.append({"ticker": ticker, "name": SECTOR_ETFS.get(ticker, ticker), **_empty_factors()})
 
+    # Cache the batch results
+    _transitions_cache[cache_key] = {"ts": time.time(), "data": results}
     return results
 
 

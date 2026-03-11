@@ -190,9 +190,10 @@ def _enrich_claude_drivers(
         # Match news articles from prefetched results (already fetched in step 2)
         if not driver.get("news_articles") and prefetched_news:
             title_lower = (driver.get("title") or "").lower()
+            headline_lower = (driver.get("headline") or "").lower()
             keywords = []
             for key, kws in driver_news_keywords.items():
-                if key in title_lower:
+                if key in title_lower or key in headline_lower:
                     keywords.extend(kws)
                     break
             # Add affected assets as keywords too
@@ -210,6 +211,16 @@ def _enrich_claude_drivers(
             news_articles = [a for _, a in matched[:6]]
             driver["news_articles"] = news_articles
             all_news.extend(news_articles)
+
+            # If no articles matched from prefetched news, do a targeted DDG search
+            if not news_articles and driver.get("title"):
+                try:
+                    from backend.services.web_search import _search_ddg_news
+                    ddg_results = _search_ddg_news(driver["title"][:80], max_results=3)
+                    if ddg_results:
+                        driver["news_articles"] = ddg_results
+                except Exception:
+                    pass
 
         # Calculate impact score
         if not driver.get("impact_score"):

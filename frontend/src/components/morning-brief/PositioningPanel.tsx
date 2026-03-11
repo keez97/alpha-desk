@@ -140,6 +140,13 @@ export function PositioningPanel() {
         </span>
       </div>
 
+      {/* Summary */}
+      {data.summary && (
+        <div className="rounded bg-neutral-800/50 px-3 py-2 text-[11px] text-neutral-300 leading-relaxed">
+          {data.summary}
+        </div>
+      )}
+
       {/* Legend */}
       <div className="flex gap-3 text-xs text-neutral-500">
         <div className="flex items-center gap-1">
@@ -152,16 +159,26 @@ export function PositioningPanel() {
         </div>
       </div>
 
-      {/* Markets positioning bars */}
+      {/* Markets positioning bars with insights */}
       <div className="space-y-3">
         {data.markets.map((market) => (
-          <PositioningBar
-            key={market.ticker}
-            label={market.name}
-            commercialPct={market.commercial_percentile}
-            speculativePct={market.speculative_percentile}
-            extremeFlag={market.extreme_flag}
-          />
+          <div key={market.ticker}>
+            <PositioningBar
+              label={market.name}
+              commercialPct={market.commercial_percentile}
+              speculativePct={market.speculative_percentile}
+              extremeFlag={market.extreme_flag}
+            />
+            {market.insight && (
+              <p className={`text-[10px] mt-0.5 leading-snug ${
+                market.bias === 'bullish' ? 'text-emerald-400/70' :
+                market.bias === 'bearish' ? 'text-red-400/70' :
+                'text-neutral-500'
+              }`}>
+                {market.insight}
+              </p>
+            )}
+          </div>
         ))}
       </div>
 
