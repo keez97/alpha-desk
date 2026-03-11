@@ -1,10 +1,11 @@
 import json
 import logging
 from typing import Dict, Any, AsyncGenerator
-from openai import OpenAI
 from backend.config import (
+    LLM_PROVIDER,
+    ANTHROPIC_API_KEY,
     OPENROUTER_API_KEY,
-    get_openrouter_model_id,
+    get_model_id,
 )
 from backend.prompts.base import BASE_ANALYST_PERSONA
 from backend.prompts import morning_drivers, stock_grader, weekly_report, screener, morning_report
@@ -15,26 +16,66 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# Check if API key is available
-USE_MOCK = not OPENROUTER_API_KEY or OPENROUTER_API_KEY.strip() == ""
+# --- LLM Client Setup ---
+USE_MOCK = LLM_PROVIDER == "none"
+_anthropic_client = None
+_openrouter_client = None
 
-if not USE_MOCK:
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-    )
+if LLM_PROVIDER == "anthropic":
+    try:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        logger.info("LLM service using Anthropic direct API")
+    except Exception as e:
+        logger.warning(f"Failed to init Anthropic client: {e}")
+        USE_MOCK = True
+elif LLM_PROVIDER == "openrouter":
+    try:
+        from openai import OpenAI
+        _openrouter_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+        )
+        logger.info("LLM service using OpenRouter API")
+    except Exception as e:
+        logger.warning(f"Failed to init OpenRouter client: {e}")
+        USE_MOCK = True
 else:
-    client = None
     logger.info("Running LLM service in mock mode - no API key provided")
 
 BASE_SYSTEM_PROMPT = BASE_ANALYST_PERSONA
 
 
-def _extract_text(response) -> str:
-    """Extract text content from an OpenAI-style response."""
-    if response.choices and response.choices[0].message.content:
-        return response.choices[0].message.content
-    return ""
+def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> str:
+    """Unified LLM call that works with both Anthropic and OpenRouter."""
+    model_id = get_model_id()
+
+    if LLM_PROVIDER == "anthropic" and _anthropic_client:
+        response = _anthropic_client.messages.create(
+            model=model_id,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        # Extract text from Anthropic response
+        if response.content and len(response.content) > 0:
+            return response.content[0].text
+        return ""
+
+    elif LLM_PROVIDER == "openrouter" and _openrouter_client:
+        response = _openrouter_client.chat.completions.create(
+            model=model_id,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        if response.choices and response.choices[0].message.content:
+            return response.choices[0].message.content
+        return ""
+
+    raise RuntimeError("No LLM client available")
 
 
 def _parse_json_from_text(text: str) -> dict | None:
@@ -88,22 +129,13 @@ async def generate_morning_drivers(date: str) -> Dict[str, Any]:
         macro, sectors = {}, []
 
     # Step 2: Try LLM-enhanced generation if API key is available
-    if not USE_MOCK and client:
+    if not USE_MOCK:
         try:
             prompt = morning_drivers.get_morning_drivers_prompt(date)
-            model_id = get_openrouter_model_id()
+            model_id = get_model_id()
             logger.info(f"Generating morning drivers with model: {model_id}")
 
-            response = client.chat.completions.create(
-                model=model_id,
-                max_tokens=2000,
-                messages=[
-                    {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-
-            text_content = _extract_text(response)
+            text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=2000)
             parsed = _parse_json_from_text(text_content)
             if parsed:
                 return parsed
@@ -301,19 +333,10 @@ async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
             ticker, company_name, data,
             weights=weights, regime=regime
         )
-        model_id = get_openrouter_model_id()
+        model_id = get_model_id()
         logger.info(f"Grading {ticker} with model: {model_id} | regime: {regime}")
 
-        response = client.chat.completions.create(
-            model=model_id,
-            max_tokens=4000,
-            messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        text_content = _extract_text(response)
+        text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=4000)
         parsed = _parse_json_from_text(text_content)
         if parsed:
             return parsed
@@ -344,19 +367,13 @@ async def generate_morning_report(date: str) -> Dict[str, Any]:
         macro, sectors = {}, []
 
     # Step 2: Try LLM-enhanced generation if available
-    if not USE_MOCK and client:
+    if not USE_MOCK:
         try:
             prompt = morning_report.get_morning_report_prompt(date)
-            model_id = get_openrouter_model_id()
+            model_id = get_model_id()
             logger.info(f"Generating morning report with model: {model_id}")
-            response = client.chat.completions.create(
-                model=model_id, max_tokens=3000,
-                messages=[
-                    {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            text_content = _extract_text(response)
+
+            text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=3000)
             parsed = _parse_json_from_text(text_content)
             if parsed:
                 return parsed
@@ -401,19 +418,10 @@ async def run_screener(date: str) -> Dict[str, Any]:
 
     try:
         prompt = screener.get_screener_prompt(date)
-        model_id = get_openrouter_model_id()
+        model_id = get_model_id()
         logger.info(f"Running screener with model: {model_id}")
 
-        response = client.chat.completions.create(
-            model=model_id,
-            max_tokens=3000,
-            messages=[
-                {"role": "system", "content": BASE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-        )
-
-        text_content = _extract_text(response)
+        text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=3000)
         parsed = _parse_json_from_text(text_content)
         if parsed:
             return parsed

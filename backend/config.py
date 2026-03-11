@@ -3,15 +3,30 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# OpenRouter API (replaces Anthropic direct)
+# --- LLM Provider Configuration ---
+# Supports both Anthropic direct and OpenRouter.
+# Priority: ANTHROPIC_API_KEY (direct) > OPENROUTER_API_KEY (proxy)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-if not OPENROUTER_API_KEY:
+# Determine which provider to use
+if ANTHROPIC_API_KEY:
+    LLM_PROVIDER = "anthropic"
+elif OPENROUTER_API_KEY:
+    LLM_PROVIDER = "openrouter"
+else:
+    LLM_PROVIDER = "none"
     import warnings
-    warnings.warn("OPENROUTER_API_KEY not set. AI features will be unavailable.")
+    warnings.warn("No LLM API key set (ANTHROPIC_API_KEY or OPENROUTER_API_KEY). AI features will be unavailable.")
 
-# Available models on OpenRouter
-AVAILABLE_MODELS = {
+# Anthropic model IDs (used when LLM_PROVIDER == "anthropic")
+ANTHROPIC_MODELS = {
+    "claude-sonnet-4": "claude-sonnet-4-20250514",
+    "claude-haiku-3.5": "claude-3-5-haiku-20241022",
+}
+
+# OpenRouter model IDs (used when LLM_PROVIDER == "openrouter")
+OPENROUTER_MODELS = {
     "claude-sonnet-4": "anthropic/claude-sonnet-4",
     "claude-haiku-3.5": "anthropic/claude-3.5-haiku",
     "gpt-4o": "openai/gpt-4o",
@@ -32,14 +47,23 @@ def get_current_model() -> str:
 
 def set_current_model(model_key: str) -> str:
     global _current_model
-    if model_key in AVAILABLE_MODELS:
+    models = ANTHROPIC_MODELS if LLM_PROVIDER == "anthropic" else OPENROUTER_MODELS
+    if model_key in models:
         _current_model = model_key
-        return AVAILABLE_MODELS[model_key]
-    raise ValueError(f"Unknown model: {model_key}. Available: {list(AVAILABLE_MODELS.keys())}")
+        return models[model_key]
+    raise ValueError(f"Unknown model: {model_key}. Available: {list(models.keys())}")
 
 
+def get_model_id() -> str:
+    """Get the model ID for the current provider."""
+    if LLM_PROVIDER == "anthropic":
+        return ANTHROPIC_MODELS.get(_current_model, ANTHROPIC_MODELS["claude-sonnet-4"])
+    return OPENROUTER_MODELS.get(_current_model, OPENROUTER_MODELS["claude-sonnet-4"])
+
+
+# Keep backward compat alias
 def get_openrouter_model_id() -> str:
-    return AVAILABLE_MODELS.get(_current_model, AVAILABLE_MODELS["claude-sonnet-4"])
+    return get_model_id()
 
 
 FDS_API_KEY = os.getenv("FDS_API_KEY", "")

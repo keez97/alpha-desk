@@ -16,13 +16,13 @@ from sqlmodel import Session
 
 from backend.repositories.sentiment_repo import SentimentRepository
 from backend.models.sentiment import TickerSentiment
-from backend.services.claude_service import client
-from backend.config import get_openrouter_model_id, OPENROUTER_API_KEY
+from backend.services.claude_service import _call_llm, USE_MOCK
+from backend.config import LLM_PROVIDER
 
 logger = logging.getLogger(__name__)
 
 # Check if API key is available for LLM scoring
-USE_LLM_SCORING = bool(OPENROUTER_API_KEY and OPENROUTER_API_KEY.strip())
+USE_LLM_SCORING = LLM_PROVIDER != "none"
 
 
 class SentimentEngine:
@@ -78,23 +78,10 @@ class SentimentEngine:
 
         try:
             prompt = self._build_scoring_prompt(headline, body_snippet)
-            model_id = get_openrouter_model_id()
-            logger.info(f"Scoring article with model: {model_id}")
+            system_prompt = "You are a financial sentiment analysis expert. Return JSON responses only."
+            logger.info("Scoring article with LLM")
 
-            response = client.chat.completions.create(
-                model=model_id,
-                max_tokens=500,
-                response_format={"type": "json_object"},
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a financial sentiment analysis expert. Return JSON responses only."
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-            )
-
-            text_content = response.choices[0].message.content if response.choices else ""
+            text_content = _call_llm(system_prompt, prompt, max_tokens=500)
             parsed = self._parse_scoring_response(text_content)
 
             if parsed:

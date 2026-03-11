@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from backend.config import (
-    AVAILABLE_MODELS,
+    LLM_PROVIDER,
+    ANTHROPIC_MODELS,
+    OPENROUTER_MODELS,
     get_current_model,
     set_current_model,
-    get_openrouter_model_id,
+    get_model_id,
 )
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -18,12 +20,14 @@ class ModelSelection(BaseModel):
 async def list_models():
     """List available LLM models and the currently selected one."""
     current = get_current_model()
+    models = ANTHROPIC_MODELS if LLM_PROVIDER == "anthropic" else OPENROUTER_MODELS
     return {
+        "provider": LLM_PROVIDER,
         "current": current,
-        "current_id": get_openrouter_model_id(),
+        "current_id": get_model_id(),
         "available": [
-            {"key": key, "openrouter_id": oid}
-            for key, oid in AVAILABLE_MODELS.items()
+            {"key": key, "model_id": mid}
+            for key, mid in models.items()
         ],
     }
 

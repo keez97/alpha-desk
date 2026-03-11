@@ -21,13 +21,11 @@ class TestArticleScoring:
     """Test LLM-based article scoring functionality."""
 
     def test_score_article_with_llm(self, session: Session):
-        """Test scoring an article with mocked OpenRouter LLM."""
+        """Test scoring an article with mocked LLM."""
         engine = SentimentEngine(session)
 
-        with patch("backend.services.sentiment_engine.client") as mock_client:
-            mock_response = MagicMock()
-            mock_response.choices = [MagicMock()]
-            mock_response.choices[0].message.content = """{
+        with patch("backend.services.sentiment_engine._call_llm") as mock_call_llm:
+            mock_call_llm.return_value = """{
                 "sentiment_score": 0.75,
                 "finbert_positive": 0.80,
                 "finbert_negative": 0.10,
@@ -41,7 +39,6 @@ class TestArticleScoring:
                 },
                 "reasoning": "Positive earnings announcement"
             }"""
-            mock_client.chat.completions.create.return_value = mock_response
 
             result = engine.score_article(
                 headline="Apple exceeds earnings expectations",
@@ -74,11 +71,8 @@ class TestArticleScoring:
         """Test scoring handles malformed LLM response gracefully."""
         engine = SentimentEngine(session)
 
-        with patch("backend.services.sentiment_engine.client") as mock_client:
-            mock_response = MagicMock()
-            mock_response.choices = [MagicMock()]
-            mock_response.choices[0].message.content = "Invalid JSON response"
-            mock_client.chat.completions.create.return_value = mock_response
+        with patch("backend.services.sentiment_engine._call_llm") as mock_call_llm:
+            mock_call_llm.return_value = "Invalid JSON response"
 
             result = engine.score_article(
                 headline="Test headline",
@@ -92,8 +86,8 @@ class TestArticleScoring:
         """Test scoring handles API errors gracefully."""
         engine = SentimentEngine(session)
 
-        with patch("backend.services.sentiment_engine.client") as mock_client:
-            mock_client.chat.completions.create.side_effect = Exception("API error")
+        with patch("backend.services.sentiment_engine._call_llm") as mock_call_llm:
+            mock_call_llm.side_effect = Exception("API error")
 
             result = engine.score_article(
                 headline="Test headline",
@@ -107,10 +101,8 @@ class TestArticleScoring:
         """Test scoring a bearish article."""
         engine = SentimentEngine(session)
 
-        with patch("backend.services.sentiment_engine.client") as mock_client:
-            mock_response = MagicMock()
-            mock_response.choices = [MagicMock()]
-            mock_response.choices[0].message.content = """{
+        with patch("backend.services.sentiment_engine._call_llm") as mock_call_llm:
+            mock_call_llm.return_value = """{
                 "sentiment_score": -0.85,
                 "finbert_positive": 0.05,
                 "finbert_negative": 0.90,
@@ -123,7 +115,6 @@ class TestArticleScoring:
                     "negative": 8
                 }
             }"""
-            mock_client.chat.completions.create.return_value = mock_response
 
             result = engine.score_article(
                 headline="Major company announces losses",
