@@ -329,11 +329,13 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
     cache_key = "scenario_risk_fast"
     claude_cache_key = "scenario_risk_claude"
 
-    # Check main cache first (30-min TTL)
+    # Check main cache first (30-min TTL) — but only if VaR is non-zero
     if cache_key in _scenario_cache:
         cached = _scenario_cache[cache_key]
         if now - cached["ts"] < _CACHE_TTL:
-            return cached["data"]
+            # Don't serve cached 0.0 VaR — retry instead
+            if cached["data"].get("var_95_historical", 0) != 0:
+                return cached["data"]
 
     scenarios = []
     var_95_historical = 0.0
@@ -341,32 +343,33 @@ def get_scenario_risk_fast(macro_data: Dict = None) -> Dict[str, Any]:
     current_regime = "unknown"
 
     try:
-        if macro_data:
-            vix = macro_data.get("^VIX", {}).get("price", 20.0)
+        # Extract VIX — use macro_data if available, otherwise default
+        # Note: macro_data may be {} (empty dict) if upstream timed out
+        vix = 20.0  # safe default
+        if macro_data and isinstance(macro_data, dict):
+            vix = macro_data.get("^VIX", {}).get("price", 20.0) or 20.0
 
-            # Determine regime based on VIX
-            if vix > 25:
-                current_regime = "bear"
-            elif vix < 15:
-                current_regime = "bull"
-            else:
-                current_regime = "neutral"
-
-            # VIX-based VaR approximation (instant — pure math)
-            var_95_historical = -((vix / 100.0) * np.sqrt(1.0 / 252.0) * 1.65 * 100.0)
-            var_95_regime_adjusted = var_95_historical * 1.3 if vix > 25 else var_95_historical
-
-            # Use Claude cache if available (populated by /scenarios endpoint)
-            if claude_cache_key in _scenario_cache:
-                claude_cached = _scenario_cache[claude_cache_key]
-                if now - claude_cached["ts"] < _CLAUDE_CACHE_TTL:
-                    scenarios = claude_cached["data"]
-
-            # Fall back to hardcoded — NEVER call Claude here (too slow for /all)
-            if not scenarios:
-                scenarios = _hardcoded_scenarios(vix)
+        # Determine regime based on VIX
+        if vix > 25:
+            current_regime = "bear"
+        elif vix < 15:
+            current_regime = "bull"
         else:
-            scenarios = calculate_scenario_impacts()
+            current_regime = "neutral"
+
+        # VIX-based VaR approximation (instant — pure math)
+        var_95_historical = -((vix / 100.0) * np.sqrt(1.0 / 252.0) * 1.65 * 100.0)
+        var_95_regime_adjusted = var_95_historical * 1.3 if vix > 25 else var_95_historical
+
+        # Use Claude cache if available (populated by /scenarios endpoint)
+        if claude_cache_key in _scenario_cache:
+            claude_cached = _scenario_cache[claude_cache_key]
+            if now - claude_cached["ts"] < _CLAUDE_CACHE_TTL:
+                scenarios = claude_cached["data"]
+
+        # Fall back to hardcoded — NEVER call Claude here (too slow for /all)
+        if not scenarios:
+            scenarios = _hardcoded_scenarios(vix)
     except Exception as e:
         logger.warning(f"Scenario risk fast failed: {e}")
 
