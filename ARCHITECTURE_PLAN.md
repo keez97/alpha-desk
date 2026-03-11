@@ -1,7 +1,13 @@
 # AlphaDesk — Full Architectural Plan
 
+> **⚠️ HISTORICAL DOCUMENT** — This is the original pre-build architectural plan from 2026-03-09. The project has since grown significantly beyond this plan. For current architecture, see:
+> - `project.md` — current features, tech stack, deployment
+> - `.context/architecture.md` — current system architecture and data flow
+> - `TASK_MANIFEST.md` — current feature status tracker
+> - `AGENTS.md` — contributor guide with deployment constraints and patterns
+
 **Date:** 2026-03-09
-**Status:** AWAITING APPROVAL
+**Status:** SUPERSEDED — retained as historical reference
 **Author:** Orchestration Agent
 
 ---

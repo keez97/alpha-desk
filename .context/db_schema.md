@@ -1,9 +1,27 @@
-# AlphaDesk — Database Schema
+# AlphaDesk — Data Persistence
 
-## Engine
-SQLite via SQLModel (Pydantic + SQLAlchemy)
+> **Last updated:** 2026-03-11
 
-## Tables
+## Caching Architecture
+AlphaDesk uses two tiers of caching:
+
+### In-Memory TTLCache (Primary for real-time data)
+Most real-time market data is cached in-memory using a custom `TTLCache` class (`backend/services/cache.py`). This provides sub-millisecond reads with automatic expiration.
+
+| Service | Cache Key Pattern | TTL | Notes |
+|---------|------------------|-----|-------|
+| Macro data | `macro_data` | 5 min | Quotes, indices, commodities |
+| Sector data | `sector_data_{period}` | 5 min | ETF prices by period |
+| VIX term structure | `vix_term` | 5 min | CBOE futures data |
+| Market breadth | `breadth` | 5 min | S&P 100 advancing/declining |
+| Scenario risk | `scenario_risk_fast` | 30 min | Stress scenario calculations |
+| COT positioning | `cot_data` | 1 hour | CFTC Commitment of Traders |
+| Overnight returns | Date-seeded | Daily | Synthetic estimates stable per day |
+
+### SQLite via SQLModel (Persistence for generated content)
+Longer-lived content that should survive server restarts is stored in SQLite.
+
+## SQLite Tables
 
 ### watchlist
 | Column | Type | Constraints |
@@ -65,3 +83,8 @@ SQLite via SQLModel (Pydantic + SQLAlchemy)
 | screen_type | TEXT | NOT NULL |
 | results_json | TEXT | NOT NULL |
 | generated_at | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |
+
+## Notes
+- SQLite is sufficient for single-user deployment; schema designed for easy PostgreSQL migration if needed
+- In-memory caches are lost on Railway redeploy/restart — first request after restart will be slower
+- The `morning_brief_cache` SQLite table is used for AI-generated morning drivers (4-hour TTL), separate from the in-memory real-time data caches

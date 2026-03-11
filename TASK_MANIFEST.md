@@ -1,82 +1,153 @@
-# AlphaDesk — Task Manifest
+# AlphaDesk — Feature Status Tracker
 
-## Sprint 0: Infrastructure
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S0-01 | Initialise monorepo with root package.json | Backend | feature/infra/monorepo-init | TODO | — |
-| S0-02 | Scaffold FastAPI backend | Backend | feature/infra/backend-scaffold | TODO | S0-01 |
-| S0-03 | Scaffold Vite + React + TS frontend | Frontend | feature/infra/frontend-scaffold | TODO | S0-01 |
-| S0-04 | Configure Tailwind with AlphaDesk tokens | UI | feature/infra/tailwind-config | TODO | S0-03 |
-| S0-05 | Create SQLite schema + SQLModel models | Backend | feature/infra/db-schema | TODO | S0-02 |
-| S0-06 | Build yfinance service layer | Backend | feature/infra/yfinance-service | TODO | S0-02 |
-| S0-07 | Build financialdatasets.ai service layer | Backend | feature/infra/fds-service | TODO | S0-02 |
-| S0-08 | Build Claude API service layer | Backend | feature/infra/claude-service | TODO | S0-02 |
-| S0-09 | Create AppShell layout with routing | Frontend | feature/infra/app-shell | TODO | S0-03, S0-04 |
-| S0-10 | Set up React Query + Zustand stores | Frontend | feature/infra/state-setup | TODO | S0-03 |
-| S0-11 | Create shared components | Frontend+UI | feature/infra/shared-components | TODO | S0-04 |
-| S0-12 | Configure CORS and error handling | Backend | feature/infra/middleware | TODO | S0-02 |
-| S0-13 | Create frontend API client | Frontend | feature/infra/api-client | TODO | S0-03 |
-| S0-14 | Set up prompt templates module | Backend | feature/infra/prompts | TODO | S0-08 |
+> **Last updated:** 2026-03-11
+> **Rule:** This file must be updated whenever a feature is added, modified, or its status changes. See AGENTS.md for the documentation update protocol.
 
-## Sprint 1: Morning Brief
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S1-01 | Implement /api/morning-brief/macro | Backend | feature/morning-brief/macro-api | TODO | S0-06 |
-| S1-02 | Implement /api/morning-brief/sectors | Backend | feature/morning-brief/sectors-api | TODO | S0-06 |
-| S1-03 | Implement /api/morning-brief/drivers | Backend | feature/morning-brief/drivers-api | TODO | S0-08, S0-14 |
-| S1-04 | Build MacroBar component | Frontend | feature/morning-brief/macro-bar | TODO | S0-11, S1-01 |
-| S1-05 | Build SectorPanel + SectorChart | Frontend | feature/morning-brief/sector-panel | TODO | S0-11, S1-02 |
-| S1-06 | Build DriversPanel | Frontend | feature/morning-brief/drivers-panel | TODO | S0-11, S1-03 |
-| S1-07 | Compose MorningBrief page | Frontend | feature/morning-brief/page | TODO | S1-04–S1-06 |
-| S1-08 | Style and polish Morning Brief | UI | feature/morning-brief/polish | TODO | S1-07 |
+## Morning Brief
+**Status:** ✅ Live | **Route:** `/morning-brief` | **Backend:** `/api/morning-brief/*`
 
-## Sprint 2: Stock Screener
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S2-01 | Implement /api/search | Backend | feature/screener/search-api | TODO | S0-06 |
-| S2-02 | Implement /api/stock/{ticker}/quote | Backend | feature/screener/quote-api | TODO | S0-06 |
-| S2-03 | Implement /api/stock/{ticker}/grade | Backend | feature/screener/grade-api | TODO | S0-06, S0-07, S0-08 |
-| S2-04 | Implement /api/watchlist CRUD | Backend | feature/screener/watchlist-api | TODO | S0-05 |
-| S2-05 | Implement /api/screener/run | Backend | feature/screener/screener-api | TODO | S0-08 |
-| S2-06 | Build SearchBar + results | Frontend | feature/screener/search-ui | TODO | S2-01 |
-| S2-07 | Build StockGraderCard | Frontend | feature/screener/grader-card | TODO | S2-03 |
-| S2-08 | Build WatchlistSidebar | Frontend | feature/screener/watchlist-ui | TODO | S2-04 |
-| S2-09 | Build ScreenerResults tab | Frontend | feature/screener/results-ui | TODO | S2-05 |
-| S2-10 | Compose Screener page | Frontend+UI | feature/screener/page | TODO | S2-06–S2-09 |
+The flagship feature. A 16-panel real-time market dashboard loaded via a single `/api/morning-brief/all` aggregate endpoint.
 
-## Sprint 3: Weekly Report
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S3-01 | Implement /api/weekly-report/generate (SSE) | Backend | feature/report/generate-api | TODO | S0-08 |
-| S3-02 | Implement /api/weekly-report/list and /{id} | Backend | feature/report/list-api | TODO | S0-05 |
-| S3-03 | Build ReportGenerator (streaming) | Frontend | feature/report/generator-ui | TODO | S3-01 |
-| S3-04 | Build ReportViewer | Frontend | feature/report/viewer-ui | TODO | S3-02 |
-| S3-05 | Build ReportHistory sidebar | Frontend | feature/report/history-ui | TODO | S3-02 |
-| S3-06 | Implement PDF export | Frontend | feature/report/pdf-export | TODO | S3-04 |
-| S3-07 | Compose WeeklyReport page | Frontend+UI | feature/report/page | TODO | S3-03–S3-06 |
+| Panel | Backend Service | Endpoint | Status | Notes |
+|-------|----------------|----------|--------|-------|
+| Market Regime | `regime_detector.py` | `/api/morning-brief/macro` | ✅ Live | Bear/bull/neutral with confidence score, key signals |
+| VIX Term Structure | `vix_term_structure.py` | `/api/vix-term-structure` | ✅ Live | Spot vs 3M, contango/backwardation, percentile, roll yield |
+| Market Breadth | `market_breadth_engine.py` | `/api/morning-brief/breadth` | ✅ Live | A/D ratio, McClellan, breadth thrust from S&P 100 |
+| Overnight Gaps | `synthetic_estimator.py` | `/api/overnight-returns` | ✅ Live | 14 indices, VIX-implied gap estimation, z-score outliers |
+| Sector Performance | `yfinance_service.py` | `/api/morning-brief/sectors` | ✅ Live | 11 sector ETFs, multi-period (1D/5D/1M/3M) |
+| Sector RRG | `rrg_calculator.py` | `/api/rrg` | ✅ Live | Relative strength + momentum quadrant chart |
+| Factor Decomposition | `factor_calculator.py` | `/api/factors/{ticker}` | ✅ Live | Beta, size, value, momentum for each sector ETF |
+| News Sentiment | `sentiment_velocity.py` | `/api/sentiment-velocity` | ✅ Live | Market-data-derived scoring (fast path), VIX/price-based |
+| Options Flow | `options_flow.py` | `/api/options-flow` | ✅ Live | IV skew, put/call ratio, GEX, vol imbalance |
+| COT Positioning | `cot_positioning.py` | `/api/cot-positioning` | ✅ Live | Commercial/speculative positioning, reversal alerts |
+| Stress Scenarios | `scenario_risk.py` | `/api/scenario-risk` | ✅ Live | VIX spike, yield steepen, correction impact estimates |
+| Momentum Spillover | `cross_asset_momentum.py` | `/api/momentum-spillover` | ✅ Live | Cross-asset 1M/3M momentum with signal classification |
+| Market Drivers | `claude_service.py` | `/api/morning-brief/drivers` | ✅ Live | AI-generated market drivers via Claude + web search |
+| Earnings Brief | `earnings_brief.py` | `/api/earnings-brief` | ✅ Live | Upcoming earnings with expected moves |
+| Sector Transitions | `sector_transitions.py` | `/api/sector-transitions` | ✅ Live | Business cycle positioning, favorable/unfavorable sectors |
+| Morning Report | `claude_service.py` | (generated client-side) | ✅ Live | AI-generated summary from all panel data |
 
-## Sprint 4: Virtual Portfolio
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S4-01 | Implement /api/portfolio CRUD | Backend | feature/portfolio/crud-api | TODO | S0-05 |
-| S4-02 | Implement /api/portfolio/{id}/analysis | Backend | feature/portfolio/analysis-api | TODO | S0-06 |
-| S4-03 | Build PortfolioBuilder | Frontend | feature/portfolio/builder-ui | TODO | S4-01 |
-| S4-04 | Build CorrelationHeatmap + OptimisationTable | Frontend | feature/portfolio/analysis-ui | TODO | S4-02 |
-| S4-05 | Build MonteCarloChart | Frontend | feature/portfolio/monte-carlo-ui | TODO | S4-02 |
-| S4-06 | Compose Portfolio page | Frontend+UI | feature/portfolio/page | TODO | S4-03–S4-05 |
+### Known Constraints
+- Railway 30s proxy timeout — all `/all` sub-calls must finish within 4-8s each
+- RSS feeds blocked from Railway cloud IPs — sentiment uses market-data-derived scoring instead
+- Fast-path functions (`_fast()` variants) accept pre-fetched macro data to avoid redundant API calls
+- Overnight gaps use synthetic VIX-based estimation (not live pre-market data)
 
-## Sprint 5: RRG
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S5-01 | Implement RRG calculator | Backend | feature/rrg/calculator | TODO | S0-06 |
-| S5-02 | Implement /api/rrg endpoint | Backend | feature/rrg/api | TODO | S5-01 |
-| S5-03 | Build RRGChart with animation | Frontend | feature/rrg/chart-ui | TODO | S5-02 |
-| S5-04 | Compose RRG page | Frontend+UI | feature/rrg/page | TODO | S5-03 |
+---
 
-## Sprint 6: Integration & Polish
-| ID | Task | Agent | Branch | Status | Dependencies |
-|----|------|-------|--------|--------|-------------|
-| S6-01 | Full integration test | Review | — | TODO | All |
-| S6-02 | Error handling audit | Review | — | TODO | All |
-| S6-03 | Performance and caching pass | Backend+Frontend | — | TODO | All |
-| S6-04 | Final UI polish | UI | — | TODO | All |
+## Stock Screener
+**Status:** ✅ Live | **Route:** `/screener` | **Backend:** `/api/screener/*`, `/api/stock/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Ticker search | ✅ Live | Debounced search with dropdown |
+| AI stock grading | ✅ Live | Claude-powered A-F grading with metrics, risks, catalysts |
+| Watchlist | ✅ Live | CRUD with cached grades |
+| Quantitative screener | ✅ Live | Value + momentum screening |
+
+---
+
+## Weekly Market Report
+**Status:** ✅ Live | **Route:** `/weekly-report` | **Backend:** `/api/weekly-report/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Report generation | ✅ Live | SSE streaming via Claude + web search |
+| Report viewer | ✅ Live | Collapsible sections |
+| Report history | ✅ Live | Past reports with delete |
+
+---
+
+## Virtual Portfolio
+**Status:** ✅ Live | **Route:** `/portfolio` | **Backend:** `/api/portfolio/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Portfolio builder | ✅ Live | Create/edit with holdings management |
+| Correlation heatmap | ✅ Live | Plotly heatmap |
+| Portfolio optimization | ✅ Live | Max Sharpe vs min variance |
+| Monte Carlo simulation | ✅ Live | Percentile band visualization |
+
+---
+
+## Relative Rotation Graph
+**Status:** ✅ Live | **Route:** `/rrg` | **Backend:** `/api/rrg`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| RRG chart | ✅ Live | Four-quadrant scatter with animated tails |
+| Benchmark selector | ✅ Live | SPY/QQQ/IWM/DIA + custom |
+| Period selector | ✅ Live | 3M/6M/1Y/2Y |
+
+---
+
+## Earnings Dashboard
+**Status:** ✅ Live | **Route:** `/earnings` | **Backend:** `/api/earnings/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Earnings calendar | ✅ Live | Upcoming earnings dates |
+| PEAD analysis | ✅ Live | Post-earnings announcement drift |
+| Earnings confluence | ✅ Live | Multi-signal earnings analysis |
+
+---
+
+## Confluence Signals
+**Status:** ✅ Live | **Route:** `/confluence` | **Backend:** `/api/confluence/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Signal confluence | ✅ Live | Multi-factor signal detection |
+| Confluence backtester | ✅ Live | Historical signal performance |
+
+---
+
+## Sentiment Analysis
+**Status:** ✅ Live | **Route:** `/sentiment` | **Backend:** `/api/sentiment/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Sentiment dashboard | ✅ Live | Dedicated sentiment page |
+| News ingestion | ✅ Live | RSS feed aggregation (limited by cloud IP blocks) |
+
+---
+
+## Events & Catalysts
+**Status:** ✅ Live | **Route:** `/events` | **Backend:** `/api/events/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Event tracker | ✅ Live | Event polling and processing |
+| Catalyst identification | ✅ Live | AI-driven catalyst detection |
+
+---
+
+## Backtester
+**Status:** ✅ Live | **Route:** `/backtester` | **Backend:** `/api/backtest/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Strategy backtester | ✅ Live | Historical strategy testing |
+| Quick backtest | ✅ Live | Simplified one-click backtests |
+
+---
+
+## Correlation Matrix
+**Status:** ✅ Live | **Route:** `/correlation` | **Backend:** `/api/correlation/*`
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Correlation analysis | ✅ Live | Cross-asset correlation visualization |
+
+---
+
+## Phase 2 Backlog
+Items identified but not yet started:
+
+| Item | Priority | Notes |
+|------|----------|-------|
+| Sector chart timeframe selector in Morning Brief | Medium | Currently hardcoded to 1D |
+| Market drivers overhaul | Medium | Improve AI-generated driver quality |
+| Factor decomposition labels | Low | Better label formatting |
+| Live pre-market data for overnight gaps | Low | Replace synthetic estimation |
+| FinBERT sentiment scoring | Low | Replace market-data-derived sentiment when RSS accessible |
