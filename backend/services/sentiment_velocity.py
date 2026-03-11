@@ -120,18 +120,27 @@ def _score_with_keywords(headline: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 def _fetch_headlines() -> List[Dict[str, Any]]:
     """
-    Fetch headlines from all RSS feeds.
+    Fetch headlines from all RSS feeds with timeout protection.
 
     Returns list of dicts with keys: headline, source, published_at, link.
     """
     import feedparser
+    import urllib.request
 
     all_headlines: List[Dict[str, Any]] = []
     now = datetime.now(timezone.utc)
 
     for feed_config in RSS_FEEDS:
         try:
-            feed = feedparser.parse(feed_config["url"])
+            # Use urllib with timeout to fetch the feed, then parse
+            try:
+                req = urllib.request.Request(feed_config["url"], headers={"User-Agent": "AlphaDesk/1.0"})
+                resp = urllib.request.urlopen(req, timeout=5)
+                feed_content = resp.read()
+                feed = feedparser.parse(feed_content)
+            except Exception as fetch_err:
+                logger.debug(f"RSS fetch timeout/error for {feed_config['name']}: {fetch_err}")
+                continue
             for entry in feed.entries[:30]:  # cap per source
                 title = entry.get("title", "").strip()
                 if not title:
