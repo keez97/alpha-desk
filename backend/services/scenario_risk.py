@@ -235,35 +235,37 @@ def get_scenario_risk_data() -> Dict[str, Any]:
             logger.info(f"Returning cached scenario risk (age: {now - cached['ts']:.1f}s)")
             return cached["data"]
 
+    # Each component fails independently — partial data is better than none
+    var_data = {"var_95_historical": 0.0, "var_95_regime_adjusted": 0.0, "current_regime": "unknown"}
+    analogs = []
+    scenarios = []
+
+    # Scenarios are fast (only needs macro data) — do first
     try:
-        # Calculate VaR
-        var_data = get_historical_var("SPY")
-
-        # Find historical analogs
-        analogs = find_historical_analogs()
-
-        # Calculate scenario impacts
         scenarios = calculate_scenario_impacts()
-
-        result = {
-            "timestamp": pd.Timestamp.utcnow().isoformat(),
-            "var_95_historical": var_data.get("var_95_historical", 0.0),
-            "var_95_regime_adjusted": var_data.get("var_95_regime_adjusted", 0.0),
-            "current_regime": var_data.get("current_regime", "unknown"),
-            "historical_analogs": analogs,
-            "scenarios": scenarios,
-        }
-
-        _scenario_cache[cache_key] = {"ts": now, "data": result}
-        return result
     except Exception as e:
-        logger.error(f"Error in get_scenario_risk_data: {e}")
-        return {
-            "timestamp": pd.Timestamp.utcnow().isoformat(),
-            "var_95_historical": 0.0,
-            "var_95_regime_adjusted": 0.0,
-            "current_regime": "unknown",
-            "historical_analogs": [],
-            "scenarios": [],
-            "error": str(e),
-        }
+        logger.warning(f"Scenario impacts failed: {e}")
+
+    # VaR needs 365d price history — slower
+    try:
+        var_data = get_historical_var("SPY")
+    except Exception as e:
+        logger.warning(f"VaR calculation failed: {e}")
+
+    # Analogs need 365d history + VIX — slowest
+    try:
+        analogs = find_historical_analogs()
+    except Exception as e:
+        logger.warning(f"Historical analogs failed: {e}")
+
+    result = {
+        "timestamp": pd.Timestamp.utcnow().isoformat(),
+        "var_95_historical": var_data.get("var_95_historical", 0.0),
+        "var_95_regime_adjusted": var_data.get("var_95_regime_adjusted", 0.0),
+        "current_regime": var_data.get("current_regime", "unknown"),
+        "historical_analogs": analogs,
+        "scenarios": scenarios,
+    }
+
+    _scenario_cache[cache_key] = {"ts": now, "data": result}
+    return result

@@ -147,30 +147,43 @@ def _fetch_headlines() -> List[Dict[str, Any]]:
         feed_content = None
 
         # Primary: httpx (handles redirects, gzip, TLS better than urllib)
+        # Use realistic browser User-Agent — many RSS feeds block custom/bot UAs
+        _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         try:
             import httpx
             with httpx.Client(timeout=8.0, follow_redirects=True) as client:
                 resp = client.get(
                     feed_config["url"],
-                    headers={"User-Agent": "AlphaDesk/1.0 (Financial Dashboard)"},
+                    headers={
+                        "User-Agent": _UA,
+                        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
                 )
                 resp.raise_for_status()
                 feed_content = resp.content
+                logger.debug(f"RSS httpx OK for {feed_config['name']}: {len(feed_content)} bytes")
         except Exception as httpx_err:
-            logger.debug(f"RSS httpx fetch failed for {feed_config['name']}: {httpx_err}")
+            logger.warning(f"RSS httpx fetch failed for {feed_config['name']}: {type(httpx_err).__name__}: {httpx_err}")
 
         # Fallback: urllib
         if feed_content is None:
             try:
                 import urllib.request
+                import ssl
+                ctx = ssl.create_default_context()
                 req = urllib.request.Request(
                     feed_config["url"],
-                    headers={"User-Agent": "AlphaDesk/1.0"},
+                    headers={
+                        "User-Agent": _UA,
+                        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+                    },
                 )
-                resp = urllib.request.urlopen(req, timeout=8)
+                resp = urllib.request.urlopen(req, timeout=8, context=ctx)
                 feed_content = resp.read()
+                logger.debug(f"RSS urllib OK for {feed_config['name']}: {len(feed_content)} bytes")
             except Exception as urllib_err:
-                logger.debug(f"RSS urllib fetch also failed for {feed_config['name']}: {urllib_err}")
+                logger.warning(f"RSS urllib also failed for {feed_config['name']}: {type(urllib_err).__name__}: {urllib_err}")
                 continue
 
         # Parse feed content

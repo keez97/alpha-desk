@@ -331,7 +331,8 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     from backend.services.cot_positioning import get_cot_positioning
     from backend.services.scenario_risk import get_scenario_risk_data
     from backend.services.cross_asset_momentum import get_momentum_spillover
-    from backend.services.overnight_returns import get_overnight_returns
+    from backend.services.overnight_returns import get_overnight_returns, ALL_TICKERS as OVERNIGHT_TICKERS
+    from backend.services import synthetic_estimator
     from backend.services.data_provider import get_sector_data
     from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
 
@@ -372,12 +373,15 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
 
     # Batch 3+4 combined: Market signals + analysis (7 concurrent)
     # Must stay under Railway's 30s proxy timeout (4+4+4+8 = 20s worst case)
+    # NOTE: overnight uses synthetic estimator (instant) as primary in /all
+    # because the full 4-tier cascade (14 tickers × 4 APIs) can't finish in 8s.
+    # The dedicated /overnight-returns endpoint still uses the full cascade.
     (sentiment_raw, options_raw, earnings_raw, overnight_raw,
      positioning_raw, risk_raw, spillover_raw) = await asyncio.gather(
         safe("sentiment", get_sentiment_velocity, ["SPY", "QQQ"], timeout_s=8.0),
         safe("options", get_options_flow),
         safe("earnings", get_earnings_brief),
-        safe("overnight", get_overnight_returns, timeout_s=8.0),
+        safe("overnight", synthetic_estimator.estimate_overnight_returns, OVERNIGHT_TICKERS, timeout_s=4.0),
         safe("positioning", get_cot_positioning),
         safe("risk", get_scenario_risk_data, timeout_s=8.0),
         safe("spillover", get_momentum_spillover),
