@@ -48,7 +48,17 @@ function SignalItem({ signal }: { signal: RegimeSignal }) {
   );
 }
 
-function RecessionProbabilityMeter({ probability }: { probability: number }) {
+function RecessionProbabilityMeter({ probability }: { probability: number | null }) {
+  if (probability === null || probability === undefined) {
+    return (
+      <div className="border border-neutral-800 rounded p-2 bg-neutral-800/20">
+        <div className="text-[9px] text-neutral-500 mb-1">Recession Probability (Estrella)</div>
+        <div className="text-lg font-mono font-bold text-neutral-500">—</div>
+        <div className="text-[9px] text-neutral-600">Awaiting data</div>
+      </div>
+    );
+  }
+
   let color = 'text-green-400';
   let bgColor = 'bg-green-900/20';
   let label = 'Low Risk';

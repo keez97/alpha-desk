@@ -913,16 +913,16 @@ def _generate_alpha_insights(
 
     # ── Yield curve / recession ────────────────────────────────────
     yc_details = layers.get("yield_credit", {}).get("details", {})
-    recession_prob = yc_details.get("recession_probability", 50)
+    recession_prob = yc_details.get("recession_probability")
 
-    if recession_prob > 70:
+    if recession_prob is not None and recession_prob > 70:
         insights.append({
             "category": "Macro",
             "signal": f"Estrella model: {recession_prob:.0f}% recession probability in 12 months",
             "action": "Overweight Treasuries and defensive equities (utilities, healthcare, staples). Reduce cyclical exposure. The yield curve has predicted every recession since 1960.",
             "conviction": "high",
         })
-    elif recession_prob < 15 and regime == "bull":
+    elif recession_prob is not None and recession_prob < 15 and regime == "bull":
         insights.append({
             "category": "Macro",
             "signal": f"Low recession probability ({recession_prob:.0f}%) confirms bull regime",
@@ -1102,7 +1102,7 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
     bear_score = sum(1 for s in all_signals if s.get("bias") == "bear")
 
     # ── Extract key metrics for top-level access ───────────────────
-    recession_prob = layer_results.get("yield_credit", {}).get("details", {}).get("recession_probability", 50.0)
+    recession_prob = layer_results.get("yield_credit", {}).get("details", {}).get("recession_probability")
     fg_data = layer_results.get("sentiment", {}).get("details", {}).get("fear_greed_data")
     macro_surprise = layer_results.get("macro", {}).get("score", 0.0)
 
@@ -1158,7 +1158,7 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
         # Legacy compatibility
         "bull_score": bull_score,
         "bear_score": bear_score,
-        "recession_probability": round(recession_prob, 1),
+        "recession_probability": round(recession_prob, 1) if recession_prob is not None else None,
         "correlation_regime": correlation_regime,
         "macro_surprise_score": round(macro_surprise, 2),
         "fear_greed_index": fg_data,

@@ -134,12 +134,19 @@ def generate_regime_insight(regime_data: dict, vix_data: dict, breadth_data: dic
             f"percentile={vix_data.get('percentile', 50)}"
         )
 
+    # ── Extract recession probability from multiple sources ──
+    # Priority: top-level field > yield_credit layer details > None
+    recession_prob = regime_data.get("recession_probability")
+    if recession_prob is None:
+        recession_prob = layers.get("yield_credit", {}).get("details", {}).get("recession_probability")
+    recession_text = f"{recession_prob:.0f}%" if recession_prob is not None else "unavailable (data still loading)"
+
     prompt = f"""Analyze the current market regime and generate a concise, actionable morning assessment.
 
 REGIME DATA:
 - Overall: {regime_data.get('regime', 'neutral')} (confidence {regime_data.get('confidence', 50)}%, composite score {regime_data.get('composite_score', 0):.2f})
 - Windham State: {windham.get('state', 'unknown')} — {windham.get('label', '')} ({windham.get('description', '')})
-- Recession Probability: {regime_data.get('recession_probability', 50):.0f}%
+- Recession Probability (Estrella model): {recession_text}
 
 LAYER SCORES:
 {chr(10).join(layer_summary)}

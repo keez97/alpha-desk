@@ -624,7 +624,7 @@ async def get_regime_insight():
         )
     except Exception as e:
         logger.warning(f"Regime detection failed for insight: {e}")
-        regime_raw = {"regime": "neutral", "confidence": 50, "composite_score": 0, "layers": {}, "windham": {}}
+        regime_raw = {"regime": "neutral", "confidence": 0, "composite_score": 0, "layers": {}, "windham": {}, "recession_probability": None}
 
     # Generate insight via Claude
     try:

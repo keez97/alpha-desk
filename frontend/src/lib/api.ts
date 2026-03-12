@@ -488,7 +488,7 @@ export interface AlphaInsight {
 }
 
 export interface UpgradedRegimeData extends RegimeData {
-  recessionProbability: number;
+  recessionProbability: number | null;
   correlationRegime: string;
   macroSurpriseScore: number;
   compositeScore: number;
@@ -512,7 +512,7 @@ export async function fetchUpgradedRegime(): Promise<UpgradedRegimeData> {
     bullScore: regime.bull_score ?? 0,
     bearScore: regime.bear_score ?? 0,
     signals: regime.signals || [],
-    recessionProbability: regime.recession_probability ?? 50,
+    recessionProbability: regime.recession_probability ?? null,
     correlationRegime: regime.correlation_regime || 'normal',
     macroSurpriseScore: regime.macro_surprise_score ?? 0,
     compositeScore: regime.composite_score ?? 0,
