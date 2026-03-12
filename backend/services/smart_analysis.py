@@ -618,10 +618,10 @@ def generate_smart_report(date: str, macro: dict, sectors: list, regime: dict | 
     }
 
 
-def generate_custom_report(date: str, macro: dict, sectors: list, topics: List[str]) -> Dict[str, Any]:
+def generate_custom_report(date: str, macro: dict, sectors: list, topics: List[str], regime: dict | None = None) -> Dict[str, Any]:
     """Generate a morning report with only the selected topics."""
     # Always generate the full report first, then filter
-    full_report = generate_smart_report(date, macro, sectors)
+    full_report = generate_smart_report(date, macro, sectors, regime=regime)
 
     # Map topic keys to report section keys
     topic_to_section = {

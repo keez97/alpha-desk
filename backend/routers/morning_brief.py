@@ -459,7 +459,13 @@ async def custom_report(body: dict):
     try:
         macro = get_macro_data()
         sectors = get_sector_data(period="1D")
-        report = generate_custom_report(today, macro, sectors, topics)
+        # Fetch current regime so the report reflects systemic risk state
+        current_regime = None
+        try:
+            current_regime = await asyncio.to_thread(detect_regime, macro)
+        except Exception as e:
+            logger.warning(f"Regime detection for custom report failed: {e}")
+        report = generate_custom_report(today, macro, sectors, topics, regime=current_regime)
         return {
             "timestamp": datetime.utcnow().isoformat(),
             "data": report
