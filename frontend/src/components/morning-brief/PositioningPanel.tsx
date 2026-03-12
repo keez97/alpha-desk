@@ -34,6 +34,53 @@ function formatContracts(n: number): string {
 // Sub-components
 // ═══════════════════════════════════════════════════════════════
 
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="relative group/tip cursor-help">
+      {children}
+      <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-max max-w-[180px] rounded bg-neutral-800 border border-neutral-700 px-2 py-1.5 text-[9px] leading-snug text-neutral-300 opacity-0 group-hover/tip:opacity-100 transition-opacity z-50 shadow-lg">
+        {text}
+      </span>
+    </span>
+  );
+}
+
+function ColumnHeaders() {
+  return (
+    <div className="flex items-center gap-2 h-4 mb-1 border-b border-neutral-800/50 pb-1">
+      {/* Label spacer */}
+      <span className="w-12 flex-shrink-0" />
+
+      {/* Bar header */}
+      <div className="flex-1 text-center">
+        <Tooltip text="Bar length shows the percentile rank of current net positioning vs the past 52 weeks. Green = net long, Red = net short.">
+          <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">Positioning</span>
+        </Tooltip>
+      </div>
+
+      {/* Net position header */}
+      <Tooltip text="Net contracts = long contracts minus short contracts held by that trader group. Shows the size and direction of their position.">
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-16 text-right flex-shrink-0">Net</span>
+      </Tooltip>
+
+      {/* Direction header */}
+      <Tooltip text="Whether the group is net long (buying) or net short (selling) overall.">
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-10 text-center flex-shrink-0">Side</span>
+      </Tooltip>
+
+      {/* Percentile header */}
+      <Tooltip text="Percentile rank vs 52-week range. P90+ or P10- = extreme positioning (amber). P50 = middle of the range.">
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-7 text-right flex-shrink-0">%ile</span>
+      </Tooltip>
+
+      {/* Weekly change header */}
+      <Tooltip text="Week-over-week change in net positioning. ↑ = added to position, ↓ = reduced position.">
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-4 text-center flex-shrink-0">Wk</span>
+      </Tooltip>
+    </div>
+  );
+}
+
 function PositioningBar({
   label,
   net,
@@ -112,7 +159,9 @@ function MarketCard({ market }: { market: MarketPositioning }) {
         <span className="text-[10px] font-bold text-neutral-200">{market.name}</span>
         <span className="text-[8px] font-mono text-neutral-500">({market.ticker})</span>
         {market.divergence && (
-          <span className="text-[7px] px-1.5 py-0.5 rounded-full bg-amber-900/30 text-amber-400 font-medium">DIV</span>
+          <Tooltip text="Hedgers and speculators are positioned on opposite sides with a wide gap — watch for reversal.">
+            <span className="text-[7px] px-1.5 py-0.5 rounded-full bg-amber-900/30 text-amber-400 font-medium">DIV</span>
+          </Tooltip>
         )}
       </div>
 
@@ -334,11 +383,22 @@ export function PositioningPanel() {
           <div className="h-1.5 w-3 rounded-sm bg-red-500/70" />
           <span>Net Short</span>
         </div>
-        <div className="flex items-center gap-1">
-          <div className="h-1.5 w-3 rounded-sm border border-amber-400/40" />
-          <span>Extreme</span>
-        </div>
+        <Tooltip text="Positioning in the top 10% or bottom 10% of the 52-week range. Historically marks turning points.">
+          <div className="flex items-center gap-1">
+            <div className="h-1.5 w-3 rounded-sm border border-amber-400/40" />
+            <span>Extreme</span>
+          </div>
+        </Tooltip>
+        <Tooltip text="Divergence: hedgers and speculators are on opposite sides with a wide percentile gap (>30pts). Smart money vs crowd.">
+          <div className="flex items-center gap-1">
+            <span className="text-[7px] px-1 rounded-full bg-amber-900/30 text-amber-400 font-medium">DIV</span>
+            <span>Divergence</span>
+          </div>
+        </Tooltip>
       </div>
+
+      {/* Column headers */}
+      <ColumnHeaders />
 
       {/* Markets list */}
       <div className="space-y-0">
