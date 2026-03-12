@@ -1286,6 +1286,7 @@ export interface OvernightGapIndex {
   z_score: number;
   is_outlier: boolean;
   direction: 'up' | 'down';
+  last_price: number;
 }
 
 export interface OvernightReturnsSummary {
@@ -1321,6 +1322,7 @@ export async function fetchOvernightReturns(): Promise<OvernightReturnsData> {
       z_score: i.z_score ?? 0,
       is_outlier: i.is_outlier ?? false,
       direction: i.direction || 'up',
+      last_price: i.last_price ?? 0,
     })),
     summary: {
       total_tracked: d.summary?.total_tracked ?? 0,

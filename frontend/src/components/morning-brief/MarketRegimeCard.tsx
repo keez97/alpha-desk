@@ -1,17 +1,17 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchUpgradedRegime, fetchVixTermStructure, fetchOvernightReturns } from '../../lib/api';
+import { fetchUpgradedRegime, fetchVixTermStructure, fetchOvernightReturns, fetchBreadth } from '../../lib/api';
 import { LoadingState } from '../shared/LoadingState';
 import { ErrorState } from '../shared/ErrorState';
-import type { UpgradedRegimeData, VixTermStructureData, OvernightReturnsData, RegimeSignal, AlphaInsight, RegimeLayerData } from '../../lib/api';
+import type { UpgradedRegimeData, VixTermStructureData, OvernightReturnsData, BreadthData, RegimeSignal, AlphaInsight, RegimeLayerData } from '../../lib/api';
 
 // ═══════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════
-const REGIME_STYLES: Record<string, { bg: string; text: string; label: string; glow: string }> = {
-  bull:    { bg: 'bg-green-500/10', text: 'text-green-400', label: 'BULL', glow: 'shadow-green-500/20' },
-  bear:    { bg: 'bg-red-500/10', text: 'text-red-400', label: 'BEAR', glow: 'shadow-red-500/20' },
-  neutral: { bg: 'bg-neutral-500/10', text: 'text-neutral-400', label: 'NEUTRAL', glow: 'shadow-neutral-500/10' },
+const REGIME_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  bull:    { bg: 'bg-green-500/10', text: 'text-green-400', label: 'BULL' },
+  bear:    { bg: 'bg-red-500/10', text: 'text-red-400', label: 'BEAR' },
+  neutral: { bg: 'bg-neutral-500/10', text: 'text-neutral-400', label: 'NEUTRAL' },
 };
 
 const WINDHAM_STYLES: Record<string, { bg: string; text: string; icon: string }> = {
@@ -39,16 +39,57 @@ const BIAS_DOT: Record<string, string> = {
 };
 
 // ═══════════════════════════════════════════════════════════════
+// Signal Tooltips — explains what each metric does and how it's measured
+// ═══════════════════════════════════════════════════════════════
+const SIGNAL_TOOLTIPS: Record<string, string> = {
+  // Trend layer
+  'SMA Crossover': 'Compares 50-day vs 200-day simple moving average. Golden Cross (50 > 200) is bullish, Death Cross is bearish. Ratio measures distance between the two.',
+  'Price vs 200 SMA': 'Measures how far the current price is from the 200-day moving average. Being above signals uptrend, below signals downtrend. Percentage distance gauges conviction.',
+  'Momentum': 'Fast momentum uses 1-month return, slow momentum uses 6-month return. Divergence between fast and slow can signal turning points (Goulding, Harvey & Mazzoleni).',
+
+  // Volatility layer
+  'VIX': 'The CBOE Volatility Index measures 30-day expected S&P 500 volatility. Below 15 = calm, 15–25 = normal, 25–35 = elevated, above 35 = panic. Percentile rank gives historical context.',
+  'VVIX': 'Volatility of VIX — measures uncertainty about future volatility itself. High VVIX means options traders disagree on direction. Calm VVIX with elevated VIX = persistent fear.',
+
+  // Yield/Credit layer
+  'Yield Curve': 'The 10Y–3M Treasury spread. Positive = normal (growth expected), inverted (negative) = recession warning. Estrella-Mishkin probit model converts this into a recession probability.',
+  'HY Credit Spread': 'High yield (junk) bond OAS spread over Treasuries. Measures corporate credit stress. Below 3% = tight (risk-on), 3–5% = normal, above 5% = stress, above 8% = crisis.',
+
+  // Sentiment layer
+  'Fear & Greed': 'CNN\'s composite of 7 market indicators (momentum, strength, breadth, put/call, junk bond demand, volatility, safe haven). 0–25 = Extreme Fear, 75–100 = Extreme Greed. Used as contrarian signal.',
+
+  // Macro layer
+  'WTI Oil': 'West Texas Intermediate crude oil price. Spikes above $90 are inflationary headwinds. Large moves signal supply disruptions or demand shifts that affect corporate margins.',
+  'USD Index': 'Trade-weighted dollar index (DXY). Strong dollar hurts multinational earnings and emerging markets. Rapid moves signal capital flow shifts.',
+  'Yield Curve Momentum': 'Rate of change in the yield curve slope. Steepening = improving growth outlook, flattening = tightening conditions or slowdown expectations.',
+
+  // Systemic layer
+  'Turbulence Index': 'Mahalanobis distance measuring how unusual multi-asset returns are vs history. Uses SPY, TLT, GLD, HYG returns over 60 days. High values = cross-asset stress.',
+  'Absorption Ratio': 'PCA-based: fraction of total variance explained by first eigenvector across SPY, TLT, GLD, HYG. High absorption = tightly coupled markets = fragile. Above 80th %ile = systemic risk.',
+  'Windham Fragility': 'Windham Capital 2×2 classification: Turbulence %ile (calm vs turbulent) × Absorption %ile (resilient vs fragile). Fragile-calm = Hidden Risk; fragile-turbulent = Crisis Mode.',
+};
+
+// ═══════════════════════════════════════════════════════════════
 // Sub-components
 // ═══════════════════════════════════════════════════════════════
+
+function SignalTooltip({ text }: { text: string }) {
+  return (
+    <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-2.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl pointer-events-none">
+      <div className="text-[9px] text-neutral-300 leading-snug">{text}</div>
+      <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-neutral-900 border-r border-b border-neutral-700 rotate-45 -mt-1" />
+    </div>
+  );
+}
+
 function LayerBar({ name, layer, isExpanded, onToggle }: {
   name: string;
   layer: RegimeLayerData;
   isExpanded: boolean;
   onToggle: () => void;
 }) {
+  const [hoveredSignal, setHoveredSignal] = useState<string | null>(null);
   const score = layer.score;
-  const pct = ((score + 1) / 2) * 100; // -1..+1 → 0..100%
   const barColor = score > 0.2 ? 'bg-green-500' : score < -0.2 ? 'bg-red-500' : 'bg-neutral-500';
   const weight = Math.round(layer.weight * 100);
 
@@ -60,9 +101,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
       >
         <span className="text-neutral-500 w-[52px] text-left truncate">{LAYER_LABELS[name] || name}</span>
         <div className="flex-1 h-1.5 rounded-full bg-neutral-800 overflow-hidden relative">
-          {/* Center marker */}
           <div className="absolute left-1/2 top-0 w-px h-full bg-neutral-600 z-10" />
-          {/* Bar from center */}
           {score >= 0 ? (
             <div className={`${barColor} h-full absolute left-1/2 rounded-r-full transition-all`}
               style={{ width: `${(score / 1) * 50}%` }} />
@@ -77,18 +116,28 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
         <span className="text-neutral-600 w-4 text-right">{weight}%</span>
         <span className={`text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>›</span>
       </button>
-      {/* Expanded detail */}
       {isExpanded && layer.signals && layer.signals.length > 0 && (
         <div className="ml-2 mt-0.5 mb-1 pl-2 border-l border-neutral-800 space-y-0.5">
-          {layer.signals.map((sig, i) => (
-            <div key={i} className="flex items-center gap-1.5 text-[9px]">
-              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${BIAS_DOT[sig.bias] || BIAS_DOT.neutral}`} />
-              <span className="text-neutral-400 truncate flex-1">{sig.name}</span>
-              <span className={`font-mono ${sig.bias === 'bull' ? 'text-green-400' : sig.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'}`}>
-                {sig.value}
-              </span>
-            </div>
-          ))}
+          {layer.signals.map((sig, i) => {
+            const tooltip = SIGNAL_TOOLTIPS[sig.name];
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-1.5 text-[9px] relative"
+                onMouseEnter={() => tooltip ? setHoveredSignal(sig.name) : undefined}
+                onMouseLeave={() => setHoveredSignal(null)}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${BIAS_DOT[sig.bias] || BIAS_DOT.neutral}`} />
+                <span className={`text-neutral-400 truncate flex-1 ${tooltip ? 'cursor-help border-b border-dotted border-neutral-700' : ''}`}>
+                  {sig.name}
+                </span>
+                <span className={`font-mono ${sig.bias === 'bull' ? 'text-green-400' : sig.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'}`}>
+                  {sig.value}
+                </span>
+                {hoveredSignal === sig.name && tooltip && <SignalTooltip text={tooltip} />}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -96,7 +145,6 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
 }
 
 function CompositeGauge({ score, regime }: { score: number; regime: string }) {
-  // Score goes -1 to +1, mapped to 0-100 for the gauge
   const pct = ((score + 1) / 2) * 100;
   const style = REGIME_STYLES[regime] || REGIME_STYLES.neutral;
 
@@ -169,29 +217,66 @@ function InsightBar({ insight }: { insight: AlphaInsight }) {
   );
 }
 
+function ADBar({ advances, declines, total }: { advances: number; declines: number; total: number }) {
+  if (total === 0) return null;
+  const advPct = (advances / total) * 100;
+  const decPct = (declines / total) * 100;
+  return (
+    <div className="space-y-0.5">
+      <div className="flex justify-between text-[9px]">
+        <span className="text-green-400">{advances} Advancing</span>
+        <span className="text-red-400">{declines} Declining</span>
+      </div>
+      <div className="h-1.5 rounded-full overflow-hidden flex bg-neutral-800">
+        <div className="bg-green-500/70 h-full transition-all" style={{ width: `${advPct}%` }} />
+        <div className="bg-neutral-700 h-full transition-all" style={{ width: `${100 - advPct - decPct}%` }} />
+        <div className="bg-red-500/70 h-full transition-all" style={{ width: `${decPct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Main Component
 // ═══════════════════════════════════════════════════════════════
 export function MarketRegimeCard() {
-  const [expandedLayer, setExpandedLayer] = useState<string | null>(null);
-  const [showAllGaps, setShowAllGaps] = useState(false);
-  const [activeTab, setActiveTab] = useState<'signals' | 'systemic'>('signals');
+  const [expandedLayers, setExpandedLayers] = useState<Set<string>>(new Set());
 
-  // Fetch all three data sources in parallel
+  // Fetch all four data sources in parallel
   const regime = useQuery({ queryKey: ['regime'], queryFn: fetchUpgradedRegime, staleTime: 5 * 60_000, retry: 2 });
   const vix = useQuery({ queryKey: ['vix-term-structure'], queryFn: fetchVixTermStructure, staleTime: 5 * 60_000, retry: 2 });
   const gaps = useQuery({ queryKey: ['overnight-returns'], queryFn: fetchOvernightReturns, staleTime: 30 * 60_000 });
+  const breadth = useQuery({ queryKey: ['breadth'], queryFn: fetchBreadth, staleTime: 10 * 60_000, retry: 2 });
 
   const isLoading = regime.isLoading && vix.isLoading && gaps.isLoading;
   const hasError = regime.error && vix.error;
 
   if (isLoading) return <LoadingState message="Loading market regime..." />;
-  if (hasError) return <ErrorState error={regime.error || vix.error!} onRetry={() => { regime.refetch(); vix.refetch(); gaps.refetch(); }} />;
+  if (hasError) return <ErrorState error={regime.error || vix.error!} onRetry={() => { regime.refetch(); vix.refetch(); gaps.refetch(); breadth.refetch(); }} />;
 
   const r = regime.data;
   const v = vix.data;
   const g = gaps.data;
+  const b = breadth.data;
   const style = r ? (REGIME_STYLES[r.regime] || REGIME_STYLES.neutral) : REGIME_STYLES.neutral;
+
+  const toggleLayer = (name: string) => {
+    setExpandedLayers(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const allExpanded = r?.layers ? LAYER_ORDER.every(n => expandedLayers.has(n)) : false;
+  const toggleAll = () => {
+    if (allExpanded) {
+      setExpandedLayers(new Set());
+    } else {
+      setExpandedLayers(new Set(LAYER_ORDER));
+    }
+  };
 
   return (
     <div className={`border border-neutral-800 rounded-lg overflow-hidden ${style.bg}`}>
@@ -210,35 +295,25 @@ export function MarketRegimeCard() {
         </div>
       </div>
 
-      {/* ═══ Main 3-Column Layout ═══ */}
+      {/* ═══ Main 4-Column Layout ═══ */}
       <div className="grid grid-cols-12 divide-x divide-neutral-800/50">
 
-        {/* ─── Left: Regime Layers (5 cols) ─── */}
-        <div className="col-span-5 p-2.5 space-y-2">
-          {/* Composite gauge */}
+        {/* ─── Col 1: Regime Layers (4 cols) ─── */}
+        <div className="col-span-4 p-2.5 space-y-2">
           {r && <CompositeGauge score={r.compositeScore} regime={r.regime} />}
 
-          {/* Tab switcher */}
-          <div className="flex gap-0.5 bg-neutral-900/50 rounded p-0.5">
+          {/* Expand all / Collapse all toggle */}
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] text-neutral-500 font-medium">6 Layers</span>
             <button
-              onClick={() => setActiveTab('signals')}
-              className={`flex-1 text-[9px] py-0.5 rounded transition-colors cursor-pointer ${
-                activeTab === 'signals' ? 'bg-neutral-700 text-neutral-200' : 'text-neutral-500 hover:text-neutral-400'
-              }`}
+              onClick={toggleAll}
+              className="text-[8px] text-blue-400 hover:text-blue-300 cursor-pointer"
             >
-              6 Layers
-            </button>
-            <button
-              onClick={() => setActiveTab('systemic')}
-              className={`flex-1 text-[9px] py-0.5 rounded transition-colors cursor-pointer ${
-                activeTab === 'systemic' ? 'bg-neutral-700 text-neutral-200' : 'text-neutral-500 hover:text-neutral-400'
-              }`}
-            >
-              Systemic Risk
+              {allExpanded ? 'Collapse all' : 'Expand all'}
             </button>
           </div>
 
-          {activeTab === 'signals' && r?.layers && (
+          {r?.layers && (
             <div className="space-y-0">
               {LAYER_ORDER.map(name => {
                 const layer = r.layers[name];
@@ -248,104 +323,50 @@ export function MarketRegimeCard() {
                     key={name}
                     name={name}
                     layer={layer}
-                    isExpanded={expandedLayer === name}
-                    onToggle={() => setExpandedLayer(expandedLayer === name ? null : name)}
+                    isExpanded={expandedLayers.has(name)}
+                    onToggle={() => toggleLayer(name)}
                   />
                 );
               })}
             </div>
           )}
-
-          {activeTab === 'systemic' && r && (
-            <div className="space-y-2">
-              {/* Key metrics */}
-              <div className="grid grid-cols-2 gap-1.5">
-                <div className="bg-neutral-900/50 rounded p-1.5 text-center">
-                  <div className="text-[8px] text-neutral-500">Turbulence</div>
-                  <div className="text-xs font-mono font-bold text-neutral-200">
-                    {r.systemicRisk.turbulenceIndex?.toFixed(3) ?? '—'}
-                  </div>
-                  <div className="text-[8px] text-neutral-500">
-                    {r.systemicRisk.turbulencePercentile?.toFixed(0) ?? '—'}th %ile
-                  </div>
-                </div>
-                <div className="bg-neutral-900/50 rounded p-1.5 text-center">
-                  <div className="text-[8px] text-neutral-500">Absorption</div>
-                  <div className="text-xs font-mono font-bold text-neutral-200">
-                    {r.systemicRisk.absorptionRatio?.toFixed(3) ?? '—'}
-                  </div>
-                  <div className="text-[8px] text-neutral-500">
-                    {r.systemicRisk.absorptionPercentile?.toFixed(0) ?? '—'}th %ile
-                  </div>
-                </div>
-              </div>
-              {/* Recession prob + Windham state */}
-              <div className="grid grid-cols-2 gap-1.5">
-                <div className="bg-neutral-900/50 rounded p-1.5 text-center">
-                  <div className="text-[8px] text-neutral-500">Recession Prob</div>
-                  <div className={`text-xs font-mono font-bold ${
-                    r.recessionProbability < 25 ? 'text-green-400' : r.recessionProbability < 50 ? 'text-yellow-400' : 'text-red-400'
-                  }`}>
-                    {r.recessionProbability.toFixed(1)}%
-                  </div>
-                  <div className="text-[8px] text-neutral-500">Estrella</div>
-                </div>
-                <div className="bg-neutral-900/50 rounded p-1.5 text-center">
-                  <div className="text-[8px] text-neutral-500">Windham State</div>
-                  <div className={`text-[10px] font-bold ${WINDHAM_STYLES[r.windham.state]?.text || 'text-neutral-400'}`}>
-                    {r.windham.label}
-                  </div>
-                  <div className="text-[8px] text-neutral-500">{r.windham.risk_level} risk</div>
-                </div>
-              </div>
-              {/* Windham description */}
-              {r.windham.description && (
-                <div className="text-[9px] text-neutral-500 leading-snug bg-neutral-900/30 rounded p-1.5">
-                  {r.windham.description}
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
-        {/* ─── Middle: VIX Term Structure (3 cols) ─── */}
-        <div className="col-span-3 p-2.5 space-y-2">
+        {/* ─── Col 2: VIX Term Structure (2 cols) ─── */}
+        <div className="col-span-2 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-neutral-500 font-medium">VIX Structure</span>
+            <span className="text-[9px] text-neutral-500 font-medium">VIX Structure</span>
             {v && (
-              <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-neutral-900/50 ${
+              <span className={`text-[8px] px-1 py-0.5 rounded-full font-medium bg-neutral-900/50 ${
                 v.signal === 'bullish' ? 'text-green-400' : v.signal === 'bearish' ? 'text-red-400' : 'text-neutral-400'
               }`}>
-                {v.signal === 'bullish' ? '↗ Bullish' : v.signal === 'bearish' ? '↘ Bearish' : '→ Neutral'}
+                {v.signal === 'bullish' ? '↗' : v.signal === 'bearish' ? '↘' : '→'}
               </span>
             )}
           </div>
 
           {v && (
             <>
-              {/* VIX numbers */}
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1">
                 <div>
-                  <div className="text-[8px] text-neutral-500">VIX Spot</div>
-                  <div className="text-base font-mono font-bold text-neutral-200">{v.vixSpot.toFixed(2)}</div>
+                  <div className="text-[7px] text-neutral-500">Spot</div>
+                  <div className="text-sm font-mono font-bold text-neutral-200">{v.vixSpot.toFixed(1)}</div>
                 </div>
                 <div>
-                  <div className="text-[8px] text-neutral-500">VIX 3M</div>
-                  <div className="text-base font-mono font-bold text-neutral-300">{v.vix3m.toFixed(2)}</div>
+                  <div className="text-[7px] text-neutral-500">3M</div>
+                  <div className="text-sm font-mono font-bold text-neutral-300">{v.vix3m.toFixed(1)}</div>
                 </div>
               </div>
 
-              {/* Term structure state */}
-              <div className={`rounded p-1.5 text-center ${v.state === 'contango' ? 'bg-green-900/20' : 'bg-red-900/20'}`}>
-                <span className={`text-[10px] font-bold ${v.state === 'contango' ? 'text-green-400' : 'text-red-400'}`}>
-                  {v.state === 'contango' ? 'Contango' : 'Backwardation'} {v.magnitude.toFixed(2)}%
+              <div className={`rounded p-1 text-center ${v.state === 'contango' ? 'bg-green-900/20' : 'bg-red-900/20'}`}>
+                <span className={`text-[9px] font-bold ${v.state === 'contango' ? 'text-green-400' : 'text-red-400'}`}>
+                  {v.state === 'contango' ? 'Contango' : 'Backwrdtn'} {v.magnitude.toFixed(1)}%
                 </span>
               </div>
 
-              {/* Percentile bar */}
               <div>
-                <div className="flex justify-between text-[8px] mb-0.5">
-                  <span className="text-neutral-500">1Y Percentile</span>
+                <div className="flex justify-between text-[7px] mb-0.5">
+                  <span className="text-neutral-500">1Y %ile</span>
                   <span className={`font-mono ${v.percentile > 75 ? 'text-red-400' : v.percentile < 25 ? 'text-green-400' : 'text-yellow-400'}`}>
                     {v.percentile}th
                   </span>
@@ -358,38 +379,36 @@ export function MarketRegimeCard() {
                 </div>
               </div>
 
-              {/* Ratio + Roll Yield */}
-              <div className="grid grid-cols-2 gap-2 text-[9px]">
+              <div className="grid grid-cols-2 gap-1 text-[8px]">
                 <div className="flex justify-between">
                   <span className="text-neutral-500">Ratio</span>
                   <span className="font-mono text-neutral-300">{v.ratio.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-neutral-500">Roll Yield</span>
+                  <span className="text-neutral-500">Roll</span>
                   <span className={`font-mono ${v.rollYield > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {v.rollYield.toFixed(6)}
+                    {v.rollYield.toFixed(5)}
                   </span>
                 </div>
               </div>
 
-              {/* Sparkline */}
               {v.history.length > 0 && (
-                <div className="bg-neutral-900/40 rounded p-1">
+                <div className="bg-neutral-900/40 rounded p-0.5">
                   <MiniSparkline data={v.history.map(h => h.ratio)} />
                 </div>
               )}
             </>
           )}
 
-          {!v && <div className="text-[10px] text-neutral-600 py-4 text-center">VIX data loading...</div>}
+          {!v && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
 
-        {/* ─── Right: Overnight Gaps (4 cols) ─── */}
-        <div className="col-span-4 p-2.5 space-y-1.5">
+        {/* ─── Col 3: Overnight Gaps (3 cols) ─── */}
+        <div className="col-span-3 p-2.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-neutral-500 font-medium">Overnight Gaps</span>
+            <span className="text-[9px] text-neutral-500 font-medium">Overnight Gaps</span>
             {g && (
-              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-neutral-900/50 ${
+              <span className={`text-[8px] font-mono px-1 py-0.5 rounded-full bg-neutral-900/50 ${
                 g.summary.net_direction === 'up' ? 'text-emerald-400' : g.summary.net_direction === 'down' ? 'text-red-400' : 'text-neutral-400'
               }`}>
                 {g.summary.gaps_up}↑ {g.summary.gaps_down}↓
@@ -399,14 +418,14 @@ export function MarketRegimeCard() {
 
           {g && (
             <>
-              {/* Indices - compact */}
-              <div className="space-y-0.5">
+              {/* Major Indices */}
+              <div className="space-y-0">
                 {g.indices.slice(0, 4).map(item => (
-                  <div key={item.ticker} className="flex items-center justify-between text-[10px]">
-                    <div className="flex items-center gap-1">
-                      <span className="font-mono font-bold text-neutral-300 w-8">{item.ticker}</span>
-                      <span className="text-neutral-600 truncate text-[9px]">{item.name}</span>
-                    </div>
+                  <div key={item.ticker} className="flex items-center justify-between text-[9px] py-px">
+                    <span className="font-mono font-bold text-neutral-300 w-7">{item.ticker}</span>
+                    {item.last_price > 0 && (
+                      <span className="font-mono text-neutral-500 text-[8px]">${item.last_price.toFixed(0)}</span>
+                    )}
                     <span className={`font-mono font-medium ${item.direction === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
                       {item.overnight_return_pct > 0 ? '+' : ''}{item.overnight_return_pct.toFixed(2)}%
                     </span>
@@ -414,38 +433,33 @@ export function MarketRegimeCard() {
                 ))}
               </div>
 
-              {/* Sectors - compact 2-col grid */}
+              {/* All Sectors — no show more/less */}
               {g.indices.length > 4 && (
-                <>
-                  <div className="border-t border-neutral-800/50 pt-1">
-                    <div className="text-[8px] text-neutral-600 mb-0.5">Sectors</div>
-                    <div className="grid grid-cols-2 gap-x-2 gap-y-0">
-                      {g.indices.slice(4, showAllGaps ? undefined : 12).map(item => (
-                        <div key={item.ticker} className="flex items-center justify-between text-[9px] py-0.5">
-                          <span className="font-mono text-neutral-400">{item.ticker}</span>
+                <div className="border-t border-neutral-800/50 pt-0.5">
+                  <div className="text-[7px] text-neutral-600 mb-0.5">Sectors</div>
+                  <div className="grid grid-cols-2 gap-x-1.5 gap-y-0">
+                    {g.indices.slice(4).map(item => (
+                      <div key={item.ticker} className="flex items-center justify-between text-[8px] py-px">
+                        <span className="font-mono text-neutral-400">{item.ticker}</span>
+                        <div className="flex items-center gap-1">
+                          {item.last_price > 0 && (
+                            <span className="font-mono text-neutral-600 text-[7px]">${item.last_price.toFixed(0)}</span>
+                          )}
                           <span className={`font-mono ${item.direction === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
                             {item.overnight_return_pct > 0 ? '+' : ''}{item.overnight_return_pct.toFixed(2)}%
                           </span>
                         </div>
-                      ))}
-                    </div>
-                    {g.indices.length > 12 && (
-                      <button
-                        onClick={() => setShowAllGaps(!showAllGaps)}
-                        className="text-[8px] text-blue-400 hover:text-blue-300 mt-0.5 cursor-pointer"
-                      >
-                        {showAllGaps ? 'Show less' : `+${g.indices.length - 12} more`}
-                      </button>
-                    )}
+                      </div>
+                    ))}
                   </div>
-                </>
+                </div>
               )}
 
               {/* Outlier alerts */}
               {g.summary.notable_gaps.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {g.summary.notable_gaps.slice(0, 2).map(gap => (
-                    <span key={gap.ticker} className="text-[8px] bg-amber-900/20 text-amber-400 rounded px-1.5 py-0.5 font-mono">
+                    <span key={gap.ticker} className="text-[7px] bg-amber-900/20 text-amber-400 rounded px-1 py-0.5 font-mono">
                       ⚠ {gap.ticker} {gap.overnight_return_pct > 0 ? '+' : ''}{gap.overnight_return_pct.toFixed(2)}%
                     </span>
                   ))}
@@ -454,7 +468,70 @@ export function MarketRegimeCard() {
             </>
           )}
 
-          {!g && <div className="text-[10px] text-neutral-600 py-4 text-center">Gaps loading...</div>}
+          {!g && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
+        </div>
+
+        {/* ─── Col 4: Market Breadth (3 cols) ─── */}
+        <div className="col-span-3 p-2.5 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] text-neutral-500 font-medium">Market Breadth</span>
+            {b && (
+              <span className={`text-[8px] px-1 py-0.5 rounded-full font-medium bg-neutral-900/50 ${
+                b.signal.includes('bull') ? 'text-green-400' : b.signal.includes('bear') ? 'text-red-400' : 'text-neutral-400'
+              }`}>
+                {b.signal.includes('strongly') ? (b.signal.includes('bull') ? 'Strong Bull' : 'Strong Bear')
+                  : b.signal.includes('bull') ? 'Bullish'
+                  : b.signal.includes('bear') ? 'Bearish' : 'Neutral'}
+              </span>
+            )}
+          </div>
+
+          {b && b.total > 0 && (
+            <>
+              <ADBar advances={b.advances} declines={b.declines} total={b.total} />
+
+              <div className="grid grid-cols-2 gap-1.5">
+                <div className="bg-neutral-900/50 rounded p-1 text-center">
+                  <div className="text-[7px] text-neutral-500">A/D Ratio</div>
+                  <div className={`text-xs font-mono font-bold ${
+                    b.adRatio > 1.5 ? 'text-green-400' : b.adRatio < 0.67 ? 'text-red-400' : 'text-neutral-300'
+                  }`}>
+                    {b.adRatio.toFixed(2)}
+                  </div>
+                  <div className="text-[7px] text-neutral-600">{b.adRatio > 1 ? 'net adv.' : 'net dec.'}</div>
+                </div>
+                <div className="bg-neutral-900/50 rounded p-1 text-center">
+                  <div className="text-[7px] text-neutral-500">Net Adv</div>
+                  <div className={`text-xs font-mono font-bold ${b.netAdvances > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {b.netAdvances > 0 ? '+' : ''}{b.netAdvances}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5">
+                <div className="bg-neutral-900/50 rounded p-1 text-center">
+                  <div className="text-[7px] text-neutral-500">McClellan</div>
+                  <div className={`text-xs font-mono font-bold ${b.mcclellan > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {b.mcclellan.toFixed(1)}
+                  </div>
+                  <div className="text-[7px] text-neutral-600">{b.mcclellan > 0 ? 'positive' : 'negative'}</div>
+                </div>
+                <div className="bg-neutral-900/50 rounded p-1 text-center">
+                  <div className="text-[7px] text-neutral-500">Thrust</div>
+                  <div className={`text-xs font-mono font-bold ${b.breadthThrust ? 'text-green-400' : 'text-neutral-500'}`}>
+                    {b.breadthThrust ? 'YES' : 'No'}
+                  </div>
+                  <div className="text-[7px] text-neutral-600">{b.pctAdvancing.toFixed(0)}% adv.</div>
+                </div>
+              </div>
+
+              <div className="text-[7px] text-neutral-600 text-right">
+                Based on {b.sampleSize} S&P 500 components
+              </div>
+            </>
+          )}
+
+          {!b && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
       </div>
 

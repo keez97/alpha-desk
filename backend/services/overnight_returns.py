@@ -87,6 +87,7 @@ def _calculate_overnight_return_cascade(ticker: str) -> Dict[str, Any] | None:
             "z_score": stats["z_score"],
             "is_outlier": abs(stats["z_score"]) > 2.0,
             "direction": "up" if yd_result["overnight_pct"] > 0 else "down",
+            "last_price": round(yd_result.get("yesterday_close", 0), 2),
             "data_source": "yahoo_direct",
         }
 
@@ -131,6 +132,7 @@ def _calculate_overnight_return_cascade(ticker: str) -> Dict[str, Any] | None:
                         "z_score": round(z_score, 2),
                         "is_outlier": abs(z_score) > 2.0,
                         "direction": "up" if overnight_return > 0 else "down",
+                        "last_price": round(float(yesterday_close), 2),
                         "data_source": "yfinance",
                     }
         except Exception as e:
@@ -165,6 +167,7 @@ def _calculate_overnight_return_cascade(ticker: str) -> Dict[str, Any] | None:
         else:
             avg, std, z_score = 0, 0, 0
 
+        last_p = stooq_result.get("yesterday_close", stooq_hist[-1]["close"] if stooq_hist else 0)
         return {
             "ticker": ticker,
             "overnight_return_pct": round(overnight_pct, 3),
@@ -173,6 +176,7 @@ def _calculate_overnight_return_cascade(ticker: str) -> Dict[str, Any] | None:
             "z_score": round(z_score, 2),
             "is_outlier": abs(z_score) > 2.0,
             "direction": "up" if overnight_pct > 0 else "down",
+            "last_price": round(float(last_p), 2),
             "data_source": "stooq",
         }
 
