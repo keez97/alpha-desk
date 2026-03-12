@@ -249,9 +249,9 @@ class RotationAlertEngine:
 
         systemic = regime_data.get("systemic_risk", {})
         windham = regime_data.get("windham", {})
-        ar_delta_zscore = systemic.get("ar_delta_zscore", 0.0)
+        ar_delta_zscore = systemic.get("absorption_delta_zscore") or systemic.get("ar_delta_zscore", 0.0)
         windham_state = windham.get("state", "resilient-calm")
-        persistence = systemic.get("windham_persistence", 0)
+        persistence = systemic.get("persistence") or systemic.get("windham_persistence", 0)
 
         enriched = []
         for alert in alerts:

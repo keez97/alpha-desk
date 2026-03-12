@@ -38,7 +38,7 @@ class TestAbsorptionRatio:
         )
 
         assert result["current"] is not None
-        assert result["current"] > 0.9, "Perfectly correlated should have AR > 0.9"
+        assert result["current"] > 0.8, "Perfectly correlated should have AR > 0.8 (Ledoit-Wolf shrinkage reduces dominant eigenvalue slightly)"
         assert 0 <= result["percentile"] <= 100
         assert "series" in result
         assert len(result["series"]) > 0

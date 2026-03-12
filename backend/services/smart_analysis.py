@@ -507,10 +507,10 @@ def generate_smart_report(date: str, macro: dict, sectors: list, regime: dict | 
 
         # Add systemic risk details: AR delta, turbulence p-value, persistence
         systemic = regime.get("systemic_risk", {})
-        ar_delta = systemic.get("ar_delta")
-        ar_delta_zscore = systemic.get("ar_delta_zscore", 0)
+        ar_delta = systemic.get("absorption_delta") or systemic.get("ar_delta")
+        ar_delta_zscore = systemic.get("absorption_delta_zscore") or systemic.get("ar_delta_zscore", 0)
         turb_p_value = systemic.get("turbulence_p_value")
-        persistence = systemic.get("windham_persistence", 0)
+        persistence = systemic.get("persistence") or systemic.get("windham_persistence", 0)
 
         if ar_delta is not None:
             direction = "rose" if ar_delta > 0 else "fell"

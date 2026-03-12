@@ -455,7 +455,7 @@ def cross_reference_windham(
     windham_state = windham.get("state", "resilient-calm")
     windham_label = windham.get("label", "Normal Markets")
     ar_delta_warning = systemic.get("ar_delta_warning", False)
-    persistence = systemic.get("windham_persistence", 0)
+    persistence = systemic.get("persistence") or systemic.get("windham_persistence", 0)
 
     markets = result.get("markets", [])
     windham_alerts = []
