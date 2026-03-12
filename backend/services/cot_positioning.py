@@ -51,14 +51,14 @@ MARKETS: Dict[str, Dict[str, Any]] = {
     },
     "NQ": {
         "name": "Nasdaq-100 E-mini",
-        "cftc_search": "E-MINI NASDAQ-100",
+        "cftc_search": "NASDAQ MINI",
         "report": "tff",
         "category": "Equities",
         "sort_order": 2,
     },
     "RTY": {
         "name": "Russell 2000 E-mini",
-        "cftc_search": "E-MINI RUSSELL 2000",
+        "cftc_search": "RUSSELL E-MINI",
         "report": "tff",
         "category": "Equities",
         "sort_order": 3,
@@ -73,21 +73,21 @@ MARKETS: Dict[str, Dict[str, Any]] = {
     },
     "ZN": {
         "name": "5Y Treasury Note",
-        "cftc_search": "5-YEAR T-NOTE",
+        "cftc_search": "UST 5Y NOTE",
         "report": "tff",
         "category": "Rates",
         "sort_order": 2,
     },
     "ZF": {
         "name": "2Y Treasury Note",
-        "cftc_search": "2-YEAR T-NOTE",
+        "cftc_search": "UST 2Y NOTE",
         "report": "tff",
         "category": "Rates",
         "sort_order": 3,
     },
     "US": {
         "name": "U.S. Treasury Bond",
-        "cftc_search": "U.S. TREASURY BOND",
+        "cftc_search": "UST BOND - CHICAGO",
         "report": "tff",
         "category": "Rates",
         "sort_order": 4,
@@ -102,7 +102,7 @@ MARKETS: Dict[str, Dict[str, Any]] = {
     },
     "NG": {
         "name": "Natural Gas",
-        "cftc_search": "NATURAL GAS - NYMEX",
+        "cftc_search": "NAT GAS NYME",
         "report": "disagg",
         "category": "Energy",
         "sort_order": 2,
@@ -117,14 +117,14 @@ MARKETS: Dict[str, Dict[str, Any]] = {
     },
     "SI": {
         "name": "Silver",
-        "cftc_search": "SILVER - COMMOD",
+        "cftc_search": "SILVER - COMMODITY EXCHANGE",
         "report": "disagg",
         "category": "Metals",
         "sort_order": 2,
     },
     "HG": {
         "name": "Copper",
-        "cftc_search": "COPPER-GRADE #1",
+        "cftc_search": "COPPER- #1",
         "report": "disagg",
         "category": "Metals",
         "sort_order": 3,
@@ -161,14 +161,14 @@ MARKETS: Dict[str, Dict[str, Any]] = {
     },
     "6J": {
         "name": "Japanese Yen",
-        "cftc_search": "JAPANESE YEN",
+        "cftc_search": "JAPANESE YEN - CHICAGO",
         "report": "tff",
         "category": "FX",
         "sort_order": 2,
     },
     "6B": {
         "name": "British Pound",
-        "cftc_search": "BRITISH POUND",
+        "cftc_search": "BRITISH POUND - CHICAGO",
         "report": "tff",
         "category": "FX",
         "sort_order": 3,
@@ -182,7 +182,7 @@ MARKETS: Dict[str, Dict[str, Any]] = {
     },
     "DX": {
         "name": "U.S. Dollar Index",
-        "cftc_search": "U.S. DOLLAR INDEX",
+        "cftc_search": "USD INDEX",
         "report": "tff",
         "category": "FX",
         "sort_order": 5,
@@ -520,7 +520,7 @@ class COTPositioningEngine:
         Returns dict with timestamp, markets list, alerts list,
         and data_source indicator.
         """
-        cache_key = "cot_positioning:live_v3"
+        cache_key = "cot_positioning:live_v4"
         cached_result = self.cache.get(cache_key)
         if cached_result:
             return cached_result
