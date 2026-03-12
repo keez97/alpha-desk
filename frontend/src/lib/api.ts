@@ -34,8 +34,20 @@ export function seedApiCache(allData: any) {
     '/momentum-spillover': allData.momentum_spillover,
     '/overnight-returns': allData.overnight_returns,
   };
+  // Endpoints whose arrays must be non-empty to be worth caching
+  const requireNonEmpty: Record<string, string> = {
+    '/enhanced-sectors?period=1D': 'sectors',
+    '/sector-transitions': 'transitions',
+    '/momentum-spillover': 'signals',
+  };
   for (const [path, data] of Object.entries(mapping)) {
-    if (data) _preCache.set(path, data);
+    if (!data) continue;
+    const arrayKey = requireNonEmpty[path];
+    if (arrayKey && (!Array.isArray(data[arrayKey]) || data[arrayKey].length === 0)) {
+      console.log(`[api] Skipped pre-cache for ${path} — empty ${arrayKey}`);
+      continue;
+    }
+    _preCache.set(path, data);
   }
   console.log(`[api] Seeded pre-cache with ${_preCache.size} endpoints`);
 }
@@ -1478,12 +1490,8 @@ export interface EnhancedSectorData extends SectorData {
 }
 
 export async function fetchEnhancedSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Promise<EnhancedSectorData[]> {
-  try {
-    console.log(`[fetchEnhancedSectors] requesting period=${period}`);
-    const response = await api.get('/enhanced-sectors', { params: { period } });
-    const raw = response.data;
-    console.log(`[fetchEnhancedSectors] period=${period} raw keys:`, raw ? Object.keys(raw) : 'null', 'sectors count:', raw?.sectors?.length ?? 0);
-    const mapped = (raw?.sectors || []).map((s: any) => ({
+  const mapSectors = (raw: any): EnhancedSectorData[] =>
+    (raw?.sectors || []).map((s: any) => ({
       ticker: s.ticker,
       name: s.name || s.sector || s.ticker,
       price: s.price ?? 0,
@@ -1498,7 +1506,25 @@ export async function fetchEnhancedSectors(period: '1D' | '5D' | '1M' | '3M' = '
       rotationDirection: s.rotation_direction || 'clockwise',
       chartData: s.chart_data || [],
     }));
-    console.log(`[fetchEnhancedSectors] period=${period} mapped ${mapped.length} sectors`);
+
+  try {
+    const response = await api.get('/enhanced-sectors', { params: { period } });
+    const raw = response.data;
+    const mapped = mapSectors(raw);
+
+    // If pre-cache returned empty sectors, evict the stale entry and retry via HTTP
+    if (mapped.length === 0) {
+      const cacheKey = `/enhanced-sectors?period=${period}`;
+      if (_preCache.has(cacheKey)) {
+        console.log(`[fetchEnhancedSectors] pre-cache returned 0 sectors for ${period} — evicting & retrying`);
+        _preCache.delete(cacheKey);
+        const retryResp = await api.get('/enhanced-sectors', { params: { period } });
+        const retryMapped = mapSectors(retryResp.data);
+        console.log(`[fetchEnhancedSectors] retry for ${period}: ${retryMapped.length} sectors`);
+        return retryMapped;
+      }
+    }
+
     return mapped;
   } catch (err) {
     console.error(`[fetchEnhancedSectors] period=${period} ERROR:`, err);

@@ -696,8 +696,8 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     regime_raw, sectors_raw, sector_perf_raw, rrg_raw = await asyncio.gather(
         safe("regime", detect_regime, macro_raw or {}, timeout_s=20.0),
         safe("sectors", get_sector_chart_data, "1D", timeout_s=15.0),
-        safe("sector_perf", get_sector_data, "1D", timeout_s=8.0),
-        safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10, timeout_s=8.0),
+        safe("sector_perf", get_sector_data, "1D", timeout_s=12.0),
+        safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10, timeout_s=12.0),
     )
 
     # Batch 2b: Sector transitions (reuses rrg_raw + macro_raw to avoid duplicate fetches)
