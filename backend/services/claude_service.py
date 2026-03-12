@@ -786,11 +786,15 @@ async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
         return grade_stock_quantitative(ticker, data)
 
 
-async def generate_morning_report(date: str) -> Dict[str, Any]:
+async def generate_morning_report(date: str, regime: dict | None = None) -> Dict[str, Any]:
     """Generate condensed morning market report (non-streaming).
 
     Strategy: Always try data-driven analysis first (works without LLM).
     Only call OpenRouter if key is valid and available.
+
+    Args:
+        regime: Optional regime detection dict (from detect_regime) so the
+                report reflects the current regime state and systemic risk.
     """
     from backend.services.smart_analysis import generate_smart_report
 
@@ -807,6 +811,24 @@ async def generate_morning_report(date: str) -> Dict[str, Any]:
     if not USE_MOCK:
         try:
             prompt = morning_report.get_morning_report_prompt(date)
+            # Inject regime context into LLM prompt so it's regime-aware
+            if regime:
+                r_label = regime.get("regime", "neutral")
+                r_score = regime.get("composite_score", 0)
+                r_conf = regime.get("confidence", 50)
+                windham = regime.get("windham", {})
+                w_state = windham.get("state", "")
+                w_label = windham.get("label", "")
+                w_desc = windham.get("description", "")
+                regime_ctx = (
+                    f"\n\nCRITICAL CONTEXT — CURRENT REGIME:\n"
+                    f"Regime: {r_label.upper()} | Confidence: {r_conf}% | Composite Score: {r_score:+.2f}\n"
+                    f"Windham State: {w_state} ({w_label})\n"
+                    f"Description: {w_desc}\n"
+                    f"Your report MUST reflect this regime state. If the regime is bear or crisis, "
+                    f"do NOT describe conditions as neutral or calm."
+                )
+                prompt = prompt + regime_ctx
             model_id = get_model_id()
             logger.info(f"Generating morning report with model: {model_id}")
 
@@ -820,7 +842,7 @@ async def generate_morning_report(date: str) -> Dict[str, Any]:
     # Step 3: Data-driven analysis (always works, uses real market data)
     if macro or sectors:
         logger.info("Using data-driven smart analysis for morning report")
-        return generate_smart_report(date, macro, sectors)
+        return generate_smart_report(date, macro, sectors, regime=regime)
 
     # Step 4: Static fallback
     logger.info("Using static mock morning report (no data available)")

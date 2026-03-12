@@ -396,8 +396,14 @@ def generate_smart_drivers(date: str, macro: dict, sectors: list) -> Dict[str, A
     return result
 
 
-def generate_smart_report(date: str, macro: dict, sectors: list) -> Dict[str, Any]:
-    """Generate a morning market report from real data — no LLM needed."""
+def generate_smart_report(date: str, macro: dict, sectors: list, regime: dict | None = None) -> Dict[str, Any]:
+    """Generate a morning market report from real data — no LLM needed.
+
+    Args:
+        regime: Optional regime detection dict with keys: regime, confidence,
+                composite_score, windham (state, label, risk_level, description),
+                layers (per-layer scores), alpha_insights, etc.
+    """
     # Extract key data points
     spy = macro.get("SPY", {})
     qqq = macro.get("QQQ", {})
@@ -458,7 +464,48 @@ def generate_smart_report(date: str, macro: dict, sectors: list) -> Dict[str, An
     elif spy_chg < 0 and iwm_chg < spy_chg:
         breadth_note = " Small-caps are leading the decline, consistent with risk-off rotation."
 
-    market_snapshot = " ".join(snapshot_parts) + vix_note + breadth_note
+    # Regime context — inject into snapshot if regime data is available
+    regime_note = ""
+    if regime:
+        r_label = regime.get("regime", "neutral")
+        r_score = regime.get("composite_score", 0)
+        r_conf = regime.get("confidence", 50)
+        windham = regime.get("windham", {})
+        w_state = windham.get("state", "")
+        w_risk = windham.get("risk_level", "")
+        w_label = windham.get("label", "")
+
+        if w_state == "fragile-turbulent":
+            regime_note = (
+                f" The AlphaDesk regime detector has shifted to {r_label.upper()} "
+                f"({r_conf}% confidence, composite {r_score:+.2f}) with Windham systemic fragility "
+                f"in {w_label} state — {windham.get('description', '')} "
+                f"Absorption ratio and cross-asset coupling are at extreme levels, "
+                f"historically preceding sharp drawdowns."
+            )
+        elif w_state == "fragile-calm":
+            regime_note = (
+                f" The regime detector reads {r_label.upper()} ({r_conf}% confidence). "
+                f"Windham flags a 'fragile-calm' state: markets appear stable but correlations are elevated. "
+                f"Hidden risk is building beneath the surface — watch for a volatility catalyst."
+            )
+        elif r_label == "bear":
+            regime_note = (
+                f" The regime detector reads BEAR ({r_conf}% confidence, composite {r_score:+.2f}). "
+                f"Multiple layers confirm defensive positioning is warranted."
+            )
+        elif r_label == "bull":
+            regime_note = (
+                f" The regime detector reads BULL ({r_conf}% confidence, composite {r_score:+.2f}), "
+                f"supporting risk-on positioning."
+            )
+        else:
+            regime_note = (
+                f" The regime detector reads NEUTRAL ({r_conf}% confidence, composite {r_score:+.2f}). "
+                f"No strong directional conviction — favor balanced exposure."
+            )
+
+    market_snapshot = " ".join(snapshot_parts) + vix_note + breadth_note + regime_note
 
     # --- Section 2: Sector Rotation ---
     top_names = [f"{s.get('sector', s.get('ticker', 'N/A'))} ({s.get('daily_pct_change', 0):+.2f}%)" for s in top_3]

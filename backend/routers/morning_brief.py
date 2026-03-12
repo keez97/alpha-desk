@@ -259,11 +259,27 @@ async def refresh_drivers(session: Session = Depends(get_session)):
 
 @router.get("/report")
 async def get_morning_report(session: Session = Depends(get_session)):
-    """Get auto-generated morning market report with caching."""
-    today = datetime.utcnow().date().isoformat()
-    cache_key = f"report_{today}"
+    """Get auto-generated morning market report with caching.
 
-    # Check cache (best-effort)
+    Cache is automatically invalidated when the regime changes (e.g. neutral → bear)
+    so the report always reflects the current market state.
+    """
+    today = datetime.utcnow().date().isoformat()
+
+    # Step 1: Get current regime (lightweight, ~30s cached internally)
+    current_regime = None
+    current_regime_label = "unknown"
+    try:
+        macro_data = await asyncio.to_thread(get_macro_data)
+        current_regime = await asyncio.to_thread(detect_regime, macro_data)
+        current_regime_label = current_regime.get("regime", "unknown")
+    except Exception as e:
+        logger.warning(f"Regime detection for report cache check failed: {e}")
+
+    # Step 2: Check cache — invalidate if regime has shifted
+    cache_key = f"report_{today}"
+    regime_cache_key = f"report_regime_{today}"
+
     try:
         cached = session.exec(
             select(MorningReportCache).where(
@@ -273,18 +289,45 @@ async def get_morning_report(session: Session = Depends(get_session)):
         ).first()
 
         if cached:
-            return {
-                "timestamp": datetime.utcnow().isoformat(),
-                "cached": True,
-                "data": json.loads(cached.data_json)
-            }
+            # Check if regime has changed since the report was cached
+            cached_regime = None
+            try:
+                cached_regime_entry = session.exec(
+                    select(MorningReportCache).where(
+                        MorningReportCache.cache_key == regime_cache_key
+                    )
+                ).first()
+                if cached_regime_entry:
+                    cached_regime = cached_regime_entry.data_json
+            except Exception:
+                pass
+
+            if cached_regime and cached_regime != current_regime_label:
+                logger.info(
+                    f"Regime shifted ({cached_regime} → {current_regime_label}), "
+                    f"invalidating cached morning report"
+                )
+                # Delete stale cache entries
+                try:
+                    session.delete(cached)
+                    if cached_regime_entry:
+                        session.delete(cached_regime_entry)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+            else:
+                return {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "cached": True,
+                    "data": json.loads(cached.data_json)
+                }
     except Exception as e:
         logger.warning(f"Cache read failed for report, generating fresh: {e}")
 
-    # Generate new report
-    report = await generate_morning_report(today)
+    # Step 3: Generate new report with regime context
+    report = await generate_morning_report(today, regime=current_regime)
 
-    # Cache result (best-effort)
+    # Step 4: Cache result + regime label (best-effort)
     try:
         expires_at = datetime.utcnow() + timedelta(hours=REPORT_CACHE_TTL_HOURS)
         cache_entry = MorningReportCache(
@@ -293,6 +336,24 @@ async def get_morning_report(session: Session = Depends(get_session)):
             expires_at=expires_at
         )
         session.add(cache_entry)
+
+        # Store the regime label alongside the report for invalidation checks
+        regime_entry = session.exec(
+            select(MorningReportCache).where(
+                MorningReportCache.cache_key == regime_cache_key
+            )
+        ).first()
+        if regime_entry:
+            regime_entry.data_json = current_regime_label
+            regime_entry.expires_at = expires_at
+        else:
+            regime_entry = MorningReportCache(
+                cache_key=regime_cache_key,
+                data_json=current_regime_label,
+                expires_at=expires_at
+            )
+            session.add(regime_entry)
+
         session.commit()
     except Exception as e:
         logger.warning(f"Cache write failed for report: {e}")
@@ -329,8 +390,16 @@ async def refresh_morning_report(session: Session = Depends(get_session)):
         except Exception:
             pass
 
-    # Generate new report
-    report = await generate_morning_report(today)
+    # Get current regime for report context
+    current_regime = None
+    try:
+        macro_data = await asyncio.to_thread(get_macro_data)
+        current_regime = await asyncio.to_thread(detect_regime, macro_data)
+    except Exception as e:
+        logger.warning(f"Regime detection for refreshed report failed: {e}")
+
+    # Generate new report with regime
+    report = await generate_morning_report(today, regime=current_regime)
 
     # Cache result (best-effort)
     try:
