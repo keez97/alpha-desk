@@ -47,35 +47,35 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
 
 function ColumnHeaders() {
   return (
-    <div className="flex items-center gap-2 h-4 mb-1 border-b border-neutral-800/50 pb-1">
-      {/* Label spacer */}
-      <span className="w-12 flex-shrink-0" />
+    <div className="flex items-center h-4 mb-1 border-b border-neutral-800/50 pb-1">
+      {/* Label spacer — matches PositioningBar label */}
+      <span style={{ width: 48, flexShrink: 0 }} />
 
-      {/* Bar header */}
-      <div className="flex-1 text-center">
-        <Tooltip text="Bar length shows the percentile rank of current net positioning vs the past 52 weeks. Green = net long, Red = net short.">
+      {/* Bar header — matches flex-1 bar container */}
+      <div className="flex-1 text-center" style={{ marginLeft: 8, marginRight: 8 }}>
+        <Tooltip text="Bar length shows the relative size of the net position. The larger group (hedger or spec) fills the full bar; the smaller scales proportionally. Green = net long, Red = net short.">
           <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">Positioning</span>
         </Tooltip>
       </div>
 
-      {/* Net position header */}
-      <Tooltip text="Net contracts = long contracts minus short contracts held by that trader group. Shows the size and direction of their position.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-16 text-right flex-shrink-0">Net</span>
+      {/* Net position header — matches w-[60px] */}
+      <Tooltip text="Net contracts = long minus short contracts held by that trader group.">
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-right" style={{ width: 60, flexShrink: 0, marginLeft: 8 }}>Net</span>
       </Tooltip>
 
-      {/* Direction header */}
+      {/* Direction header — matches w-[40px] */}
       <Tooltip text="Whether the group is net long (buying) or net short (selling) overall.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-10 text-center flex-shrink-0">Side</span>
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-center" style={{ width: 40, flexShrink: 0, marginLeft: 8 }}>Side</span>
       </Tooltip>
 
-      {/* Percentile header */}
+      {/* Percentile header — matches w-[28px] */}
       <Tooltip text="Percentile rank vs 52-week range. P90+ or P10- = extreme positioning (amber). P50 = middle of the range.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-7 text-right flex-shrink-0">%ile</span>
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-right" style={{ width: 28, flexShrink: 0, marginLeft: 8 }}>%ile</span>
       </Tooltip>
 
-      {/* Weekly change header */}
+      {/* Weekly change header — matches w-[16px] */}
       <Tooltip text="Week-over-week change in net positioning. ↑ = added to position, ↓ = reduced position.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider w-4 text-center flex-shrink-0">Wk</span>
+        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-center" style={{ width: 16, flexShrink: 0, marginLeft: 8 }}>Wk</span>
       </Tooltip>
     </div>
   );
@@ -87,24 +87,27 @@ function PositioningBar({
   percentile,
   weeklyChange,
   isExtreme,
+  maxNet,
 }: {
   label: string;
   net: number;
   percentile: number;
   weeklyChange?: number;
   isExtreme?: boolean;
+  maxNet: number;
 }) {
   const isLong = net > 0;
   const barColor = isLong ? 'bg-emerald-500' : 'bg-red-500';
   const textColor = isLong ? 'text-emerald-400' : 'text-red-400';
   const direction = isLong ? 'LONG' : 'SHORT';
-  // Map percentile to fill width: 0% = empty, 100% = full
-  const fillWidth = Math.max(2, percentile);
+  // Bar width = magnitude of net position relative to the largest in this market
+  // This makes hedger vs spec bars directly comparable within a market
+  const fillWidth = maxNet > 0 ? Math.max(3, (Math.abs(net) / maxNet) * 100) : 3;
 
   return (
-    <div className="flex items-center gap-2 h-5">
+    <div className="flex items-center h-5" style={{ gap: 8 }}>
       {/* Label */}
-      <span className="text-[9px] text-neutral-500 w-12 flex-shrink-0">{label}</span>
+      <span className="text-[9px] text-neutral-500" style={{ width: 48, flexShrink: 0 }}>{label}</span>
 
       {/* Bar container */}
       <div className="flex-1 h-3.5 rounded-sm bg-neutral-800 overflow-hidden relative">
@@ -118,24 +121,24 @@ function PositioningBar({
       </div>
 
       {/* Net position */}
-      <span className={`text-[9px] font-mono font-bold w-16 text-right flex-shrink-0 ${textColor}`}>
+      <span className={`text-[9px] font-mono font-bold text-right ${textColor}`} style={{ width: 60, flexShrink: 0 }}>
         {isLong ? '+' : ''}{formatContracts(net)}
       </span>
 
       {/* Direction badge */}
-      <span className={`text-[7px] font-bold w-10 text-center flex-shrink-0 ${textColor}`}>
+      <span className={`text-[7px] font-bold text-center ${textColor}`} style={{ width: 40, flexShrink: 0 }}>
         {direction}
       </span>
 
       {/* Percentile */}
-      <span className={`text-[8px] font-mono w-7 text-right flex-shrink-0 ${
+      <span className={`text-[8px] font-mono text-right ${
         isExtreme ? 'text-amber-400 font-bold' : 'text-neutral-500'
-      }`}>
+      }`} style={{ width: 28, flexShrink: 0 }}>
         P{percentile}
       </span>
 
       {/* Weekly change */}
-      <span className="text-[8px] w-4 text-center flex-shrink-0">
+      <span className="text-[8px] text-center" style={{ width: 16, flexShrink: 0 }}>
         {weeklyChange != null && weeklyChange !== 0 ? (
           <span className={weeklyChange > 0 ? 'text-emerald-400' : 'text-red-400'}>
             {weeklyChange > 0 ? '↑' : '↓'}
@@ -151,6 +154,8 @@ function MarketCard({ market }: { market: MarketPositioning }) {
   const specExtreme = market.extreme_flag?.startsWith('speculative_extreme');
   // Extract speculative weekly change if available (rough estimate from weekly_change)
   const specWeeklyChange = market.weekly_change != null ? -market.weekly_change : undefined;
+  // Normalize bar widths: the larger position fills 100%, the smaller scales proportionally
+  const maxNet = Math.max(Math.abs(market.commercial_net), Math.abs(market.speculative_net));
 
   return (
     <div className="py-1.5 border-b border-neutral-800/30 last:border-0">
@@ -172,6 +177,7 @@ function MarketCard({ market }: { market: MarketPositioning }) {
         percentile={market.commercial_percentile}
         weeklyChange={market.weekly_change ?? undefined}
         isExtreme={commExtreme}
+        maxNet={maxNet}
       />
 
       {/* Specs bar */}
@@ -181,6 +187,7 @@ function MarketCard({ market }: { market: MarketPositioning }) {
         percentile={market.speculative_percentile}
         weeklyChange={specWeeklyChange ?? undefined}
         isExtreme={specExtreme}
+        maxNet={maxNet}
       />
     </div>
   );
