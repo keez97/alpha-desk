@@ -1861,12 +1861,14 @@ export async function fetchSentimentVelocity(tickers?: string): Promise<Sentimen
 export interface MarketPositioning {
   name: string;
   ticker: string;
+  category: string;
+  sort_order: number;
   commercial_net: number;
   speculative_net: number;
   commercial_percentile: number;
   speculative_percentile: number;
   insight?: string;
-  bias?: string;
+  bias?: 'bullish' | 'bearish' | 'neutral';
   extreme_flag:
     | 'commercial_extreme_long'
     | 'commercial_extreme_short'
@@ -1874,6 +1876,7 @@ export interface MarketPositioning {
     | 'speculative_extreme_short'
     | null;
   divergence: boolean;
+  weekly_change?: number;
 }
 
 export interface PositioningAlert {
@@ -1896,15 +1899,21 @@ export async function fetchPositioning(): Promise<PositioningData> {
   const { data: raw } = await api.get('/cot-positioning');
   return {
     timestamp: raw.timestamp || new Date().toISOString(),
+    summary: raw.summary,
     markets: (raw.markets || []).map((m: any) => ({
       name: m.name,
       ticker: m.ticker,
+      category: m.category || 'Other',
+      sort_order: m.sort_order ?? 99,
       commercial_net: m.commercial_net ?? 0,
       speculative_net: m.speculative_net ?? 0,
-      commercial_percentile: m.commercial_percentile ?? 0,
-      speculative_percentile: m.speculative_percentile ?? 0,
+      commercial_percentile: m.commercial_percentile ?? 50,
+      speculative_percentile: m.speculative_percentile ?? 50,
       extreme_flag: m.extreme_flag || null,
       divergence: m.divergence ?? false,
+      insight: m.insight,
+      bias: m.bias,
+      weekly_change: m.weekly_change ?? null,
     })),
     alerts: (raw.alerts || []).map((a: any) => ({
       ticker: a.ticker,

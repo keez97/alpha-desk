@@ -1,9 +1,11 @@
 """
 COT (Commitments of Traders) Positioning Module – Live CFTC Data.
 
-Fetches both Disaggregated Combined (for physical commodities: Gold, Crude Oil)
-and TFF Combined (Traders in Financial Futures: S&P 500, 10Y Treasury, Euro FX)
-reports from the CFTC via the cot_reports library.
+Fetches both Disaggregated Combined (for physical commodities) and TFF Combined
+(Traders in Financial Futures) reports from the CFTC via the cot_reports library.
+
+Tracks 20 markets across 6 categories: Equities, Rates, Energy, Metals,
+Agriculture, and FX.
 
 Calculates positioning percentiles across the full year of data, detects extreme
 positioning (>90th / <10th percentile), and identifies commercial-speculative
@@ -29,34 +31,161 @@ _cot_cache = TTLCache()
 _CACHE_TTL = 3600 * 4  # 4 hours (CFTC publishes weekly on Fridays)
 
 # ---------------------------------------------------------------------------
-# Market definitions – maps our internal ticker to the CFTC market name
-# and the report type it belongs to.
+# Categories & defaults
+# ---------------------------------------------------------------------------
+CATEGORIES = ["Equities", "Rates", "Energy", "Metals", "Agriculture", "FX"]
+DEFAULT_MARKETS = ["ES", "NQ", "ZB", "GC", "CL", "NG", "6E", "DX"]
+
+# ---------------------------------------------------------------------------
+# Market definitions – maps our internal ticker to the CFTC market name,
+# report type, category, and display sort order within category.
 # ---------------------------------------------------------------------------
 MARKETS: Dict[str, Dict[str, Any]] = {
+    # ── Equities (TFF) ──
     "ES": {
         "name": "S&P 500 E-mini",
         "cftc_search": "E-MINI S&P 500",
-        "report": "tff",  # Traders in Financial Futures
+        "report": "tff",
+        "category": "Equities",
+        "sort_order": 1,
     },
-    "GC": {
-        "name": "Gold",
-        "cftc_search": "GOLD - COMMODITY EXCHANGE",
-        "report": "disagg",  # Disaggregated
+    "NQ": {
+        "name": "Nasdaq-100 E-mini",
+        "cftc_search": "E-MINI NASDAQ-100",
+        "report": "tff",
+        "category": "Equities",
+        "sort_order": 2,
     },
-    "CL": {
-        "name": "Crude Oil (WTI)",
-        "cftc_search": "CRUDE OIL, LIGHT SWEET",
-        "report": "disagg",
+    "RTY": {
+        "name": "Russell 2000 E-mini",
+        "cftc_search": "E-MINI RUSSELL 2000",
+        "report": "tff",
+        "category": "Equities",
+        "sort_order": 3,
     },
+    # ── Rates (TFF) ──
     "ZB": {
         "name": "10Y Treasury Note",
         "cftc_search": "UST 10Y NOTE",
         "report": "tff",
+        "category": "Rates",
+        "sort_order": 1,
     },
+    "ZN": {
+        "name": "5Y Treasury Note",
+        "cftc_search": "5-YEAR T-NOTE",
+        "report": "tff",
+        "category": "Rates",
+        "sort_order": 2,
+    },
+    "ZF": {
+        "name": "2Y Treasury Note",
+        "cftc_search": "2-YEAR T-NOTE",
+        "report": "tff",
+        "category": "Rates",
+        "sort_order": 3,
+    },
+    "US": {
+        "name": "U.S. Treasury Bond",
+        "cftc_search": "U.S. TREASURY BOND",
+        "report": "tff",
+        "category": "Rates",
+        "sort_order": 4,
+    },
+    # ── Energy (Disaggregated) ──
+    "CL": {
+        "name": "Crude Oil (WTI)",
+        "cftc_search": "CRUDE OIL, LIGHT SWEET",
+        "report": "disagg",
+        "category": "Energy",
+        "sort_order": 1,
+    },
+    "NG": {
+        "name": "Natural Gas",
+        "cftc_search": "NATURAL GAS - NYMEX",
+        "report": "disagg",
+        "category": "Energy",
+        "sort_order": 2,
+    },
+    # ── Metals (Disaggregated) ──
+    "GC": {
+        "name": "Gold",
+        "cftc_search": "GOLD - COMMODITY EXCHANGE",
+        "report": "disagg",
+        "category": "Metals",
+        "sort_order": 1,
+    },
+    "SI": {
+        "name": "Silver",
+        "cftc_search": "SILVER - COMMOD",
+        "report": "disagg",
+        "category": "Metals",
+        "sort_order": 2,
+    },
+    "HG": {
+        "name": "Copper",
+        "cftc_search": "COPPER-GRADE #1",
+        "report": "disagg",
+        "category": "Metals",
+        "sort_order": 3,
+    },
+    # ── Agriculture (Disaggregated) ──
+    "ZC": {
+        "name": "Corn",
+        "cftc_search": "CORN - CHICAGO",
+        "report": "disagg",
+        "category": "Agriculture",
+        "sort_order": 1,
+    },
+    "ZS": {
+        "name": "Soybeans",
+        "cftc_search": "SOYBEANS - CHICAGO",
+        "report": "disagg",
+        "category": "Agriculture",
+        "sort_order": 2,
+    },
+    "ZW": {
+        "name": "Wheat (SRW)",
+        "cftc_search": "WHEAT-SRW - CHICAGO",
+        "report": "disagg",
+        "category": "Agriculture",
+        "sort_order": 3,
+    },
+    # ── FX (TFF) ──
     "6E": {
         "name": "Euro FX",
         "cftc_search": "EURO FX - CHICAGO MERCANTILE",
         "report": "tff",
+        "category": "FX",
+        "sort_order": 1,
+    },
+    "6J": {
+        "name": "Japanese Yen",
+        "cftc_search": "JAPANESE YEN",
+        "report": "tff",
+        "category": "FX",
+        "sort_order": 2,
+    },
+    "6B": {
+        "name": "British Pound",
+        "cftc_search": "BRITISH POUND",
+        "report": "tff",
+        "category": "FX",
+        "sort_order": 3,
+    },
+    "6A": {
+        "name": "Australian Dollar",
+        "cftc_search": "AUSTRALIAN DOLLAR",
+        "report": "tff",
+        "category": "FX",
+        "sort_order": 4,
+    },
+    "DX": {
+        "name": "U.S. Dollar Index",
+        "cftc_search": "U.S. DOLLAR INDEX",
+        "report": "tff",
+        "category": "FX",
+        "sort_order": 5,
     },
 }
 
@@ -391,7 +520,7 @@ class COTPositioningEngine:
         Returns dict with timestamp, markets list, alerts list,
         and data_source indicator.
         """
-        cache_key = "cot_positioning:live_v2"
+        cache_key = "cot_positioning:live_v3"
         cached_result = self.cache.get(cache_key)
         if cached_result:
             return cached_result
@@ -433,9 +562,18 @@ class COTPositioningEngine:
                         if abs(data["commercial_percentile"] - data["speculative_percentile"]) > 30:
                             divergence = True
 
+                    # Extract weekly change from the appropriate trader group
+                    tg = data.get("trader_groups", {})
+                    if config["report"] == "tff":
+                        weekly_change = tg.get("asset_manager", {}).get("weekly_change")
+                    else:
+                        weekly_change = tg.get("producer_merchant", {}).get("weekly_change")
+
                     markets_out.append({
                         "ticker": ticker,
                         "name": config["name"],
+                        "category": config.get("category", "Other"),
+                        "sort_order": config.get("sort_order", 99),
                         "report_date": data.get("report_date"),
                         "open_interest": data.get("open_interest", 0),
                         "report_type": data.get("report_type"),
@@ -447,6 +585,7 @@ class COTPositioningEngine:
                         "divergence": divergence,
                         "trader_groups": data.get("trader_groups", {}),
                         "weeks_of_data": data.get("weeks_of_data", 0),
+                        "weekly_change": weekly_change,
                     })
                 else:
                     logger.warning(f"No CFTC data found for {ticker} ({search})")
