@@ -298,8 +298,8 @@ export function MarketRegimeCard() {
       {/* ═══ Main 4-Column Layout ═══ */}
       <div className="grid grid-cols-12 divide-x divide-neutral-800/50">
 
-        {/* ─── Col 1: Regime Layers (4 cols) ─── */}
-        <div className="col-span-4 p-2.5 space-y-2">
+        {/* ─── Col 1: Regime Layers (5 cols) ─── */}
+        <div className="col-span-5 p-2.5 space-y-2">
           {r && <CompositeGauge score={r.compositeScore} regime={r.regime} />}
 
           {/* Expand all / Collapse all toggle */}
@@ -437,10 +437,10 @@ export function MarketRegimeCard() {
               {g.indices.length > 4 && (
                 <div className="border-t border-neutral-800/50 pt-0.5">
                   <div className="text-[7px] text-neutral-600 mb-0.5">Sectors</div>
-                  <div className="grid grid-cols-2 gap-x-1.5 gap-y-0">
+                  <div className="space-y-0">
                     {g.indices.slice(4).map(item => (
                       <div key={item.ticker} className="flex items-center justify-between text-[8px] py-px">
-                        <span className="font-mono text-neutral-400">{item.ticker}</span>
+                        <span className="font-mono text-neutral-400 w-8 flex-shrink-0">{item.ticker}</span>
                         <div className="flex items-center gap-1">
                           {item.last_price > 0 && (
                             <span className="font-mono text-neutral-600 text-[7px]">${item.last_price.toFixed(0)}</span>
@@ -471,8 +471,8 @@ export function MarketRegimeCard() {
           {!g && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
 
-        {/* ─── Col 4: Market Breadth (3 cols) ─── */}
-        <div className="col-span-3 p-2.5 space-y-1.5">
+        {/* ─── Col 4: Market Breadth (2 cols) ─── */}
+        <div className="col-span-2 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[9px] text-neutral-500 font-medium">Market Breadth</span>
             {b && (

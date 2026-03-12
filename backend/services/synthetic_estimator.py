@@ -111,6 +111,7 @@ def estimate_overnight_returns(tickers: Dict[str, str]) -> Dict[str, Any]:
             "z_score": round(z_score, 2),
             "is_outlier": is_outlier,
             "direction": direction,
+            "last_price": 0,  # Not available from synthetic estimation
         })
 
     notable_gaps = [
