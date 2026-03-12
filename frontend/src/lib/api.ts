@@ -40,9 +40,11 @@ export function seedApiCache(allData: any) {
   console.log(`[api] Seeded pre-cache with ${_preCache.size} endpoints`);
 }
 
-// Override api.get to check pre-cache first, then fall back to HTTP
+// Override api.get to check pre-cache first, then fall back to HTTP.
+// IMPORTANT: NOT async — returning _originalGet's Promise directly avoids
+// double-wrapping that can break Axios response handling.
 const _originalGet = api.get.bind(api);
-(api as any).get = async function (url: string, config?: any) {
+(api as any).get = function (url: string, config?: any) {
   // Build full cache key including query params so parameterized endpoints
   // (e.g. /enhanced-sectors?period=1D vs ?period=3M) don't collide.
   let cacheKey = url.split('?')[0];
@@ -55,8 +57,10 @@ const _originalGet = api.get.bind(api);
   // Try exact key first, then path-only fallback for endpoints without params
   const cached = _preCache.get(cacheKey) ?? _preCache.get(url.split('?')[0]);
   if (cached) {
-    return { data: cached, status: 200, statusText: 'OK', headers: {}, config: config || {} };
+    console.log(`[api] pre-cache HIT: ${cacheKey}`);
+    return Promise.resolve({ data: cached, status: 200, statusText: 'OK', headers: {}, config: config || {} });
   }
+  console.log(`[api] pre-cache MISS: ${cacheKey} — falling through to HTTP`);
   return _originalGet(url, config);
 };
 
@@ -1474,22 +1478,32 @@ export interface EnhancedSectorData extends SectorData {
 }
 
 export async function fetchEnhancedSectors(period: '1D' | '5D' | '1M' | '3M' = '1D'): Promise<EnhancedSectorData[]> {
-  const { data: raw } = await api.get('/enhanced-sectors', { params: { period } });
-  return (raw.sectors || []).map((s: any) => ({
-    ticker: s.ticker,
-    name: s.name || s.sector || s.ticker,
-    price: s.price ?? 0,
-    change: s.change ?? 0,
-    changePercent: s.pct_change ?? 0,
-    rsRatio: s.rs_ratio ?? 100,
-    rsMomentum: s.rs_momentum ?? 0,
-    quadrant: s.quadrant || 'Unknown',
-    tailLength: s.tail_length ?? 0,
-    quadrantAge: s.quadrant_age ?? 0,
-    rsTrend: s.rs_trend || 'flat',
-    rotationDirection: s.rotation_direction || 'clockwise',
-    chartData: s.chart_data || [],
-  }));
+  try {
+    console.log(`[fetchEnhancedSectors] requesting period=${period}`);
+    const response = await api.get('/enhanced-sectors', { params: { period } });
+    const raw = response.data;
+    console.log(`[fetchEnhancedSectors] period=${period} raw keys:`, raw ? Object.keys(raw) : 'null', 'sectors count:', raw?.sectors?.length ?? 0);
+    const mapped = (raw?.sectors || []).map((s: any) => ({
+      ticker: s.ticker,
+      name: s.name || s.sector || s.ticker,
+      price: s.price ?? 0,
+      change: s.change ?? 0,
+      changePercent: s.pct_change ?? 0,
+      rsRatio: s.rs_ratio ?? 100,
+      rsMomentum: s.rs_momentum ?? 0,
+      quadrant: s.quadrant || 'Unknown',
+      tailLength: s.tail_length ?? 0,
+      quadrantAge: s.quadrant_age ?? 0,
+      rsTrend: s.rs_trend || 'flat',
+      rotationDirection: s.rotation_direction || 'clockwise',
+      chartData: s.chart_data || [],
+    }));
+    console.log(`[fetchEnhancedSectors] period=${period} mapped ${mapped.length} sectors`);
+    return mapped;
+  } catch (err) {
+    console.error(`[fetchEnhancedSectors] period=${period} ERROR:`, err);
+    throw err;
+  }
 }
 
 // ── Stock Factors ──────────────────────────────────────────
