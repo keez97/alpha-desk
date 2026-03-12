@@ -24,7 +24,7 @@ export function seedApiCache(allData: any) {
     '/morning-brief/breadth': allData.breadth,
     '/vix-term-structure': allData.vix_term_structure,
     '/morning-brief/sectors': allData.sectors,
-    '/enhanced-sectors': allData.enhanced_sectors,
+    '/enhanced-sectors?period=1D': allData.enhanced_sectors,
     '/sector-transitions': allData.sector_transitions,
     '/sentiment-velocity': allData.sentiment_velocity,
     '/options-flow': allData.options_flow,
@@ -43,8 +43,17 @@ export function seedApiCache(allData: any) {
 // Override api.get to check pre-cache first, then fall back to HTTP
 const _originalGet = api.get.bind(api);
 (api as any).get = async function (url: string, config?: any) {
-  const pathOnly = url.split('?')[0];
-  const cached = _preCache.get(pathOnly);
+  // Build full cache key including query params so parameterized endpoints
+  // (e.g. /enhanced-sectors?period=1D vs ?period=3M) don't collide.
+  let cacheKey = url.split('?')[0];
+  if (config?.params) {
+    const qs = new URLSearchParams(config.params).toString();
+    if (qs) cacheKey += '?' + qs;
+  } else if (url.includes('?')) {
+    cacheKey = url;  // URL already has query string
+  }
+  // Try exact key first, then path-only fallback for endpoints without params
+  const cached = _preCache.get(cacheKey) ?? _preCache.get(url.split('?')[0]);
   if (cached) {
     return { data: cached, status: 200, statusText: 'OK', headers: {}, config: config || {} };
   }
