@@ -472,8 +472,8 @@ export function MarketRegimeCard() {
           {!v && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
 
-        {/* ─── Col 3: Overnight Gaps — Heatmap (3 cols) ─── */}
-        <div className="col-span-3 p-2.5 space-y-1.5">
+        {/* ─── Col 3: Overnight Gaps — Treemap (3 cols) ─── */}
+        <div className="col-span-3 p-2.5 space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-[9px] text-neutral-500 font-medium">Overnight Gaps</span>
             {g && (
@@ -485,77 +485,64 @@ export function MarketRegimeCard() {
             )}
           </div>
 
-          {g && (
-            <>
-              {/* Major Indices — 2×2 mini-card grid */}
-              <div className="grid grid-cols-2 gap-1">
-                {g.indices.slice(0, 4).map(item => {
-                  const pct = item.overnight_return_pct;
-                  const abs = Math.abs(pct);
-                  const intensity = Math.min(abs * 40, 60);
-                  const bgColor = pct >= 0
-                    ? `rgba(16, 185, 129, ${intensity / 100})`
-                    : `rgba(239, 68, 68, ${intensity / 100})`;
-                  return (
-                    <div
-                      key={item.ticker}
-                      className="rounded p-1.5 text-center border border-neutral-800/30"
-                      style={{ backgroundColor: bgColor }}
-                    >
-                      <div className="text-[8px] font-mono font-bold text-neutral-200">{item.ticker}</div>
-                      {item.last_price > 0 && (
-                        <div className="text-[7px] font-mono text-neutral-400">${item.last_price.toFixed(0)}</div>
-                      )}
-                      <div className={`text-[9px] font-mono font-bold ${pct >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                        {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+          {g && (() => {
+            // Sort ALL items by absolute overnight return (biggest movers first)
+            const sorted = [...g.indices].sort(
+              (a, b) => Math.abs(b.overnight_return_pct) - Math.abs(a.overnight_return_pct)
+            );
+            const maxAbs = Math.max(...sorted.map(s => Math.abs(s.overnight_return_pct)), 0.01);
 
-              {/* Sector Heatmap — compact colored grid */}
-              {g.indices.length > 4 && (
-                <div>
-                  <div className="text-[7px] text-neutral-600 mb-0.5">Sectors</div>
-                  <div className="grid grid-cols-4 gap-0.5">
-                    {g.indices.slice(4).map(item => {
-                      const pct = item.overnight_return_pct;
-                      const abs = Math.abs(pct);
-                      const intensity = Math.min(abs * 50, 70);
-                      const bgColor = pct >= 0
-                        ? `rgba(16, 185, 129, ${intensity / 100})`
-                        : `rgba(239, 68, 68, ${intensity / 100})`;
-                      return (
-                        <div
-                          key={item.ticker}
-                          className="rounded-sm px-1 py-0.5 text-center border border-neutral-800/20"
-                          style={{ backgroundColor: bgColor }}
-                          title={`${item.ticker}: ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
-                        >
-                          <div className="text-[7px] font-mono font-medium text-neutral-200">{item.ticker}</div>
-                          <div className={`text-[7px] font-mono font-bold ${pct >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                            {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+            // Build treemap rows: items flow left-to-right, bigger items get more flex weight
+            // Row 1: top 4 (biggest movers), Row 2: next 5, Row 3: remaining
+            const rows = [sorted.slice(0, 4), sorted.slice(4, 9), sorted.slice(9)];
+
+            const notableSet = new Set(g.summary.notable_gaps.map(n => n.ticker));
+
+            return (
+              <div className="space-y-0.5">
+                {rows.map((row, ri) =>
+                  row.length > 0 && (
+                    <div key={ri} className="flex gap-0.5">
+                      {row.map(item => {
+                        const pct = item.overnight_return_pct;
+                        const absPct = Math.abs(pct);
+                        // Flex weight: bigger movers get proportionally more space (min 1)
+                        const weight = Math.max(1, Math.round((absPct / maxAbs) * 4));
+                        // Color intensity: scale 0.08 (tiny move) to 0.55 (max move)
+                        const intensity = 0.08 + (absPct / maxAbs) * 0.47;
+                        const bgColor = pct >= 0
+                          ? `rgba(16, 185, 129, ${intensity})`
+                          : `rgba(239, 68, 68, ${intensity})`;
+                        const isNotable = notableSet.has(item.ticker);
+
+                        return (
+                          <div
+                            key={item.ticker}
+                            className={`rounded-sm text-center py-1 px-0.5 min-w-0 ${
+                              isNotable ? 'ring-1 ring-amber-500/40' : ''
+                            }`}
+                            style={{ backgroundColor: bgColor, flex: weight }}
+                            title={`${item.ticker} (${item.name}): ${pct > 0 ? '+' : ''}${pct.toFixed(2)}% overnight${
+                              item.z_score ? ` | z=${item.z_score.toFixed(1)}` : ''
+                            }${item.last_price > 0 ? ` | $${item.last_price.toFixed(0)}` : ''}`}
+                          >
+                            <div className="text-[8px] font-mono font-bold text-neutral-100 leading-none">
+                              {item.ticker}
+                            </div>
+                            <div className={`text-[8px] font-mono font-bold leading-tight ${
+                              pct >= 0 ? 'text-emerald-200' : 'text-red-200'
+                            }`}>
+                              {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Notable gaps — amber accent */}
-              {g.summary.notable_gaps.length > 0 && (
-                <div className="flex flex-wrap gap-1 pt-0.5">
-                  {g.summary.notable_gaps.slice(0, 2).map(gap => (
-                    <span key={gap.ticker} className="text-[7px] bg-amber-900/30 text-amber-400 rounded px-1 py-0.5 font-mono border border-amber-800/20">
-                      ⚠ {gap.ticker} {gap.overnight_return_pct > 0 ? '+' : ''}{gap.overnight_return_pct.toFixed(2)}%
-                    </span>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
+                        );
+                      })}
+                    </div>
+                  )
+                )}
+              </div>
+            );
+          })()}
 
           {!g && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
