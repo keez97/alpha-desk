@@ -75,6 +75,16 @@ MULTI_ASSET_LABELS = {
 TURBULENCE_THRESHOLD_PCTILE = 75   # above 75th percentile = turbulent
 ABSORPTION_THRESHOLD_PCTILE = 80   # above 80th percentile = fragile
 
+# Hysteresis bands — once a threshold is crossed, the opposite direction
+# requires a wider margin to prevent rapid oscillation between states.
+# Example: turbulence enters "turbulent" at 75th, but must drop to 65th to exit.
+TURBULENCE_EXIT_PCTILE = 65        # must drop below 65th to exit turbulent
+ABSORPTION_EXIT_PCTILE = 70        # must drop below 70th to exit fragile
+
+# Extreme absorption threshold — when absorption is THIS high, even
+# "fragile-calm" should be treated as near-crisis (bearish override)
+ABSORPTION_EXTREME_PCTILE = 90     # 90th+ percentile = extreme coupling
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Layer 1: Trend Regime
@@ -689,12 +699,17 @@ def _compute_absorption_ratio(returns: np.ndarray, n_components: int = 1) -> Tup
     return current, percentile, ar_series
 
 
+# Module-level cache for Windham state hysteresis.
+# Prevents rapid oscillation when turbulence/absorption hover near thresholds.
+_previous_windham_state: str | None = None
+
+
 def _windham_fragility_state(
     turbulence_pctile: float,
     absorption_pctile: float,
 ) -> Dict[str, Any]:
     """
-    Windham Capital 2x2 Fragility Classification.
+    Windham Capital 2x2 Fragility Classification with hysteresis.
 
     Combines turbulence (statistical unusualness) with absorption ratio
     (systemic fragility) into four market states:
@@ -704,12 +719,33 @@ def _windham_fragility_state(
       Fragile-Calm:        High absorption + Low turbulence → DANGER: hidden risk
       Fragile-Turbulent:   High absorption + High turbulence→ Crisis mode
 
+    Hysteresis: once in an elevated state, requires a larger improvement
+    to de-escalate. This prevents oscillation when metrics hover near
+    thresholds.  Entry uses standard thresholds; exit requires the
+    wider EXIT thresholds.
+
     The "fragile-calm" state is the most dangerous — it's where markets
     appear calm but are actually tightly coupled and vulnerable. This
     preceded the 2008 crash and COVID sell-off.
     """
-    is_turbulent = turbulence_pctile >= TURBULENCE_THRESHOLD_PCTILE
-    is_fragile = absorption_pctile >= ABSORPTION_THRESHOLD_PCTILE
+    global _previous_windham_state
+
+    # ── Apply hysteresis: use stricter exit thresholds for de-escalation ──
+    # If we were previously in a turbulent state, require a bigger drop
+    # in turbulence to exit (TURBULENCE_EXIT_PCTILE instead of TURBULENCE_THRESHOLD_PCTILE)
+    prev = _previous_windham_state
+
+    if prev and "turbulent" in prev:
+        # Was turbulent → require a wider margin to call it "calm"
+        is_turbulent = turbulence_pctile >= TURBULENCE_EXIT_PCTILE
+    else:
+        is_turbulent = turbulence_pctile >= TURBULENCE_THRESHOLD_PCTILE
+
+    if prev and "fragile" in prev:
+        # Was fragile → require a wider margin to call it "resilient"
+        is_fragile = absorption_pctile >= ABSORPTION_EXIT_PCTILE
+    else:
+        is_fragile = absorption_pctile >= ABSORPTION_THRESHOLD_PCTILE
 
     if is_fragile and is_turbulent:
         state = "fragile-turbulent"
@@ -735,6 +771,9 @@ def _windham_fragility_state(
         risk_level = "low"
         description = "Markets diversified and behaving normally — risk-on conditions"
         score_override = 0.5
+
+    # Store current state for next evaluation
+    _previous_windham_state = state
 
     return {
         "state": state,
@@ -1070,14 +1109,21 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
 
     composite_score = float(np.clip(composite_score, -1.0, 1.0))
 
-    # ── Crisis override: Windham fragile-turbulent forces bear ─────
+    # ── Crisis / Fragility overrides ────────────────────────────────
     windham_state = layer_results.get("systemic", {}).get("details", {}).get("windham_state", "resilient-calm")
     windham_label = layer_results.get("systemic", {}).get("details", {}).get("windham_label", "Normal Markets")
     windham_risk = layer_results.get("systemic", {}).get("details", {}).get("windham_risk_level", "low")
     windham_desc = layer_results.get("systemic", {}).get("details", {}).get("windham_description", "")
+    absorption_pctile = layer_results.get("systemic", {}).get("details", {}).get("absorption_percentile", 0)
 
     if windham_state == "fragile-turbulent":
+        # Full crisis: force bear
         composite_score = min(composite_score, -0.5)
+    elif windham_state == "fragile-calm" and absorption_pctile >= ABSORPTION_EXTREME_PCTILE:
+        # Extreme hidden risk: absorption at 90th+ percentile means markets
+        # are dangerously coupled even if turbulence is below threshold.
+        # Apply a less aggressive but still bearish floor.
+        composite_score = min(composite_score, -0.3)
 
     # ── Determine regime from composite score ──────────────────────
     if composite_score > 0.25:
