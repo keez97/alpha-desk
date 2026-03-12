@@ -78,6 +78,118 @@ def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> s
     raise RuntimeError("No LLM client available")
 
 
+def _build_synthetic_divergences(layer_scores: dict, layers: dict) -> list:
+    """Build divergence insights from raw layer data when LLM doesn't provide them."""
+    divergences = []
+    trend_score = layer_scores.get("trend", 0)
+    systemic_score = layer_scores.get("systemic", 0)
+    sentiment_score = layer_scores.get("sentiment", 0)
+    vol_score = layer_scores.get("volatility", 0)
+    credit_score = layer_scores.get("yield_credit", 0)
+
+    systemic_details = layers.get("systemic", {}).get("details", {})
+    absorption_pctile = systemic_details.get("absorption_percentile", 50)
+    windham_label = systemic_details.get("windham_label", "")
+
+    sentiment_details = layers.get("sentiment", {}).get("details", {})
+    fg_score = sentiment_details.get("fear_greed_score")
+
+    vol_details = layers.get("volatility", {}).get("details", {})
+    vix_val = vol_details.get("vix")
+    vix_pctile = vol_details.get("vix_percentile_1y", 50)
+
+    # Divergence 1: Trend bullish but systemic fragile
+    if trend_score > 0.2 and systemic_score < -0.2:
+        divergences.append({
+            "title": "Trend vs. Systemic Fragility",
+            "explanation": (
+                f"Trend signals are bullish (score {trend_score:+.2f}) with golden cross intact, "
+                f"but absorption ratio at {absorption_pctile:.0f}th percentile signals tight market coupling. "
+                f"Kritzman's research shows this 'fragile-calm' state preceded 70% of major drawdowns."
+            ),
+            "resolution": (
+                "Resolves bullish if absorption drops below 80th percentile (diversification returning), "
+                "or bearish if VIX breaks above 30 (turbulence confirming fragility)."
+            ),
+        })
+
+    # Divergence 2: Sentiment extreme fear vs. credit calm
+    if sentiment_score < -0.3 and credit_score > 0.1:
+        divergences.append({
+            "title": "Sentiment Fear vs. Credit Calm",
+            "explanation": (
+                f"Fear & Greed at {fg_score or '?'} (extreme fear) while credit spreads remain tight — "
+                f"equity traders are panicking but bond markets aren't confirming stress. "
+                f"Historically this resolves with equity mean reversion upward within 2-4 weeks."
+            ),
+            "resolution": (
+                "Resolves bullish if Fear & Greed rebounds above 40 (equity sentiment normalizing), "
+                "or bearish if HY OAS widens above 5% (credit confirming equity fear)."
+            ),
+        })
+
+    # Divergence 3: Volatility elevated vs. trend bullish
+    if vol_score < -0.1 and trend_score > 0.2 and vix_val:
+        divergences.append({
+            "title": "Elevated VIX vs. Bullish Trend",
+            "explanation": (
+                f"VIX at {vix_val:.1f} ({vix_pctile:.0f}th percentile) indicates elevated uncertainty, "
+                f"yet trend momentum remains positive. This often signals a market climbing a 'wall of worry' — "
+                f"which can persist for weeks before resolving."
+            ),
+            "resolution": (
+                f"Resolves bullish if VIX decays below 20 (fear dissipating), "
+                f"or bearish if price breaks below 200 SMA (trend confirming volatility warning)."
+            ),
+        })
+
+    return divergences[:2]  # Max 2 divergences to keep it compact
+
+
+def _build_synthetic_watch_signal(layer_scores: dict, layers: dict) -> dict:
+    """Build a watch signal from the most critical regime metric."""
+    systemic_details = layers.get("systemic", {}).get("details", {})
+    absorption_pctile = systemic_details.get("absorption_percentile", 50)
+    windham_state = systemic_details.get("windham_state", "resilient-calm")
+
+    vol_details = layers.get("volatility", {}).get("details", {})
+    vix_val = vol_details.get("vix", 20)
+
+    sentiment_details = layers.get("sentiment", {}).get("details", {})
+    fg_score = sentiment_details.get("fear_greed_score")
+
+    # Priority 1: Fragile-calm → watch for turbulence trigger
+    if windham_state == "fragile-calm":
+        return {
+            "metric": f"VIX > 28 with absorption still > 90th pctile",
+            "trigger": "Windham state flips from Hidden Risk to Crisis Mode — triggers systematic de-risking",
+            "timeframe": "Next 1-2 weeks",
+        }
+
+    # Priority 2: Extreme fear → watch for reversal
+    if fg_score is not None and fg_score < 25:
+        return {
+            "metric": f"Fear & Greed rebounds above 35",
+            "trigger": "Sentiment capitulation exhausted — contrarian buy signal activates",
+            "timeframe": "Next 1-3 weeks",
+        }
+
+    # Priority 3: High VIX → watch for VIX mean reversion
+    if vix_val and vix_val > 22:
+        return {
+            "metric": f"VIX drops below 20 on 2+ consecutive closes",
+            "trigger": "Volatility regime normalizing — risk-on conditions returning",
+            "timeframe": "Next 1-2 weeks",
+        }
+
+    # Default
+    return {
+        "metric": "Composite score crosses +0.25 or -0.25",
+        "trigger": "Regime shifts from neutral — directional conviction increases",
+        "timeframe": "Next 1-2 weeks",
+    }
+
+
 def generate_regime_insight(regime_data: dict, vix_data: dict, breadth_data: dict, overnight_data: dict) -> dict:
     """Use Claude to generate a rich narrative market insight from regime + supporting data.
 
@@ -222,6 +334,11 @@ Return ONLY valid JSON with this exact structure:
         if not result:
             result = _parse_json_from_text(text)
         if result and "narrative" in result:
+            # Ensure divergences and watch_signal exist even if LLM didn't return them
+            if not result.get("divergences") and has_divergence:
+                result["divergences"] = _build_synthetic_divergences(layer_scores, layers)
+            if not result.get("watch_signal"):
+                result["watch_signal"] = _build_synthetic_watch_signal(layer_scores, layers)
             return result
     except Exception as e:
         logger.warning(f"Claude regime insight failed: {e}")
@@ -233,6 +350,8 @@ Return ONLY valid JSON with this exact structure:
 
     return {
         "narrative": fallback_narrative,
+        "divergences": _build_synthetic_divergences(layer_scores, layers) if has_divergence else [],
+        "watch_signal": _build_synthetic_watch_signal(layer_scores, layers),
         "factors": [],
         "stance": regime_data.get("regime", "neutral").title(),
         "conviction": "low",
