@@ -73,11 +73,13 @@ const SIGNAL_TOOLTIPS: Record<string, string> = {
 // Sub-components
 // ═══════════════════════════════════════════════════════════════
 
-function SignalTooltip({ text }: { text: string }) {
+function SignalTooltip({ text, x, y }: { text: string; x: number; y: number }) {
   return (
-    <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-56 px-2.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl pointer-events-none">
+    <div
+      className="fixed z-[9999] w-56 px-2.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl pointer-events-none"
+      style={{ left: x + 12, top: y - 8 }}
+    >
       <div className="text-[9px] text-neutral-300 leading-snug">{text}</div>
-      <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-neutral-900 border-r border-b border-neutral-700 rotate-45 -mt-1" />
     </div>
   );
 }
@@ -89,6 +91,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
   onToggle: () => void;
 }) {
   const [hoveredSignal, setHoveredSignal] = useState<string | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const score = layer.score;
   const barColor = score > 0.2 ? 'bg-green-500' : score < -0.2 ? 'bg-red-500' : 'bg-neutral-500';
   const weight = Math.round(layer.weight * 100);
@@ -124,8 +127,9 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
               return (
                 <div
                   key={i}
-                  className="flex items-center gap-1.5 text-[9px] relative"
+                  className="flex items-center gap-1.5 text-[9px]"
                   onMouseEnter={() => tooltip ? setHoveredSignal(sig.name) : undefined}
+                  onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
                   onMouseLeave={() => setHoveredSignal(null)}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${BIAS_DOT[sig.bias] || BIAS_DOT.neutral}`} />
@@ -135,7 +139,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
                   <span className={`font-mono ${sig.bias === 'bull' ? 'text-green-400' : sig.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'}`}>
                     {sig.value}
                   </span>
-                  {hoveredSignal === sig.name && tooltip && <SignalTooltip text={tooltip} />}
+                  {hoveredSignal === sig.name && tooltip && <SignalTooltip text={tooltip} x={mousePos.x} y={mousePos.y} />}
                 </div>
               );
             })
@@ -205,9 +209,28 @@ function MiniSparkline({ data }: { data: number[] }) {
   );
 }
 
-function InsightBar({ insight }: { insight: AlphaInsight }) {
+function InsightBar({ insight, compact }: { insight: AlphaInsight; compact?: boolean }) {
   const convictionColor = insight.conviction === 'high' ? 'text-yellow-400' : insight.conviction === 'medium' ? 'text-blue-400' : 'text-neutral-500';
   const convictionBg = insight.conviction === 'high' ? 'bg-yellow-900/20' : insight.conviction === 'medium' ? 'bg-blue-900/20' : 'bg-neutral-800/50';
+  const convictionDot = insight.conviction === 'high' ? 'bg-yellow-400' : insight.conviction === 'medium' ? 'bg-blue-400' : 'bg-neutral-500';
+
+  if (compact) {
+    return (
+      <div className={`${convictionBg} border border-neutral-800/50 rounded px-2 py-1`}>
+        <div className="flex items-start gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1 ${convictionDot}`} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <span className={`text-[8px] font-bold uppercase ${convictionColor}`}>{insight.conviction}</span>
+              <span className="text-[8px] text-neutral-600">·</span>
+              <span className="text-[8px] text-neutral-500">{insight.category}</span>
+            </div>
+            <div className="text-[9px] text-neutral-300 leading-snug">{insight.action}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`${convictionBg} border border-neutral-800/50 rounded px-2.5 py-1.5`}>
@@ -216,6 +239,9 @@ function InsightBar({ insight }: { insight: AlphaInsight }) {
         <span className="text-[9px] text-neutral-600">·</span>
         <span className="text-[9px] text-neutral-500">{insight.category}</span>
       </div>
+      {insight.signal && (
+        <div className="text-[9px] text-neutral-500 leading-snug mb-0.5 italic">{insight.signal}</div>
+      )}
       <div className="text-[10px] text-neutral-300 leading-snug">{insight.action}</div>
     </div>
   );
@@ -541,8 +567,17 @@ export function MarketRegimeCard() {
 
       {/* ═══ Alpha Insight Footer ═══ */}
       {r?.alphaInsights && r.alphaInsights.length > 0 && (
-        <div className="border-t border-neutral-800/50 px-3 py-2">
+        <div className="border-t border-neutral-800/50 px-3 py-2 space-y-1">
+          {/* Primary insight — full size with signal explanation */}
           <InsightBar insight={r.alphaInsights[0]} />
+          {/* Secondary insights — compact layout */}
+          {r.alphaInsights.length > 1 && (
+            <div className="grid grid-cols-2 gap-1">
+              {r.alphaInsights.slice(1).map((insight, i) => (
+                <InsightBar key={i} insight={insight} compact />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
