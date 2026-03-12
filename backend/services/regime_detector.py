@@ -40,6 +40,7 @@ from scipy import stats as scipy_stats
 from backend.services import fred_service
 from backend.services import cnn_fear_greed
 from backend.services import yahoo_direct
+from backend.services.systemic_risk_engine import compute_systemic_risk
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +61,6 @@ LAYER_WEIGHTS = {
     "sentiment":   0.15,
     "macro":       0.10,
     "systemic":    0.15,
-}
-
-# Multi-asset universe for turbulence / absorption ratio
-MULTI_ASSET_TICKERS = ["SPY", "TLT", "GLD", "HYG"]
-MULTI_ASSET_LABELS = {
-    "SPY": "S&P 500",
-    "TLT": "Long Treasury",
-    "GLD": "Gold",
-    "HYG": "High Yield Corp",
 }
 
 # Windham fragility thresholds (percentile-based)
@@ -574,291 +566,101 @@ def _compute_macro_layer() -> Dict[str, Any]:
     return result
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Layer 6: Systemic Risk — Turbulence Index + Absorption Ratio
-# ═══════════════════════════════════════════════════════════════════════════════
-def _fetch_multi_asset_returns(lookback: str = "1y") -> Optional[np.ndarray]:
-    """
-    Fetch daily close prices for the multi-asset universe and compute
-    daily log returns. Returns (n_days x n_assets) array or None.
-    """
-    all_closes = {}
-    min_len = None
-
-    for ticker in MULTI_ASSET_TICKERS:
-        try:
-            history = yahoo_direct.get_history(ticker, range_str=lookback, interval="1d")
-            if history and len(history) >= 50:
-                closes = [bar["close"] for bar in history]
-                all_closes[ticker] = closes
-                if min_len is None or len(closes) < min_len:
-                    min_len = len(closes)
-        except Exception as e:
-            logger.warning("Failed to fetch %s history for turbulence: %s", ticker, e)
-
-    if len(all_closes) < 3 or min_len is None or min_len < 50:
-        return None
-
-    # Align to minimum length and compute log returns
-    price_matrix = np.array([all_closes[t][-min_len:] for t in MULTI_ASSET_TICKERS
-                             if t in all_closes]).T  # shape: (min_len, n_assets)
-    if price_matrix.shape[1] < 3:
-        return None
-
-    # Log returns: r_t = ln(P_t / P_{t-1})
-    log_returns = np.diff(np.log(price_matrix), axis=0)
-
-    # Remove any rows with NaN/inf
-    mask = np.all(np.isfinite(log_returns), axis=1)
-    log_returns = log_returns[mask]
-
-    if len(log_returns) < 50:
-        return None
-
-    return log_returns
-
-
-def _compute_turbulence_index(returns: np.ndarray) -> Tuple[float, float, List[float]]:
-    """
-    Turbulence Index using Mahalanobis distance.
-
-    d_t = (1/n) * (r_t - μ)^T Σ^{-1} (r_t - μ)
-
-    where r_t is today's return vector, μ is the historical mean,
-    and Σ is the historical covariance matrix.
-
-    Based on Chow et al. (1999) and Kritzman & Li (2010).
-
-    Returns: (current_turbulence, percentile, full_series)
-    """
-    n_assets = returns.shape[1]
-    mu = np.mean(returns, axis=0)
-    cov = np.cov(returns, rowvar=False)
-
-    try:
-        cov_inv = np.linalg.inv(cov)
-    except np.linalg.LinAlgError:
-        # Fallback: use pseudo-inverse for singular matrices
-        cov_inv = np.linalg.pinv(cov)
-
-    # Compute turbulence for each day
-    turbulence_series = []
-    for i in range(len(returns)):
-        diff = returns[i] - mu
-        d = float(diff.T @ cov_inv @ diff) / n_assets
-        turbulence_series.append(d)
-
-    current = turbulence_series[-1]
-    percentile = float(scipy_stats.percentileofscore(turbulence_series, current))
-
-    return current, percentile, turbulence_series
-
-
-def _compute_absorption_ratio(returns: np.ndarray, n_components: int = 1) -> Tuple[float, float, List[float]]:
-    """
-    Absorption Ratio: fraction of total variance explained by the first
-    n eigenvectors (principal components).
-
-    AR = Σ(σ²_eigenvector_i) / Σ(σ²_asset_j)
-
-    High AR → markets are tightly coupled (fragile)
-    Low AR → markets are diversified (resilient)
-
-    Based on Kritzman, Li, Page & Rigobon (2011).
-
-    Uses a rolling 60-day window for time-varying absorption ratio.
-
-    Returns: (current_AR, percentile, full_series)
-    """
-    window = min(60, len(returns) // 3)
-    if window < 30:
-        window = 30
-
-    ar_series = []
-    for i in range(window, len(returns) + 1):
-        window_returns = returns[i - window:i]
-        cov = np.cov(window_returns, rowvar=False)
-        eigenvalues = np.linalg.eigvalsh(cov)
-        eigenvalues = np.sort(eigenvalues)[::-1]  # Descending
-
-        total_var = np.sum(eigenvalues)
-        if total_var == 0:
-            ar_series.append(0.5)
-            continue
-
-        explained_var = np.sum(eigenvalues[:n_components])
-        ar = explained_var / total_var
-        ar_series.append(float(ar))
-
-    if not ar_series:
-        return 0.5, 50.0, []
-
-    current = ar_series[-1]
-    percentile = float(scipy_stats.percentileofscore(ar_series, current))
-
-    return current, percentile, ar_series
-
-
-# Module-level cache for Windham state hysteresis.
-# Prevents rapid oscillation when turbulence/absorption hover near thresholds.
-_previous_windham_state: str | None = None
-
-
-def _windham_fragility_state(
-    turbulence_pctile: float,
-    absorption_pctile: float,
-) -> Dict[str, Any]:
-    """
-    Windham Capital 2x2 Fragility Classification with hysteresis.
-
-    Combines turbulence (statistical unusualness) with absorption ratio
-    (systemic fragility) into four market states:
-
-      Resilient-Calm:      Low absorption + Low turbulence  → Normal markets
-      Resilient-Turbulent: Low absorption + High turbulence → Idiosyncratic shock
-      Fragile-Calm:        High absorption + Low turbulence → DANGER: hidden risk
-      Fragile-Turbulent:   High absorption + High turbulence→ Crisis mode
-
-    Hysteresis: once in an elevated state, requires a larger improvement
-    to de-escalate. This prevents oscillation when metrics hover near
-    thresholds.  Entry uses standard thresholds; exit requires the
-    wider EXIT thresholds.
-
-    The "fragile-calm" state is the most dangerous — it's where markets
-    appear calm but are actually tightly coupled and vulnerable. This
-    preceded the 2008 crash and COVID sell-off.
-    """
-    global _previous_windham_state
-
-    # ── Apply hysteresis: use stricter exit thresholds for de-escalation ──
-    # If we were previously in a turbulent state, require a bigger drop
-    # in turbulence to exit (TURBULENCE_EXIT_PCTILE instead of TURBULENCE_THRESHOLD_PCTILE)
-    prev = _previous_windham_state
-
-    if prev and "turbulent" in prev:
-        # Was turbulent → require a wider margin to call it "calm"
-        is_turbulent = turbulence_pctile >= TURBULENCE_EXIT_PCTILE
-    else:
-        is_turbulent = turbulence_pctile >= TURBULENCE_THRESHOLD_PCTILE
-
-    if prev and "fragile" in prev:
-        # Was fragile → require a wider margin to call it "resilient"
-        is_fragile = absorption_pctile >= ABSORPTION_EXIT_PCTILE
-    else:
-        is_fragile = absorption_pctile >= ABSORPTION_THRESHOLD_PCTILE
-
-    if is_fragile and is_turbulent:
-        state = "fragile-turbulent"
-        label = "Crisis Mode"
-        risk_level = "extreme"
-        description = "Markets tightly coupled AND statistically unusual — active de-risking warranted"
-        score_override = -1.0
-    elif is_fragile and not is_turbulent:
-        state = "fragile-calm"
-        label = "Hidden Risk"
-        risk_level = "high"
-        description = "Markets appear calm but are tightly coupled — vulnerability building beneath the surface"
-        score_override = -0.5
-    elif not is_fragile and is_turbulent:
-        state = "resilient-turbulent"
-        label = "Idiosyncratic Shock"
-        risk_level = "moderate"
-        description = "Unusual market moves but well-diversified structure — likely a localized event"
-        score_override = -0.3
-    else:
-        state = "resilient-calm"
-        label = "Normal Markets"
-        risk_level = "low"
-        description = "Markets diversified and behaving normally — risk-on conditions"
-        score_override = 0.5
-
-    # Store current state for next evaluation
-    _previous_windham_state = state
-
-    return {
-        "state": state,
-        "label": label,
-        "risk_level": risk_level,
-        "description": description,
-        "score": score_override,
-    }
-
 
 def _compute_systemic_layer() -> Dict[str, Any]:
     """
     Systemic risk layer using Turbulence Index + Absorption Ratio
     → Windham Capital 2x2 fragility classification.
+
+    Now delegates to the new systemic_risk_engine module.
     """
     result = {"score": 0.0, "signals": [], "details": {}}
 
-    returns = _fetch_multi_asset_returns("1y")
-    if returns is None:
-        result["details"]["status"] = "insufficient_multi_asset_data"
-        return result
-
-    # ── Turbulence Index ───────────────────────────────────────────
     try:
-        turb_current, turb_pctile, turb_series = _compute_turbulence_index(returns)
-        result["details"]["turbulence_index"] = round(turb_current, 4)
-        result["details"]["turbulence_percentile"] = round(turb_pctile, 1)
+        # Call the new engine
+        risk_data = compute_systemic_risk()
 
-        turb_reading = "Normal"
-        if turb_pctile > 90:
-            turb_reading = "Extreme"
-        elif turb_pctile > 75:
-            turb_reading = "Elevated"
-        elif turb_pctile > 50:
-            turb_reading = "Above average"
+        # Extract turbulence metrics
+        turb = risk_data.get("turbulence", {})
+        turb_current = turb.get("current")
+        turb_pctile = turb.get("percentile", 50.0)
+        turb_p_value = turb.get("p_value", 1.0)
+
+        if turb_current is not None:
+            result["details"]["turbulence_index"] = round(turb_current, 4)
+            result["details"]["turbulence_percentile"] = round(turb_pctile, 1)
+            result["details"]["turbulence_p_value"] = round(turb_p_value, 4)
+
+            turb_reading = "Normal"
+            if turb_pctile > 90:
+                turb_reading = "Extreme"
+            elif turb_pctile > 75:
+                turb_reading = "Elevated"
+            elif turb_pctile > 50:
+                turb_reading = "Above average"
+
+            # Include p-value in signal
+            p_note = f" (p={turb_p_value:.3f})" if turb_p_value < 0.05 else ""
+            result["signals"].append({
+                "name": "Turbulence Index",
+                "value": f"{turb_current:.3f} ({turb_pctile:.0f}th %ile){p_note}",
+                "reading": turb_reading,
+                "bias": "bull" if turb_pctile < 50 else ("bear" if turb_pctile > 75 else "neutral"),
+            })
+
+        # Extract absorption metrics
+        ar = risk_data.get("absorption", {})
+        ar_current = ar.get("current")
+        ar_pctile = ar.get("percentile", 50.0)
+        ar_delta = ar.get("delta", 0.0)
+        ar_delta_zscore = ar.get("delta_zscore", 0.0)
+
+        if ar_current is not None:
+            result["details"]["absorption_ratio"] = round(ar_current, 4)
+            result["details"]["absorption_percentile"] = round(ar_pctile, 1)
+            result["details"]["absorption_delta"] = round(ar_delta, 4)
+            result["details"]["absorption_delta_zscore"] = round(ar_delta_zscore, 3)
+
+            ar_reading = "Diversified"
+            if ar_pctile > 90:
+                ar_reading = "Extremely coupled"
+            elif ar_pctile > 80:
+                ar_reading = "Tightly coupled"
+            elif ar_pctile > 60:
+                ar_reading = "Moderately coupled"
+
+            # Include delta arrow in signal
+            delta_arrow = "↑" if ar_delta > 0.01 else ("↓" if ar_delta < -0.01 else "→")
+            result["signals"].append({
+                "name": "Absorption Ratio",
+                "value": f"{ar_current:.3f} ({ar_pctile:.0f}th %ile) {delta_arrow}",
+                "reading": ar_reading,
+                "bias": "bull" if ar_pctile < 60 else ("bear" if ar_pctile > 80 else "neutral"),
+            })
+
+        # Extract Windham metrics
+        windham = risk_data.get("windham", {})
+        result["details"]["windham_state"] = windham.get("state", "resilient-calm")
+        result["details"]["windham_label"] = windham.get("label", "Normal Markets")
+        result["details"]["windham_risk_level"] = windham.get("risk_level", "low")
+        result["details"]["windham_description"] = windham.get("description", "")
+        result["details"]["fragility_score"] = round(windham.get("fragility_score", 0.0), 3)
+        result["details"]["turbulence_score"] = round(windham.get("turbulence_score", 0.0), 3)
+        result["details"]["windham_consecutive_periods"] = windham.get("consecutive_periods", 0)
+        result["details"]["ar_delta_warning"] = windham.get("ar_delta_warning", False)
 
         result["signals"].append({
-            "name": "Turbulence Index",
-            "value": f"{turb_current:.3f} ({turb_pctile:.0f}th %ile)",
-            "reading": turb_reading,
-            "bias": "bull" if turb_pctile < 50 else ("bear" if turb_pctile > 75 else "neutral"),
+            "name": "Windham Fragility",
+            "value": windham.get("label", "Unknown"),
+            "reading": windham.get("description", ""),
+            "bias": "bull" if windham.get("score", 0) > 0 else ("bear" if windham.get("score", 0) < 0 else "neutral"),
         })
+
+        result["score"] = windham.get("score", 0.0)
+
     except Exception as e:
-        logger.warning("Turbulence calculation failed: %s", e)
-        turb_pctile = 50.0
-
-    # ── Absorption Ratio ───────────────────────────────────────────
-    try:
-        ar_current, ar_pctile, ar_series = _compute_absorption_ratio(returns)
-        result["details"]["absorption_ratio"] = round(ar_current, 4)
-        result["details"]["absorption_percentile"] = round(ar_pctile, 1)
-
-        ar_reading = "Diversified"
-        if ar_pctile > 90:
-            ar_reading = "Extremely coupled"
-        elif ar_pctile > 80:
-            ar_reading = "Tightly coupled"
-        elif ar_pctile > 60:
-            ar_reading = "Moderately coupled"
-
-        result["signals"].append({
-            "name": "Absorption Ratio",
-            "value": f"{ar_current:.3f} ({ar_pctile:.0f}th %ile)",
-            "reading": ar_reading,
-            "bias": "bull" if ar_pctile < 60 else ("bear" if ar_pctile > 80 else "neutral"),
-        })
-    except Exception as e:
-        logger.warning("Absorption ratio calculation failed: %s", e)
-        ar_pctile = 50.0
-
-    # ── Windham Fragility Classification ───────────────────────────
-    windham = _windham_fragility_state(turb_pctile, ar_pctile)
-    result["details"]["windham_state"] = windham["state"]
-    result["details"]["windham_label"] = windham["label"]
-    result["details"]["windham_risk_level"] = windham["risk_level"]
-    result["details"]["windham_description"] = windham["description"]
-
-    result["signals"].append({
-        "name": "Windham Fragility",
-        "value": windham["label"],
-        "reading": windham["description"],
-        "bias": "bull" if windham["score"] > 0 else ("bear" if windham["score"] < 0 else "neutral"),
-    })
-
-    result["score"] = windham["score"]
+        logger.warning("Systemic risk engine failed: %s", e)
+        result["details"]["status"] = "systemic_engine_error"
 
     return result
 
@@ -1115,6 +917,7 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
     windham_risk = layer_results.get("systemic", {}).get("details", {}).get("windham_risk_level", "low")
     windham_desc = layer_results.get("systemic", {}).get("details", {}).get("windham_description", "")
     absorption_pctile = layer_results.get("systemic", {}).get("details", {}).get("absorption_percentile", 0)
+    ar_delta_warning = layer_results.get("systemic", {}).get("details", {}).get("ar_delta_warning", False)
 
     if windham_state == "fragile-turbulent":
         # Full crisis: force bear
@@ -1124,6 +927,9 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
         # are dangerously coupled even if turbulence is below threshold.
         # Apply a less aggressive but still bearish floor.
         composite_score = min(composite_score, -0.3)
+    elif ar_delta_warning and absorption_pctile >= 70:
+        # Rapid increase in absorption ratio coupled with elevated baseline = fragility rising
+        composite_score = min(composite_score, -0.1)
 
     # ── Determine regime from composite score ──────────────────────
     if composite_score > 0.25:
@@ -1191,8 +997,19 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
         "systemic_risk": {
             "turbulence_index": layer_results.get("systemic", {}).get("details", {}).get("turbulence_index"),
             "turbulence_percentile": layer_results.get("systemic", {}).get("details", {}).get("turbulence_percentile"),
+            "turbulence_p_value": layer_results.get("systemic", {}).get("details", {}).get("turbulence_p_value"),
             "absorption_ratio": layer_results.get("systemic", {}).get("details", {}).get("absorption_ratio"),
             "absorption_percentile": layer_results.get("systemic", {}).get("details", {}).get("absorption_percentile"),
+            "absorption_delta": layer_results.get("systemic", {}).get("details", {}).get("absorption_delta"),
+            "absorption_delta_zscore": layer_results.get("systemic", {}).get("details", {}).get("absorption_delta_zscore"),
+            "windham_state": layer_results.get("systemic", {}).get("details", {}).get("windham_state"),
+            "windham_label": layer_results.get("systemic", {}).get("details", {}).get("windham_label"),
+            "windham_risk_level": layer_results.get("systemic", {}).get("details", {}).get("windham_risk_level"),
+            "windham_description": layer_results.get("systemic", {}).get("details", {}).get("windham_description"),
+            "fragility_score": layer_results.get("systemic", {}).get("details", {}).get("fragility_score"),
+            "turbulence_score": layer_results.get("systemic", {}).get("details", {}).get("turbulence_score"),
+            "persistence": layer_results.get("systemic", {}).get("details", {}).get("windham_consecutive_periods"),
+            "ar_delta_warning": layer_results.get("systemic", {}).get("details", {}).get("ar_delta_warning"),
         },
 
         # Alpha-generating insights
