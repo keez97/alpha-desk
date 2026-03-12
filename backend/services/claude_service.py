@@ -789,8 +789,8 @@ async def grade_stock(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
 async def generate_morning_report(date: str, regime: dict | None = None) -> Dict[str, Any]:
     """Generate condensed morning market report (non-streaming).
 
-    Strategy: Always try data-driven analysis first (works without LLM).
-    Only call OpenRouter if key is valid and available.
+    Strategy: Always use data-driven analysis first (uses real live market data).
+    LLM is only a fallback when no market data is available (it hallucinates prices).
 
     Args:
         regime: Optional regime detection dict (from detect_regime) so the
@@ -807,7 +807,13 @@ async def generate_morning_report(date: str, regime: dict | None = None) -> Dict
         logger.warning(f"Could not fetch market data for report: {e}")
         macro, sectors = {}, []
 
-    # Step 2: Try LLM-enhanced generation if available
+    # Step 2: Data-driven analysis FIRST — uses real market data + regime context
+    # This is preferred over LLM because it uses actual live prices, not hallucinated data.
+    if macro or sectors:
+        logger.info("Using data-driven smart analysis for morning report (real data)")
+        return generate_smart_report(date, macro, sectors, regime=regime)
+
+    # Step 3: LLM fallback — only when no market data is available
     if not USE_MOCK:
         try:
             prompt = morning_report.get_morning_report_prompt(date)
@@ -830,19 +836,14 @@ async def generate_morning_report(date: str, regime: dict | None = None) -> Dict
                 )
                 prompt = prompt + regime_ctx
             model_id = get_model_id()
-            logger.info(f"Generating morning report with model: {model_id}")
+            logger.info(f"Generating morning report with LLM fallback: {model_id}")
 
             text_content = _call_llm(BASE_SYSTEM_PROMPT, prompt, max_tokens=3000)
             parsed = _parse_json_from_text(text_content)
             if parsed:
                 return parsed
         except Exception as e:
-            logger.warning(f"LLM report failed, using data-driven analysis: {e}")
-
-    # Step 3: Data-driven analysis (always works, uses real market data)
-    if macro or sectors:
-        logger.info("Using data-driven smart analysis for morning report")
-        return generate_smart_report(date, macro, sectors, regime=regime)
+            logger.warning(f"LLM report fallback also failed: {e}")
 
     # Step 4: Static fallback
     logger.info("Using static mock morning report (no data available)")
