@@ -535,8 +535,22 @@ export interface RegimeInsightFactor {
   bias: 'bull' | 'bear' | 'neutral';
 }
 
+export interface RegimeInsightDivergence {
+  title: string;
+  explanation: string;
+  resolution: string;
+}
+
+export interface RegimeInsightWatchSignal {
+  metric: string;
+  trigger: string;
+  timeframe: string;
+}
+
 export interface RegimeInsight {
   narrative: string;
+  divergences: RegimeInsightDivergence[];
+  watch_signal: RegimeInsightWatchSignal | null;
   factors: RegimeInsightFactor[];
   stance: string;
   conviction: 'high' | 'medium' | 'low';
@@ -547,6 +561,16 @@ export async function fetchRegimeInsight(): Promise<RegimeInsight> {
   const d = raw.data || raw;
   return {
     narrative: d.narrative || '',
+    divergences: (d.divergences || []).map((div: any) => ({
+      title: div.title || '',
+      explanation: div.explanation || '',
+      resolution: div.resolution || '',
+    })),
+    watch_signal: d.watch_signal ? {
+      metric: d.watch_signal.metric || '',
+      trigger: d.watch_signal.trigger || '',
+      timeframe: d.watch_signal.timeframe || '',
+    } : null,
     factors: (d.factors || []).map((f: any) => ({
       label: f.label || '',
       assessment: f.assessment || '',

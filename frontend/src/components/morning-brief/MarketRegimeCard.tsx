@@ -255,10 +255,10 @@ function AIMarketInsight() {
     : 'text-neutral-400 border-neutral-700/40 bg-neutral-800/40';
 
   return (
-    <div className="space-y-1.5">
-      {/* Stance badge + factor dots */}
+    <div className="space-y-2">
+      {/* Row 1: Stance badge + factor dots */}
       <div className="flex items-center gap-2">
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${stanceColor}`}>
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 ${stanceColor}`}>
           {d.stance}
         </span>
         {d.factors.length > 0 && (
@@ -278,10 +278,40 @@ function AIMarketInsight() {
         )}
       </div>
 
-      {/* Narrative */}
+      {/* Row 2: Narrative */}
       <div className="text-[10px] text-neutral-300 leading-relaxed">
         {d.narrative}
       </div>
+
+      {/* Row 3: Signal Divergences */}
+      {d.divergences && d.divergences.length > 0 && (
+        <div className="space-y-1">
+          {d.divergences.map((div, i) => (
+            <div key={i} className="rounded border border-amber-800/30 bg-amber-900/10 px-2 py-1.5">
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-amber-400 text-[9px]">⚡</span>
+                <span className="text-[9px] font-bold text-amber-300">{div.title}</span>
+              </div>
+              <div className="text-[9px] text-neutral-400 leading-relaxed">{div.explanation}</div>
+              <div className="text-[9px] text-neutral-500 mt-0.5 italic">
+                Resolution: {div.resolution}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Row 4: Watch Signal */}
+      {d.watch_signal && d.watch_signal.metric && (
+        <div className="flex items-start gap-2 rounded border border-blue-800/30 bg-blue-900/10 px-2 py-1.5">
+          <span className="text-blue-400 text-[9px] mt-0.5 shrink-0">👁</span>
+          <div className="min-w-0">
+            <div className="text-[9px] text-blue-300 font-mono font-bold">{d.watch_signal.metric}</div>
+            <div className="text-[9px] text-neutral-400">{d.watch_signal.trigger}</div>
+            <div className="text-[8px] text-neutral-500 mt-0.5">{d.watch_signal.timeframe}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

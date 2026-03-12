@@ -85,13 +85,31 @@ def generate_regime_insight(regime_data: dict, vix_data: dict, breadth_data: dic
     """
     if USE_MOCK:
         return {
-            "narrative": "Markets are in a mixed regime with diverging signals across asset classes. "
-                         "Trend remains positive but systemic fragility indicators warrant caution. "
-                         "Consider maintaining core positions while hedging tail risk.",
+            "narrative": "The trend/systemic divergence is the dominant signal today: SPY remains above its 200 SMA (golden cross intact) "
+                         "but absorption ratio at the 93rd percentile means markets are tightly coupled — Kritzman's research shows this "
+                         "'fragile-calm' state preceded 70% of major drawdowns in the last 30 years. With Fear & Greed at 24 (extreme fear), "
+                         "the crowd is already positioned defensively, which paradoxically limits near-term downside. Stay long but size down 20%.",
+            "divergences": [
+                {
+                    "title": "Trend vs. Systemic Fragility",
+                    "explanation": "Golden cross and +2.8% above 200 SMA signal healthy trend, but absorption ratio at 93rd percentile "
+                                   "indicates markets are tightly coupled. This combination appeared in Sept 2018 and Jan 2020 — both preceded "
+                                   "10%+ corrections within 6 weeks.",
+                    "resolution": "Resolves bullish if absorption drops below 80th percentile (diversification returning), "
+                                  "or bearish if VIX breaks above 30 (turbulence confirming fragility)."
+                },
+            ],
+            "watch_signal": {
+                "metric": "VIX > 28 with absorption ratio still > 90th pctile",
+                "trigger": "Windham state flips from Hidden Risk to Crisis Mode — triggers systematic de-risking",
+                "timeframe": "Next 1-2 weeks",
+            },
             "factors": [
                 {"label": "Trend", "assessment": "Positive", "bias": "bull"},
                 {"label": "Volatility", "assessment": "Elevated", "bias": "neutral"},
-                {"label": "Credit", "assessment": "Mixed", "bias": "neutral"},
+                {"label": "Credit", "assessment": "Normal", "bias": "bull"},
+                {"label": "Sentiment", "assessment": "Extreme Fear", "bias": "bear"},
+                {"label": "Systemic", "assessment": "Fragile-Calm", "bias": "bear"},
             ],
             "stance": "Cautiously Bullish",
             "conviction": "medium",
@@ -141,7 +159,13 @@ def generate_regime_insight(regime_data: dict, vix_data: dict, breadth_data: dic
         recession_prob = layers.get("yield_credit", {}).get("details", {}).get("recession_probability")
     recession_text = f"{recession_prob:.0f}%" if recession_prob is not None else "unavailable (data still loading)"
 
-    prompt = f"""Analyze the current market regime and generate a concise, actionable morning assessment.
+    # Build cross-layer divergence hints for the prompt
+    layer_scores = {name: layers.get(name, {}).get("score", 0) for name in ["trend", "volatility", "yield_credit", "sentiment", "macro", "systemic"]}
+    bull_layers = [n for n, s in layer_scores.items() if s > 0.2]
+    bear_layers = [n for n, s in layer_scores.items() if s < -0.2]
+    has_divergence = bool(bull_layers) and bool(bear_layers)
+
+    prompt = f"""Analyze the current market regime and generate a deep, cross-signal synthesis assessment.
 
 REGIME DATA:
 - Overall: {regime_data.get('regime', 'neutral')} (confidence {regime_data.get('confidence', 50)}%, composite score {regime_data.get('composite_score', 0):.2f})
@@ -151,13 +175,29 @@ REGIME DATA:
 LAYER SCORES:
 {chr(10).join(layer_summary)}
 
+CROSS-LAYER NOTE: Bullish layers: {bull_layers or 'none'}. Bearish layers: {bear_layers or 'none'}.{"  DIVERGENCE DETECTED — layers are conflicting." if has_divergence else ""}
+
 {vix_text}
 {breadth_text}
 {overnight_text}
 
+Your job is to go BEYOND just restating the numbers. Synthesize cross-signal relationships, identify what the divergences mean, and explain what historically happens when this combination of signals appears.
+
 Return ONLY valid JSON with this exact structure:
 {{
-  "narrative": "<2-3 sentence assessment written like a senior macro strategist's morning note. Be specific about what the data shows, reference actual numbers, and give a clear directional view. No hedging or vague language. End with one concrete action.>",
+  "narrative": "<3-4 sentences. Lead with the MOST IMPORTANT cross-signal insight, not a generic summary. For example: if trend is bullish but absorption ratio is at 93rd percentile, explain why that specific combination is dangerous (Windham research shows fragile-calm precedes 70% of major drawdowns). Reference actual values. End with conviction-weighted positioning.>",
+  "divergences": [
+    {{
+      "title": "<short name, e.g. 'Trend vs. Systemic Fragility'>",
+      "explanation": "<1-2 sentences: what the conflict between these signals means and what it has historically preceded. Be specific about percentiles and thresholds.>",
+      "resolution": "<what would resolve this divergence — either bullish or bearish catalyst>"
+    }}
+  ],
+  "watch_signal": {{
+    "metric": "<specific metric to watch, e.g. 'VIX > 28' or 'Absorption ratio drops below 80th pctile'>",
+    "trigger": "<what happens if this triggers>",
+    "timeframe": "<e.g. 'next 1-2 weeks'>"
+  }},
   "factors": [
     {{"label": "<factor name>", "assessment": "<1-3 word summary>", "bias": "bull|bear|neutral"}},
     ... (include 4-6 factors covering trend, vol, credit, sentiment, breadth, systemic)
@@ -167,14 +207,17 @@ Return ONLY valid JSON with this exact structure:
 }}"""
 
     system = (
-        "You are a senior macro strategist at a systematic hedge fund. "
-        "You synthesize quantitative regime signals into clear, actionable assessments. "
-        "Be direct and opinionated — PMs pay you for conviction, not caveats. "
-        "Always reference specific data points to support your view."
+        "You are a senior macro strategist at a systematic hedge fund who specializes in cross-signal analysis. "
+        "Your edge is seeing what others miss: the contradictions between signals, the historical patterns those contradictions match, "
+        "and the specific inflection points that will resolve the ambiguity. "
+        "Never just restate the numbers — every PM can read a dashboard. Your value is SYNTHESIS: "
+        "what does it mean when trend says X but systemic fragility says Y? "
+        "Reference Windham Capital research, Kritzman's fragility framework, and Estrella's probit model where relevant. "
+        "Be direct and opinionated — PMs pay you for conviction, not caveats."
     )
 
     try:
-        text = _call_llm(system, prompt, max_tokens=600)
+        text = _call_llm(system, prompt, max_tokens=1000)
         result = json.loads(text) if text.strip().startswith("{") else None
         if not result:
             result = _parse_json_from_text(text)
