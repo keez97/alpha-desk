@@ -437,6 +437,88 @@ def _extract_market_from_disagg(df, search_term: str) -> Optional[Dict[str, Any]
 # ---------------------------------------------------------------------------
 # Alert generation
 # ---------------------------------------------------------------------------
+def cross_reference_windham(
+    market_positioning: Dict[str, Any],
+    regime_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Cross-reference COT positioning extremes with Windham systemic state.
+    Most dangerous: speculative crowding + fragile market.
+    Smartest money: commercial hedging + hidden risk.
+    """
+    if not regime_data or not market_positioning:
+        return market_positioning
+
+    result = dict(market_positioning)
+    windham = regime_data.get("windham", {})
+    systemic = regime_data.get("systemic_risk", {})
+    windham_state = windham.get("state", "resilient-calm")
+    windham_label = windham.get("label", "Normal Markets")
+    ar_delta_warning = systemic.get("ar_delta_warning", False)
+    persistence = systemic.get("windham_persistence", 0)
+
+    markets = result.get("markets", [])
+    windham_alerts = []
+
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+
+        # Look for the relevant percentile fields — read the actual field names from the file
+        spec_pctile = market.get("speculative_percentile", 50)
+        comm_pctile = market.get("commercial_percentile", 50)
+        ticker = market.get("ticker", "")
+        name = market.get("name", ticker)
+
+        # DANGER: Spec crowding in fragile market
+        if spec_pctile > 90 and windham_state in ("fragile-calm", "fragile-turbulent"):
+            alert = {
+                "type": "danger",
+                "market": name,
+                "ticker": ticker,
+                "message": f"DANGER: {name} specs at {spec_pctile:.0f}th pctile (extreme long) while market in {windham_label}. Maximum unwind risk.",
+                "severity": "critical" if windham_state == "fragile-turbulent" else "high",
+            }
+            if ar_delta_warning:
+                alert["message"] += " AR rising — fragility intensifying."
+            market["windham_alert"] = alert
+            windham_alerts.append(alert)
+
+        # Spec extreme short in crisis = squeeze risk
+        elif spec_pctile < 10 and windham_state == "fragile-turbulent":
+            alert = {
+                "type": "squeeze_risk",
+                "market": name,
+                "ticker": ticker,
+                "message": f"ALERT: {name} specs at {spec_pctile:.0f}th pctile (extreme short) in Crisis Mode — squeeze risk if regime shifts.",
+                "severity": "high",
+            }
+            market["windham_alert"] = alert
+            windham_alerts.append(alert)
+
+        # Smart money: commercials hedging in hidden risk
+        elif comm_pctile > 90 and windham_state == "fragile-calm":
+            alert = {
+                "type": "smart_money",
+                "market": name,
+                "ticker": ticker,
+                "message": f"INSIGHT: {name} commercials at {comm_pctile:.0f}th pctile (extreme hedge) in Hidden Risk. Smart money defensive.",
+                "severity": "medium",
+            }
+            if persistence and persistence > 4:
+                alert["message"] += f" Fragile for {persistence} periods."
+            market["windham_alert"] = alert
+            windham_alerts.append(alert)
+
+    result["windham_cross_reference"] = {
+        "windham_state": windham_state,
+        "windham_label": windham_label,
+        "alerts": windham_alerts,
+        "alert_count": len(windham_alerts),
+    }
+    return result
+
+
 def _generate_alerts(markets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Generate reversal and divergence alerts based on positioning extremes."""
     alerts = []

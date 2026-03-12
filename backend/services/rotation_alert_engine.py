@@ -231,3 +231,54 @@ class RotationAlertEngine:
             "description": f"{sector} ({ticker}) breaking down: RS-Ratio crossed below 100",
             "severity": "warning",
         }
+
+    @staticmethod
+    def enrich_alerts_with_systemic_context(
+        alerts: List[Dict[str, Any]],
+        regime_data: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Enrich rotation alerts with systemic risk context from the regime detector.
+
+        When AR delta z-score > 1.0, sectors rotating into Leading get a caution flag.
+        When AR delta z-score < -1.0, sectors rotating into Improving get a confidence boost.
+        When Windham state is fragile, ALL rotation alerts get a systemic warning.
+        """
+        if not regime_data:
+            return alerts
+
+        systemic = regime_data.get("systemic_risk", {})
+        windham = regime_data.get("windham", {})
+        ar_delta_zscore = systemic.get("ar_delta_zscore", 0.0)
+        windham_state = windham.get("state", "resilient-calm")
+        persistence = systemic.get("windham_persistence", 0)
+
+        enriched = []
+        for alert in alerts:
+            alert = dict(alert)  # copy to avoid mutation
+            to_quad = alert.get("to_quadrant", "")
+
+            if ar_delta_zscore > 1.0 and to_quad == "Leading":
+                alert["systemic_warning"] = (
+                    "Caution: absorption ratio rising — systemic coupling increasing. "
+                    "Rotation into Leading may reverse if market fragility builds."
+                )
+                alert["systemic_flag"] = "caution"
+            elif ar_delta_zscore < -1.0 and to_quad == "Improving":
+                alert["systemic_boost"] = (
+                    "Systemic decorrelation supports rotation thesis — "
+                    "markets becoming more diversified."
+                )
+                alert["systemic_flag"] = "supportive"
+
+            if windham_state in ("fragile-calm", "fragile-turbulent"):
+                duration = f" ({persistence} consecutive periods)" if persistence and persistence > 1 else ""
+                alert["systemic_regime_warning"] = (
+                    f"Market in {windham.get('label', windham_state)}{duration}. "
+                    f"Sector rotations may be unreliable during systemic fragility."
+                )
+                if windham_state == "fragile-turbulent":
+                    alert["severity"] = "critical"
+
+            enriched.append(alert)
+        return enriched

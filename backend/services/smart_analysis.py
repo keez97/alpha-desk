@@ -505,6 +505,31 @@ def generate_smart_report(date: str, macro: dict, sectors: list, regime: dict | 
                 f"No strong directional conviction — favor balanced exposure."
             )
 
+        # Add systemic risk details: AR delta, turbulence p-value, persistence
+        systemic = regime.get("systemic_risk", {})
+        ar_delta = systemic.get("ar_delta")
+        ar_delta_zscore = systemic.get("ar_delta_zscore", 0)
+        turb_p_value = systemic.get("turbulence_p_value")
+        persistence = systemic.get("windham_persistence", 0)
+
+        if ar_delta is not None:
+            direction = "rose" if ar_delta > 0 else "fell"
+            regime_note += (
+                f" Absorption ratio {direction} {abs(ar_delta):.3f} week-over-week" +
+                (f" (z={ar_delta_zscore:+.1f})" if abs(ar_delta_zscore) > 0.5 else "") + "."
+            )
+
+        if turb_p_value is not None and turb_p_value < 0.05:
+            regime_note += f" Turbulence statistically significant (p={turb_p_value:.3f}) — anomalous moves."
+
+        if persistence and persistence > 2:
+            wlabel = windham.get("label", "current state")
+            wstate = windham.get("state", "")
+            regime_note += (
+                f" In {wlabel} for {persistence} periods" +
+                (" — sustained fragility." if "fragile" in wstate else " — stable regime.")
+            )
+
     market_snapshot = " ".join(snapshot_parts) + vix_note + breadth_note + regime_note
 
     # --- Section 2: Sector Rotation ---
