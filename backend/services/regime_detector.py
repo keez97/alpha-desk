@@ -638,6 +638,17 @@ def _compute_systemic_layer() -> Dict[str, Any]:
                 "bias": "bull" if ar_pctile < 60 else ("bear" if ar_pctile > 80 else "neutral"),
             })
 
+            # AR Delta Warning signal — dedicated indicator for rapid coupling changes
+            if abs(ar_delta_zscore) > 0.5:
+                delta_direction = "Rising" if ar_delta_zscore > 0 else "Falling"
+                delta_severity = "rapidly" if abs(ar_delta_zscore) > 1.5 else "notably" if abs(ar_delta_zscore) > 1.0 else "moderately"
+                result["signals"].append({
+                    "name": "AR Delta",
+                    "value": f"{delta_direction} {delta_severity} (z={ar_delta_zscore:.2f})",
+                    "reading": f"Coupling {delta_direction.lower()}",
+                    "bias": "bear" if ar_delta_zscore > 1.0 else ("bull" if ar_delta_zscore < -1.0 else "neutral"),
+                })
+
         # Extract Windham metrics
         windham = risk_data.get("windham", {})
         result["details"]["windham_state"] = windham.get("state", "resilient-calm")
@@ -648,6 +659,11 @@ def _compute_systemic_layer() -> Dict[str, Any]:
         result["details"]["turbulence_score"] = round(windham.get("turbulence_score", 0.0), 3)
         result["details"]["windham_consecutive_periods"] = windham.get("consecutive_periods", 0)
         result["details"]["ar_delta_warning"] = windham.get("ar_delta_warning", False)
+
+        # Add Tier 3 data from data_quality
+        data_quality = risk_data.get("data_quality", {})
+        result["details"]["tier3_assets_available"] = data_quality.get("tier3_assets_available", 0)
+        result["details"]["tier3_tickers"] = data_quality.get("tier3_tickers", [])
 
         result["signals"].append({
             "name": "Windham Fragility",
@@ -1010,6 +1026,8 @@ def detect_regime(macro: dict, correlation_data: dict = None, history_data: dict
             "turbulence_score": layer_results.get("systemic", {}).get("details", {}).get("turbulence_score"),
             "persistence": layer_results.get("systemic", {}).get("details", {}).get("windham_consecutive_periods"),
             "ar_delta_warning": layer_results.get("systemic", {}).get("details", {}).get("ar_delta_warning"),
+            "tier3_assets_available": layer_results.get("systemic", {}).get("details", {}).get("tier3_assets_available", 0),
+            "tier3_tickers": layer_results.get("systemic", {}).get("details", {}).get("tier3_tickers", []),
         },
 
         # Alpha-generating insights

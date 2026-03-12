@@ -56,6 +56,15 @@ CROSS_ASSET_UNIVERSE = {
     "GLD": "Gold",
 }
 
+TIER3_UNIVERSE = {
+    "XME": "Metals & Mining",
+    "COPX": "Copper Miners",
+    "UNG": "Natural Gas",
+    "DBA": "Agriculture",
+    "BITO": "Bitcoin Futures",
+    "VIXY": "VIX Short-Term",
+}
+
 # Windham fragility thresholds (percentile-based)
 TURBULENCE_THRESHOLD_PCTILE = 75   # above 75th percentile = turbulent
 ABSORPTION_THRESHOLD_PCTILE = 80   # above 80th percentile = fragile
@@ -125,16 +134,26 @@ def fetch_sector_returns(lookback_weeks: int = 52) -> Optional[np.ndarray]:
 # Cross-Asset Returns (10 cross-asset ETFs, daily, 252-day window)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def fetch_cross_asset_returns(lookback_days: int = 252) -> Optional[np.ndarray]:
+def fetch_cross_asset_returns(lookback_days: int = 252) -> Dict[str, Any]:
     """
-    Fetch daily returns for 10 cross-asset ETFs (equities, bonds, commodities).
+    Fetch daily returns for 10 core cross-asset ETFs + optional Tier 3 assets.
+
+    The function fetches the core CROSS_ASSET_UNIVERSE assets first (required),
+    then attempts to fetch TIER3_UNIVERSE assets (optional — graceful degradation).
 
     Returns:
-        (n_days x n_assets) ndarray of log returns, or None if insufficient data.
+        {
+            "returns": (n_days x n_assets) ndarray of log returns, or None if insufficient data,
+            "n_core": int,  # Number of core CROSS_ASSET_UNIVERSE assets fetched,
+            "n_tier3": int,  # Number of TIER3_UNIVERSE assets fetched,
+            "tier3_available": list[str],  # Tickers of successfully fetched TIER3 assets,
+        }
     """
     all_closes = {}
     min_len = None
+    tier3_tickers = []
 
+    # ── Fetch core cross-asset assets (required for calculation) ──
     for ticker in CROSS_ASSET_UNIVERSE.keys():
         try:
             history = yahoo_direct.get_history(ticker, range_str="1y", interval="1d")
@@ -146,19 +165,47 @@ def fetch_cross_asset_returns(lookback_days: int = 252) -> Optional[np.ndarray]:
         except Exception as e:
             logger.debug(f"Failed to fetch {ticker} cross-asset returns: {e}")
 
-    if len(all_closes) < 8 or min_len is None or min_len < 100:
-        logger.warning(
-            f"Insufficient cross-asset data: {len(all_closes)} assets, {min_len} days"
-        )
-        return None
+    # ── Attempt to fetch Tier 3 assets (optional, graceful degradation) ──
+    for ticker in TIER3_UNIVERSE.keys():
+        try:
+            history = yahoo_direct.get_history(ticker, range_str="1y", interval="1d")
+            if history and len(history) >= 100:
+                closes = [bar["close"] for bar in history]
+                all_closes[ticker] = closes
+                tier3_tickers.append(ticker)
+                # Update min_len to include tier3 data
+                if min_len is None or len(closes) < min_len:
+                    min_len = len(closes)
+        except Exception as e:
+            logger.debug(f"Failed to fetch {ticker} tier3 returns (non-critical): {e}")
 
-    # Align to minimum length and compute log returns
+    n_core = sum(1 for t in CROSS_ASSET_UNIVERSE.keys() if t in all_closes)
+    n_tier3 = len(tier3_tickers)
+
+    if n_core < 8 or min_len is None or min_len < 100:
+        logger.warning(
+            f"Insufficient cross-asset data: {n_core} core assets, {n_tier3} tier3 assets, {min_len} days"
+        )
+        return {
+            "returns": None,
+            "n_core": n_core,
+            "n_tier3": n_tier3,
+            "tier3_available": tier3_tickers,
+        }
+
+    # ── Align all assets (core + tier3) to minimum length ──
+    all_tickers = list(CROSS_ASSET_UNIVERSE.keys()) + tier3_tickers
     price_matrix = np.array(
-        [all_closes[t][-min_len:] for t in CROSS_ASSET_UNIVERSE.keys() if t in all_closes]
+        [all_closes[t][-min_len:] for t in all_tickers if t in all_closes]
     ).T  # shape: (n_days, n_assets)
 
     if price_matrix.shape[1] < 8:
-        return None
+        return {
+            "returns": None,
+            "n_core": n_core,
+            "n_tier3": n_tier3,
+            "tier3_available": tier3_tickers,
+        }
 
     # Log returns: r_t = ln(P_t / P_{t-1})
     log_returns = np.diff(np.log(price_matrix), axis=0)
@@ -168,9 +215,19 @@ def fetch_cross_asset_returns(lookback_days: int = 252) -> Optional[np.ndarray]:
     log_returns = log_returns[mask]
 
     if len(log_returns) < 50:
-        return None
+        return {
+            "returns": None,
+            "n_core": n_core,
+            "n_tier3": n_tier3,
+            "tier3_available": tier3_tickers,
+        }
 
-    return log_returns
+    return {
+        "returns": log_returns,
+        "n_core": n_core,
+        "n_tier3": n_tier3,
+        "tier3_available": tier3_tickers,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -313,7 +370,7 @@ def compute_turbulence_index(
     No look-ahead bias: window excludes current day for computing statistics.
 
     Args:
-        daily_returns: (n_days x n_assets) array of log returns
+        daily_returns: (n_days x n_assets) array of log returns, or None
         rolling_window: Lookback window in days (default: 60)
 
     Returns:
@@ -551,8 +608,8 @@ def compute_systemic_risk() -> Dict[str, Any]:
     """
     Top-level systemic risk computation.
 
-    Fetches data for both sector and cross-asset universes and computes
-    all systemic risk metrics in a single call.
+    Fetches data for both sector and cross-asset universes (including optional Tier 3)
+    and computes all systemic risk metrics in a single call.
 
     Returns:
         {
@@ -562,6 +619,8 @@ def compute_systemic_risk() -> Dict[str, Any]:
             "data_quality": {
                 "sector_assets_available": int,
                 "cross_assets_available": int,
+                "tier3_assets_available": int,
+                "tier3_tickers": list[str],
             },
         }
     """
@@ -572,16 +631,28 @@ def compute_systemic_risk() -> Dict[str, Any]:
         "data_quality": {
             "sector_assets_available": 0,
             "cross_assets_available": 0,
+            "tier3_assets_available": 0,
+            "tier3_tickers": [],
         },
     }
 
-    # ── Fetch cross-asset returns for turbulence ──
-    cross_asset_returns = fetch_cross_asset_returns(lookback_days=252)
+    # ── Fetch cross-asset returns for turbulence (including optional Tier 3) ──
+    cross_asset_data = fetch_cross_asset_returns(lookback_days=252)
+    cross_asset_returns = cross_asset_data.get("returns")
+    n_core = cross_asset_data.get("n_core", 0)
+    n_tier3 = cross_asset_data.get("n_tier3", 0)
+    tier3_tickers = cross_asset_data.get("tier3_available", [])
+
     if cross_asset_returns is not None:
-        result["data_quality"]["cross_assets_available"] = cross_asset_returns.shape[1]
+        result["data_quality"]["cross_assets_available"] = n_core
+        result["data_quality"]["tier3_assets_available"] = n_tier3
+        result["data_quality"]["tier3_tickers"] = tier3_tickers
         turb_result = compute_turbulence_index(cross_asset_returns, rolling_window=60)
         result["turbulence"] = turb_result
     else:
+        result["data_quality"]["cross_assets_available"] = n_core
+        result["data_quality"]["tier3_assets_available"] = n_tier3
+        result["data_quality"]["tier3_tickers"] = tier3_tickers
         result["turbulence"]["current"] = None
         result["turbulence"]["percentile"] = 50.0
         result["turbulence"]["p_value"] = 1.0

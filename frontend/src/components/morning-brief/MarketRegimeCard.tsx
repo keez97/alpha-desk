@@ -65,9 +65,10 @@ const SIGNAL_TOOLTIPS: Record<string, string> = {
   'Yield Curve Momentum': 'Rate of change in the yield curve slope. Steepening = improving growth outlook, flattening = tightening conditions or slowdown expectations.',
 
   // Systemic layer
-  'Turbulence Index': 'Mahalanobis distance measuring how unusual cross-asset returns are vs 60-day rolling history. 10-asset universe: SPY, QQQ, IWM, EFA, EEM, TLT, IEF, LQD, HYG, GLD. Ledoit-Wolf shrinkage for robust covariance. Chi-squared p-value flags statistically significant stress episodes.',
+  'Turbulence Index': 'Mahalanobis distance measuring how unusual cross-asset returns are vs 60-day rolling history. Core 10-asset universe: SPY, QQQ, IWM, EFA, EEM, TLT, IEF, LQD, HYG, GLD. Tier 3 expansion: XME, COPX, UNG, DBA, BITO, VIXY (when available). Ledoit-Wolf shrinkage for robust covariance. Chi-squared p-value flags statistically significant stress episodes.',
   'Absorption Ratio': 'PCA-based: variance explained by top eigenvectors across 11 SPDR sector ETFs (XLK, XLV, XLF, XLY, XLP, XLE, XLRE, XLI, XLU, XLC, XLB). 52-week rolling window of weekly returns, Ledoit-Wolf covariance. Tracks week-over-week AR delta as a leading indicator. Above 80th %ile = systemic fragility.',
   'Windham Fragility': 'Windham 2×2 framework: Turbulence %ile × Absorption %ile. Smooth sigmoid transitions (no binary jumps). Hysteresis: entry at 75th/80th, exit at 65th/70th to prevent oscillation. State persistence tracks duration in current regime. Fragile-calm = Hidden Risk; fragile-turbulent = Crisis Mode.',
+  'AR Delta': 'Week-over-week change in Absorption Ratio, z-scored against historical deltas. Rising AR delta (z > 1.0) = systemic coupling increasing rapidly — a leading indicator of fragility. Falling AR delta (z < -1.0) = coupling easing, potential stabilization.',
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -142,6 +143,9 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
                   <span className={`font-mono ${sig.bias === 'bull' ? 'text-green-400' : sig.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'}`}>
                     {sig.value}
                   </span>
+                  {sig.name === 'AR Delta' && sig.bias === 'bear' && (
+                    <span className="ml-0.5 w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" title="AR coupling rising rapidly" />
+                  )}
                   {hoveredSignal === sig.name && tooltip && <SignalTooltip text={tooltip} x={mousePos.x} y={mousePos.y} />}
                 </div>
               );

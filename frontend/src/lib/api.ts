@@ -543,6 +543,11 @@ export interface UpgradedRegimeData extends RegimeData {
     turbulencePercentile: number | null;
     absorptionRatio: number | null;
     absorptionPercentile: number | null;
+    absorptionDelta: number | null;
+    absorptionDeltaZscore: number | null;
+    arDeltaWarning: boolean;
+    tier3AssetsAvailable: number;
+    tier3Tickers: string[];
   };
 }
 
@@ -567,6 +572,11 @@ export async function fetchUpgradedRegime(): Promise<UpgradedRegimeData> {
       turbulencePercentile: regime.systemic_risk?.turbulence_percentile ?? null,
       absorptionRatio: regime.systemic_risk?.absorption_ratio ?? null,
       absorptionPercentile: regime.systemic_risk?.absorption_percentile ?? null,
+      absorptionDelta: regime.systemic_risk?.absorption_delta ?? null,
+      absorptionDeltaZscore: regime.systemic_risk?.absorption_delta_zscore ?? null,
+      arDeltaWarning: regime.systemic_risk?.ar_delta_warning ?? false,
+      tier3AssetsAvailable: regime.systemic_risk?.tier3_assets_available ?? 0,
+      tier3Tickers: regime.systemic_risk?.tier3_tickers ?? [],
     },
   };
 }
