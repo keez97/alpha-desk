@@ -660,6 +660,27 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     )
     logger.info("[all] Done")
 
+    # Enrich synthetic overnight returns with real prices from macro + sector data
+    if overnight_raw and isinstance(overnight_raw, dict):
+        price_map = {}
+        # Macro data has SPY, QQQ, IWM, etc.
+        if macro_raw and isinstance(macro_raw, dict):
+            for k, v in macro_raw.items():
+                if isinstance(v, dict) and v.get("price"):
+                    price_map[k] = float(v["price"])
+        # Sector perf data has XLK, XLF, XLV, etc.
+        for sec in (sector_perf_raw or []):
+            t = sec.get("ticker", "")
+            p = sec.get("price", 0)
+            if t and p:
+                price_map[t] = float(p)
+        # Apply prices to overnight items
+        for idx_item in overnight_raw.get("indices", []):
+            ticker = idx_item.get("ticker", "")
+            price = price_map.get(ticker, 0)
+            if price:
+                idx_item["last_price"] = round(price, 2)
+
     ts = datetime.utcnow().isoformat()
 
     # Build enhanced sectors from sector_perf + rrg

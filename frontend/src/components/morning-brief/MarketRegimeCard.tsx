@@ -99,7 +99,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
         onClick={onToggle}
         className="w-full flex items-center gap-1.5 text-[10px] hover:bg-neutral-800/50 rounded px-1 py-0.5 transition-colors cursor-pointer"
       >
-        <span className="text-neutral-500 w-[52px] text-left truncate">{LAYER_LABELS[name] || name}</span>
+        <span className="text-neutral-500 w-[62px] text-left truncate">{LAYER_LABELS[name] || name}</span>
         <div className="flex-1 h-1.5 rounded-full bg-neutral-800 overflow-hidden relative">
           <div className="absolute left-1/2 top-0 w-px h-full bg-neutral-600 z-10" />
           {score >= 0 ? (
@@ -116,28 +116,32 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
         <span className="text-neutral-600 w-4 text-right">{weight}%</span>
         <span className={`text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>›</span>
       </button>
-      {isExpanded && layer.signals && layer.signals.length > 0 && (
+      {isExpanded && (
         <div className="ml-2 mt-0.5 mb-1 pl-2 border-l border-neutral-800 space-y-0.5">
-          {layer.signals.map((sig, i) => {
-            const tooltip = SIGNAL_TOOLTIPS[sig.name];
-            return (
-              <div
-                key={i}
-                className="flex items-center gap-1.5 text-[9px] relative"
-                onMouseEnter={() => tooltip ? setHoveredSignal(sig.name) : undefined}
-                onMouseLeave={() => setHoveredSignal(null)}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${BIAS_DOT[sig.bias] || BIAS_DOT.neutral}`} />
-                <span className={`text-neutral-400 truncate flex-1 ${tooltip ? 'cursor-help border-b border-dotted border-neutral-700' : ''}`}>
-                  {sig.name}
-                </span>
-                <span className={`font-mono ${sig.bias === 'bull' ? 'text-green-400' : sig.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'}`}>
-                  {sig.value}
-                </span>
-                {hoveredSignal === sig.name && tooltip && <SignalTooltip text={tooltip} />}
-              </div>
-            );
-          })}
+          {layer.signals && layer.signals.length > 0 ? (
+            layer.signals.map((sig, i) => {
+              const tooltip = SIGNAL_TOOLTIPS[sig.name];
+              return (
+                <div
+                  key={i}
+                  className="flex items-center gap-1.5 text-[9px] relative"
+                  onMouseEnter={() => tooltip ? setHoveredSignal(sig.name) : undefined}
+                  onMouseLeave={() => setHoveredSignal(null)}
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${BIAS_DOT[sig.bias] || BIAS_DOT.neutral}`} />
+                  <span className={`text-neutral-400 truncate flex-1 ${tooltip ? 'cursor-help border-b border-dotted border-neutral-700' : ''}`}>
+                    {sig.name}
+                  </span>
+                  <span className={`font-mono ${sig.bias === 'bull' ? 'text-green-400' : sig.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'}`}>
+                    {sig.value}
+                  </span>
+                  {hoveredSignal === sig.name && tooltip && <SignalTooltip text={tooltip} />}
+                </div>
+              );
+            })
+          ) : (
+            <div className="text-[8px] text-neutral-600 italic py-0.5">No individual signals</div>
+          )}
         </div>
       )}
     </div>
