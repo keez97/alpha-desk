@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchUpgradedRegime, fetchVixTermStructure, fetchOvernightReturns, fetchBreadth, fetchRegimeInsight } from '../../lib/api';
 import { LoadingState } from '../shared/LoadingState';
 import { ErrorState } from '../shared/ErrorState';
+import { CompactRRGTable } from './CompactRRGTable';
 import type { UpgradedRegimeData, VixTermStructureData, OvernightReturnsData, BreadthData, RegimeSignal, AlphaInsight, RegimeLayerData, RegimeInsight } from '../../lib/api';
 
 // ═══════════════════════════════════════════════════════════════
@@ -471,8 +472,8 @@ export function MarketRegimeCard() {
           {!v && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
 
-        {/* ─── Col 3: Overnight Gaps (3 cols) ─── */}
-        <div className="col-span-3 p-2.5 space-y-1">
+        {/* ─── Col 3: Overnight Gaps — Heatmap (3 cols) ─── */}
+        <div className="col-span-3 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[9px] text-neutral-500 font-medium">Overnight Gaps</span>
             {g && (
@@ -486,48 +487,68 @@ export function MarketRegimeCard() {
 
           {g && (
             <>
-              {/* Major Indices */}
-              <div className="space-y-0">
-                {g.indices.slice(0, 4).map(item => (
-                  <div key={item.ticker} className="flex items-center justify-between text-[9px] py-px">
-                    <span className="font-mono font-bold text-neutral-300 w-7">{item.ticker}</span>
-                    {item.last_price > 0 && (
-                      <span className="font-mono text-neutral-500 text-[8px]">${item.last_price.toFixed(0)}</span>
-                    )}
-                    <span className={`font-mono font-medium ${item.direction === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {item.overnight_return_pct > 0 ? '+' : ''}{item.overnight_return_pct.toFixed(2)}%
-                    </span>
-                  </div>
-                ))}
+              {/* Major Indices — 2×2 mini-card grid */}
+              <div className="grid grid-cols-2 gap-1">
+                {g.indices.slice(0, 4).map(item => {
+                  const pct = item.overnight_return_pct;
+                  const abs = Math.abs(pct);
+                  const intensity = Math.min(abs * 40, 60);
+                  const bgColor = pct >= 0
+                    ? `rgba(16, 185, 129, ${intensity / 100})`
+                    : `rgba(239, 68, 68, ${intensity / 100})`;
+                  return (
+                    <div
+                      key={item.ticker}
+                      className="rounded p-1.5 text-center border border-neutral-800/30"
+                      style={{ backgroundColor: bgColor }}
+                    >
+                      <div className="text-[8px] font-mono font-bold text-neutral-200">{item.ticker}</div>
+                      {item.last_price > 0 && (
+                        <div className="text-[7px] font-mono text-neutral-400">${item.last_price.toFixed(0)}</div>
+                      )}
+                      <div className={`text-[9px] font-mono font-bold ${pct >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                        {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
-              {/* All Sectors — no show more/less */}
+              {/* Sector Heatmap — compact colored grid */}
               {g.indices.length > 4 && (
-                <div className="border-t border-neutral-800/50 pt-0.5">
+                <div>
                   <div className="text-[7px] text-neutral-600 mb-0.5">Sectors</div>
-                  <div className="space-y-0">
-                    {g.indices.slice(4).map(item => (
-                      <div key={item.ticker} className="flex items-center justify-between text-[8px] py-px">
-                        <span className="font-mono text-neutral-400 w-8 flex-shrink-0">{item.ticker}</span>
-                        <div className="flex items-center gap-1">
-                          {item.last_price > 0 && (
-                            <span className="font-mono text-neutral-600 text-[7px]">${item.last_price.toFixed(0)}</span>
-                          )}
-                          <span className={`font-mono ${item.direction === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
-                            {item.overnight_return_pct > 0 ? '+' : ''}{item.overnight_return_pct.toFixed(2)}%
-                          </span>
+                  <div className="grid grid-cols-4 gap-0.5">
+                    {g.indices.slice(4).map(item => {
+                      const pct = item.overnight_return_pct;
+                      const abs = Math.abs(pct);
+                      const intensity = Math.min(abs * 50, 70);
+                      const bgColor = pct >= 0
+                        ? `rgba(16, 185, 129, ${intensity / 100})`
+                        : `rgba(239, 68, 68, ${intensity / 100})`;
+                      return (
+                        <div
+                          key={item.ticker}
+                          className="rounded-sm px-1 py-0.5 text-center border border-neutral-800/20"
+                          style={{ backgroundColor: bgColor }}
+                          title={`${item.ticker}: ${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`}
+                        >
+                          <div className="text-[7px] font-mono font-medium text-neutral-200">{item.ticker}</div>
+                          <div className={`text-[7px] font-mono font-bold ${pct >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                            {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
-              {/* Outlier alerts */}
+              {/* Notable gaps — amber accent */}
               {g.summary.notable_gaps.length > 0 && (
-                <div className="flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-1 pt-0.5">
                   {g.summary.notable_gaps.slice(0, 2).map(gap => (
-                    <span key={gap.ticker} className="text-[7px] bg-amber-900/20 text-amber-400 rounded px-1 py-0.5 font-mono">
+                    <span key={gap.ticker} className="text-[7px] bg-amber-900/30 text-amber-400 rounded px-1 py-0.5 font-mono border border-amber-800/20">
                       ⚠ {gap.ticker} {gap.overnight_return_pct > 0 ? '+' : ''}{gap.overnight_return_pct.toFixed(2)}%
                     </span>
                   ))}
@@ -601,6 +622,11 @@ export function MarketRegimeCard() {
 
           {!b && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
+      </div>
+
+      {/* ═══ Compact RRG Table Row ═══ */}
+      <div className="border-t border-neutral-800/50 px-3 py-2">
+        <CompactRRGTable />
       </div>
 
       {/* ═══ AI Market Insight Footer ═══ */}

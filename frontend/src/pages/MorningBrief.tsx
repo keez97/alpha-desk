@@ -1,7 +1,6 @@
 import { MacroBar } from '../components/layout/MacroBar';
 import { MarketRegimeCard } from '../components/morning-brief/MarketRegimeCard';
 import { MarketReportPanel } from '../components/morning-brief/MarketReportPanel';
-import { EnhancedSectorPanel } from '../components/morning-brief/EnhancedSectorPanel';
 import { SectorChart } from '../components/morning-brief/SectorChart';
 import { SectorTransitionsPanel } from '../components/morning-brief/SectorTransitionsPanel';
 import { DriversPanel } from '../components/morning-brief/DriversPanel';
@@ -40,7 +39,6 @@ export function MorningBrief() {
 
         <div className="grid gap-4 lg:grid-cols-3 sm:grid-cols-1">
           <div className="lg:col-span-2 space-y-4">
-            <EnhancedSectorPanel />
             <SectorChart />
             <SectorTransitionsPanel />
           </div>
