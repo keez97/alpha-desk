@@ -245,7 +245,7 @@ export function CompactRRGTable() {
 
       {/* Table */}
       {!isLoading && !error && sortedData.length > 0 && (
-        <div className="overflow-x-auto max-h-[196px] overflow-y-auto scrollbar-thin">
+        <div className="overflow-x-auto max-h-[180px] overflow-y-auto">
           <table className="w-full">
             <thead className="sticky top-0 bg-neutral-900/95 backdrop-blur-sm z-10">
               <tr className="border-b border-neutral-800/50">
