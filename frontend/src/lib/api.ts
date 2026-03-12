@@ -40,11 +40,29 @@ export function seedApiCache(allData: any) {
     '/sector-transitions': 'transitions',
     '/momentum-spillover': 'signals',
   };
+  // Custom validators for endpoints that need deeper checks
+  const customValidators: Record<string, (d: any) => boolean> = {
+    '/morning-brief/macro': (d) => {
+      // Must have regime with layers (6 layers expected)
+      const layers = d?.regime?.layers;
+      return layers && typeof layers === 'object' && Object.keys(layers).length >= 4;
+    },
+    '/morning-brief/breadth': (d) => {
+      // Must have actual breadth data with total > 0
+      const bd = d?.data;
+      return bd && typeof bd === 'object' && (bd.total ?? 0) > 0;
+    },
+  };
   for (const [path, data] of Object.entries(mapping)) {
     if (!data) continue;
     const arrayKey = requireNonEmpty[path];
     if (arrayKey && (!Array.isArray(data[arrayKey]) || data[arrayKey].length === 0)) {
       console.log(`[api] Skipped pre-cache for ${path} — empty ${arrayKey}`);
+      continue;
+    }
+    const validator = customValidators[path];
+    if (validator && !validator(data)) {
+      console.log(`[api] Skipped pre-cache for ${path} — failed validation`);
       continue;
     }
     _preCache.set(path, data);

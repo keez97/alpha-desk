@@ -1,21 +1,71 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Depends
 from datetime import datetime
 import logging
 from backend.services.data_provider import get_sector_data
 from backend.services.rrg_calculator import calculate_rrg, SECTOR_ETFS
 from backend.services.stock_factors import calculate_stock_factors
+from backend.services import yahoo_direct as yd
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["enhanced-sectors"])
 
+# Map UI period to yahoo range string for historical data
+PERIOD_RANGE_MAP = {"1D": "5d", "5D": "10d", "1M": "1mo", "3M": "3mo"}
+# How many trading days back to compute the period change
+PERIOD_DAYS_MAP = {"1D": 1, "5D": 5, "1M": 21, "3M": 63}
+
+
+def _compute_period_changes(tickers: list, period: str) -> dict:
+    """Compute period-specific price changes for each ticker using historical data.
+
+    Returns dict of ticker -> {period_change, period_pct_change, period_start_price}.
+    For 1D, uses the daily change from batch_quotes (no extra API call needed).
+    """
+    if period == "1D":
+        return {}  # Will use daily_change from sector_data
+
+    range_str = PERIOD_RANGE_MAP.get(period, "3mo")
+    results = {}
+
+    def _fetch_one(ticker: str):
+        try:
+            history = yd.get_history(ticker, range_str=range_str, interval="1d")
+            if not history or len(history) < 2:
+                return ticker, None
+            start_price = history[0]["close"]
+            end_price = history[-1]["close"]
+            if start_price and start_price > 0:
+                change = end_price - start_price
+                pct_change = (change / start_price) * 100
+                return ticker, {
+                    "period_change": round(change, 2),
+                    "period_pct_change": round(pct_change, 2),
+                    "period_start_price": round(start_price, 2),
+                }
+            return ticker, None
+        except Exception as e:
+            logger.debug(f"Period change calc failed for {ticker}: {e}")
+            return ticker, None
+
+    # Fetch in parallel
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_fetch_one, t) for t in tickers]
+        for f in futures:
+            ticker, data = f.result()
+            if data:
+                results[ticker] = data
+
+    return results
+
 
 @router.get("/enhanced-sectors")
 async def get_enhanced_sectors(period: str = "1D"):
-    """Return sector data enriched with RRG positioning."""
+    """Return sector data enriched with RRG positioning and period-specific changes."""
     try:
-        # Get sector performance and RRG data with timeouts
+        # Get sector performance, RRG data, and period changes in parallel
         try:
             sector_data = await asyncio.wait_for(
                 asyncio.to_thread(get_sector_data, period=period),
@@ -29,14 +79,23 @@ async def get_enhanced_sectors(period: str = "1D"):
         # Map period to RRG lookback weeks
         period_to_weeks = {"1D": 10, "5D": 14, "1M": 26, "3M": 52}
         rrg_weeks = period_to_weeks.get(period, 10)
+
+        # Fetch RRG and period changes concurrently
         try:
-            rrg_data = await asyncio.wait_for(
-                asyncio.to_thread(calculate_rrg, tickers, "SPY", rrg_weeks),
-                timeout=15.0
+            rrg_data, period_changes = await asyncio.gather(
+                asyncio.wait_for(
+                    asyncio.to_thread(calculate_rrg, tickers, "SPY", rrg_weeks),
+                    timeout=15.0
+                ),
+                asyncio.wait_for(
+                    asyncio.to_thread(_compute_period_changes, tickers, period),
+                    timeout=12.0
+                ),
             )
         except asyncio.TimeoutError:
-            logger.warning("RRG calculation timed out")
-            rrg_data = {"sectors": []}
+            logger.warning("RRG or period changes timed out")
+            rrg_data = rrg_data if 'rrg_data' in dir() else {"sectors": []}
+            period_changes = period_changes if 'period_changes' in dir() else {}
 
         # Create lookup for RRG data
         rrg_sectors = rrg_data.get("sectors", [])
@@ -51,7 +110,16 @@ async def get_enhanced_sectors(period: str = "1D"):
         for sector in sector_data:
             ticker = sector.get("ticker")
             rrg_info = rrg_lookup.get(ticker, {})
-            pct_change = sector.get("daily_pct_change", 0) or 0
+            daily_pct = sector.get("daily_pct_change", 0) or 0
+
+            # Use period-specific change if available, else fall back to daily
+            pc = period_changes.get(ticker)
+            if pc and period != "1D":
+                pct_change = pc["period_pct_change"]
+                abs_change = pc["period_change"]
+            else:
+                pct_change = daily_pct
+                abs_change = sector.get("daily_change", 0) or 0
 
             if rrg_info:
                 quadrant = rrg_info.get("quadrant", "Unknown")
@@ -82,8 +150,8 @@ async def get_enhanced_sectors(period: str = "1D"):
                 "ticker": ticker,
                 "name": sector.get("sector") or sector.get("name") or ticker,
                 "price": sector.get("price", 0),
-                "change": sector.get("daily_change", 0),
-                "pct_change": pct_change,
+                "change": round(abs_change, 2),
+                "pct_change": round(pct_change, 2),
                 "rs_ratio": rs_ratio,
                 "rs_momentum": rs_momentum,
                 "quadrant": quadrant,

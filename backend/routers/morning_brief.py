@@ -684,7 +684,7 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     # Batch 1: Core macro data (3 concurrent) — macro gets extra time for yfinance fallback
     macro_raw, breadth_raw, vix_raw = await asyncio.gather(
         safe("macro", get_macro_data, timeout_s=10.0),
-        safe("breadth", calculate_breadth),
+        safe("breadth", calculate_breadth, timeout_s=10.0),
         safe("vix", get_vix_term_structure),
     )
     # Batch 2a: Sector data + RRG + Regime (4 concurrent)
