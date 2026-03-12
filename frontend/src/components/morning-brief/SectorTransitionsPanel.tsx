@@ -76,7 +76,12 @@ export function SectorTransitionsPanel() {
           </div>
         </div>
         <div className="text-[10px] text-neutral-500 mt-2">
-          Recession Probability: <span className="text-neutral-300">{cycle_overlay.recession_probability.toFixed(1)}%</span>
+          Recession Probability:{' '}
+          <span className="text-neutral-300">
+            {cycle_overlay.recession_probability !== null && cycle_overlay.recession_probability !== undefined
+              ? `${cycle_overlay.recession_probability.toFixed(1)}%`
+              : '—'}
+          </span>
         </div>
       </div>
 

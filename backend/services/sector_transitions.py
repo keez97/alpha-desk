@@ -350,7 +350,7 @@ def get_business_cycle_overlay(macro_data: Dict = None) -> Dict[str, Any]:
             "current_phase": current_regime,
             "favorable_sectors": favorable,
             "unfavorable_sectors": unfavorable,
-            "recession_probability": regime.get("recession_probability", 50.0),
+            "recession_probability": regime.get("recession_probability"),
         }
     except Exception as e:
         logger.error(f"Error getting business cycle overlay: {e}")
@@ -358,7 +358,7 @@ def get_business_cycle_overlay(macro_data: Dict = None) -> Dict[str, Any]:
             "current_phase": "unknown",
             "favorable_sectors": [],
             "unfavorable_sectors": [],
-            "recession_probability": 50.0,
+            "recession_probability": None,
         }
 
 
@@ -403,7 +403,7 @@ def get_sector_transitions(rrg_data: Dict[str, Any] = None, macro_data: Dict = N
                 "current_phase": "unknown",
                 "favorable_sectors": [],
                 "unfavorable_sectors": [],
-                "recession_probability": 50.0,
+                "recession_probability": None,
             },
             "error": str(e),
         }

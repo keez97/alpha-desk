@@ -1504,7 +1504,7 @@ export interface CycleOverlay {
   current_phase: string;
   favorable_sectors: string[];
   unfavorable_sectors: string[];
-  recession_probability: number;
+  recession_probability: number | null;
 }
 
 export interface SectorTransitionsData {
@@ -1542,7 +1542,7 @@ export async function fetchSectorTransitions(): Promise<SectorTransitionsData> {
       current_phase: raw.cycle_overlay?.current_phase || 'unknown',
       favorable_sectors: raw.cycle_overlay?.favorable_sectors || [],
       unfavorable_sectors: raw.cycle_overlay?.unfavorable_sectors || [],
-      recession_probability: raw.cycle_overlay?.recession_probability ?? 50,
+      recession_probability: raw.cycle_overlay?.recession_probability ?? null,
     },
   };
 }
