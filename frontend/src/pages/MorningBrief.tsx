@@ -49,12 +49,13 @@ export function MorningBrief() {
           </div>
         </div>
 
-        {/* Layer 3: Detail - Bottom Section */}
+        {/* Layer 3: Positioning & Scenarios */}
         <div className="grid gap-4 lg:grid-cols-2 sm:grid-cols-1">
           <PositioningPanel />
           <ScenarioRiskPanel />
         </div>
 
+        {/* Layer 4: Sentiment, Options, Earnings */}
         <div className="grid gap-4 lg:grid-cols-3 sm:grid-cols-1">
           <SentimentVelocityPanel />
           <OptionsFlowPanel />
