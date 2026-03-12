@@ -620,7 +620,7 @@ async def get_regime_insight():
     # Detect regime
     try:
         regime_raw = await asyncio.wait_for(
-            asyncio.to_thread(detect_regime, macro_raw or {}), timeout=8.0
+            asyncio.to_thread(detect_regime, macro_raw or {}), timeout=20.0
         )
     except Exception as e:
         logger.warning(f"Regime detection failed for insight: {e}")
@@ -687,11 +687,14 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
         safe("breadth", calculate_breadth),
         safe("vix", get_vix_term_structure),
     )
-    # Regime depends on macro result
-    regime_raw = await safe("regime", detect_regime, macro_raw or {})
-
-    # Batch 2a: Sector data + RRG (3 concurrent)
-    sectors_raw, sector_perf_raw, rrg_raw = await asyncio.gather(
+    # Batch 2a: Sector data + RRG + Regime (4 concurrent)
+    # Regime depends on macro result but runs in parallel with sector fetches.
+    # Regime needs extra time because detect_regime() internally makes ~10+
+    # sequential FRED + Yahoo API calls (VIX, VVIX, yield curve, credit spreads,
+    # macro series, SPY history, multi-asset turbulence).
+    # On cold starts these can take 8-15s total.
+    regime_raw, sectors_raw, sector_perf_raw, rrg_raw = await asyncio.gather(
+        safe("regime", detect_regime, macro_raw or {}, timeout_s=20.0),
         safe("sectors", get_sector_chart_data, "1D", timeout_s=15.0),
         safe("sector_perf", get_sector_data, "1D", timeout_s=8.0),
         safe("rrg", calculate_rrg, list(SECTOR_ETFS.keys()), "SPY", 10, timeout_s=8.0),
@@ -701,7 +704,8 @@ async def get_all_morning_brief(session: Session = Depends(get_session)):
     transitions_raw = await safe("transitions", get_sector_transitions, rrg_raw, macro_raw or {}, timeout_s=15.0)
 
     # Batch 3+4 combined: Market signals + analysis (7 concurrent)
-    # Must stay under Railway's 30s proxy timeout (4+4+4+8 = 20s worst case)
+    # Railway has a 30s proxy timeout. With caching, all batches complete in <5s.
+    # On cold starts, regime detection (20s) runs in parallel with sectors (15s).
     # NOTE: overnight uses synthetic estimator (instant) as primary in /all
     # because the full 4-tier cascade (14 tickers × 4 APIs) can't finish in 8s.
     # The dedicated /overnight-returns endpoint still uses the full cascade.

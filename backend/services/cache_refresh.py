@@ -21,6 +21,7 @@ _MACRO_INTERVAL = 720      # 12 min (cache TTL is 15 min / 900s, but we set 1800
 _SECTOR_INTERVAL = 240     # 4 min (cache TTL is 300s / 5 min)
 _SPY_HISTORY_INTERVAL = 1500  # 25 min (cache TTL is 1800s / 30 min)
 _NEWS_INTERVAL = 720       # 12 min (cache TTL is 900s / 15 min)
+_REGIME_INTERVAL = 1500    # 25 min (cache TTL is 1800s / 30 min)
 _CLEANUP_INTERVAL = 300    # 5 min — sweep expired cache entries
 
 def _refresh_loop():
@@ -34,6 +35,7 @@ def _refresh_loop():
     last_sector = 0
     last_spy = 0
     last_news = 0
+    last_regime = 0
     last_cleanup = 0
 
     while not _stop_event.is_set():
@@ -86,6 +88,21 @@ def _refresh_loop():
             except Exception as e:
                 logger.warning(f"Cache refresh: news failed — {e}")
                 last_news = time.time()
+
+        # Regime detection (proactive refresh keeps the internal _regime_cache warm
+        # so /all endpoint always hits cache instead of making ~10 FRED/Yahoo calls)
+        if now - last_regime >= _REGIME_INTERVAL:
+            try:
+                from backend.services.regime_detector import detect_regime
+                from backend.services.data_provider import get_macro_data as _get_macro_regime
+                macro_for_regime = _get_macro_regime()
+                regime = detect_regime(macro_for_regime)
+                layer_count = len(regime.get("layers", {})) if regime else 0
+                logger.info(f"Cache refresh: regime detection — {layer_count} layers, regime={regime.get('regime', '?')}")
+                last_regime = time.time()
+            except Exception as e:
+                logger.warning(f"Cache refresh: regime detection failed — {e}")
+                last_regime = time.time()
 
         # Periodic cache cleanup
         if now - last_cleanup >= _CLEANUP_INTERVAL:
