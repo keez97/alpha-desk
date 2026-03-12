@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchUpgradedRegime, fetchVixTermStructure, fetchOvernightReturns, fetchBreadth } from '../../lib/api';
+import { fetchUpgradedRegime, fetchVixTermStructure, fetchOvernightReturns, fetchBreadth, fetchRegimeInsight } from '../../lib/api';
 import { LoadingState } from '../shared/LoadingState';
 import { ErrorState } from '../shared/ErrorState';
-import type { UpgradedRegimeData, VixTermStructureData, OvernightReturnsData, BreadthData, RegimeSignal, AlphaInsight, RegimeLayerData } from '../../lib/api';
+import type { UpgradedRegimeData, VixTermStructureData, OvernightReturnsData, BreadthData, RegimeSignal, AlphaInsight, RegimeLayerData, RegimeInsight } from '../../lib/api';
 
 // ═══════════════════════════════════════════════════════════════
 // Constants
@@ -212,183 +212,75 @@ function MiniSparkline({ data }: { data: number[] }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Market Assessment — synthesizes regime, VIX, breadth, overnight
-// into a rich multi-factor insight panel
+// AI Market Insight — Claude-powered narrative assessment
 // ═══════════════════════════════════════════════════════════════
 
-function FactorPill({ label, value, bias }: { label: string; value: string; bias: 'bull' | 'bear' | 'neutral' }) {
-  const color = bias === 'bull' ? 'text-green-400 bg-green-900/20 border-green-800/40'
-    : bias === 'bear' ? 'text-red-400 bg-red-900/20 border-red-800/40'
-    : 'text-neutral-400 bg-neutral-800/40 border-neutral-700/40';
-  return (
-    <div className={`border rounded px-1.5 py-0.5 ${color}`}>
-      <div className="text-[7px] text-neutral-500 leading-tight">{label}</div>
-      <div className="text-[9px] font-mono font-medium leading-tight">{value}</div>
-    </div>
-  );
+function InsightFactorDot({ bias }: { bias: string }) {
+  const color = bias === 'bull' ? 'bg-green-400' : bias === 'bear' ? 'bg-red-400' : 'bg-neutral-500';
+  return <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${color}`} />;
 }
 
-function MarketAssessment({ r, v, b, g }: {
-  r: UpgradedRegimeData | undefined;
-  v: VixTermStructureData | undefined;
-  b: BreadthData | undefined;
-  g: OvernightReturnsData | undefined;
-}) {
-  if (!r) return null;
+function AIMarketInsight() {
+  const insight = useQuery({
+    queryKey: ['regime-insight'],
+    queryFn: fetchRegimeInsight,
+    staleTime: 10 * 60_000, // 10 min — backend caches 15 min
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
 
-  // ── Derive factor summaries from all data sources ──
-  const factors: { label: string; value: string; bias: 'bull' | 'bear' | 'neutral' }[] = [];
-
-  // Trend
-  const trendLayer = r.layers?.trend;
-  if (trendLayer) {
-    const ts = trendLayer.score;
-    factors.push({
-      label: 'Trend',
-      value: ts > 0.3 ? 'Strong Up' : ts > 0 ? 'Weakening Up' : ts > -0.3 ? 'Weakening Down' : 'Strong Down',
-      bias: ts > 0.1 ? 'bull' : ts < -0.1 ? 'bear' : 'neutral',
-    });
+  if (insight.isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-1">
+        <div className="w-3 h-3 border border-blue-400/50 border-t-blue-400 rounded-full animate-spin" />
+        <span className="text-[9px] text-neutral-500 italic">Generating AI market assessment...</span>
+      </div>
+    );
   }
 
-  // Volatility via VIX data
-  if (v) {
-    const vBias = v.vixSpot < 18 ? 'bull' : v.vixSpot > 28 ? 'bear' : 'neutral';
-    factors.push({ label: 'VIX', value: `${v.vixSpot.toFixed(1)} (${v.state})`, bias: vBias });
+  if (insight.error || !insight.data) {
+    return (
+      <div className="text-[9px] text-neutral-600 italic py-1">
+        AI insight unavailable — see factor signals above
+      </div>
+    );
   }
 
-  // Credit/Yield
-  const ycLayer = r.layers?.yield_credit;
-  if (ycLayer) {
-    const ys = ycLayer.score;
-    factors.push({
-      label: 'Credit',
-      value: ys > 0.2 ? 'Healthy' : ys < -0.2 ? 'Stressed' : 'Mixed',
-      bias: ys > 0.1 ? 'bull' : ys < -0.1 ? 'bear' : 'neutral',
-    });
-  }
-
-  // Sentiment
-  const sentLayer = r.layers?.sentiment;
-  if (sentLayer) {
-    const fgSig = sentLayer.signals?.find(s => s.name === 'Fear & Greed');
-    const fgVal = fgSig ? fgSig.value : '';
-    factors.push({
-      label: 'Sentiment',
-      value: fgVal ? `F&G: ${fgVal}` : (sentLayer.score > 0 ? 'Greedy' : 'Fearful'),
-      bias: sentLayer.score > 0.1 ? 'bull' : sentLayer.score < -0.1 ? 'bear' : 'neutral',
-    });
-  }
-
-  // Breadth
-  if (b && b.total > 0) {
-    const bBias = b.adRatio > 1.3 ? 'bull' : b.adRatio < 0.7 ? 'bear' : 'neutral';
-    factors.push({ label: 'Breadth', value: `A/D ${b.adRatio.toFixed(2)}`, bias: bBias });
-  }
-
-  // Systemic
-  const sysLayer = r.layers?.systemic;
-  if (sysLayer) {
-    factors.push({
-      label: 'Systemic',
-      value: r.windham?.label || (sysLayer.score > 0 ? 'Resilient' : 'Fragile'),
-      bias: sysLayer.score > 0.1 ? 'bull' : sysLayer.score < -0.1 ? 'bear' : 'neutral',
-    });
-  }
-
-  // ── Cross-factor analysis ──
-  const bullCount = factors.filter(f => f.bias === 'bull').length;
-  const bearCount = factors.filter(f => f.bias === 'bear').length;
-  const confirming = bullCount >= 4 || bearCount >= 4;
-  const diverging = bullCount >= 2 && bearCount >= 2;
-
-  // ── Overnight gap summary ──
-  let gapSummary = '';
-  if (g) {
-    const spyGap = g.indices.find(i => i.ticker === 'SPY');
-    const qqGap = g.indices.find(i => i.ticker === 'QQQ');
-    if (spyGap && qqGap) {
-      const spyDir = spyGap.overnight_return_pct > 0 ? '+' : '';
-      const qqDir = qqGap.overnight_return_pct > 0 ? '+' : '';
-      gapSummary = `SPY ${spyDir}${spyGap.overnight_return_pct.toFixed(2)}%, QQQ ${qqDir}${qqGap.overnight_return_pct.toFixed(2)}%`;
-    }
-  }
-
-  // ── Recession probability ──
-  const recProb = r.recessionProbability;
-
-  // ── Primary insight from backend ──
-  const primaryInsight = r.alphaInsights?.[0];
-  const secondaryInsights = r.alphaInsights?.slice(1) || [];
-
-  const convictionColor = primaryInsight?.conviction === 'high' ? 'text-yellow-400' : primaryInsight?.conviction === 'medium' ? 'text-blue-400' : 'text-neutral-500';
-  const convictionBg = primaryInsight?.conviction === 'high' ? 'bg-yellow-900/20 border-yellow-800/30' : primaryInsight?.conviction === 'medium' ? 'bg-blue-900/20 border-blue-800/30' : 'bg-neutral-800/50 border-neutral-700/30';
+  const d = insight.data;
+  const stanceColor = d.conviction === 'high'
+    ? 'text-yellow-400 border-yellow-800/40 bg-yellow-900/20'
+    : d.conviction === 'medium'
+    ? 'text-blue-400 border-blue-800/40 bg-blue-900/20'
+    : 'text-neutral-400 border-neutral-700/40 bg-neutral-800/40';
 
   return (
     <div className="space-y-1.5">
-      {/* Row 1: Factor pills — quick visual of each dimension */}
-      <div className="flex items-center gap-1 flex-wrap">
-        <span className="text-[8px] text-neutral-600 font-medium mr-0.5">Factors</span>
-        {factors.map(f => <FactorPill key={f.label} {...f} />)}
-      </div>
-
-      {/* Row 2: Cross-factor read + key stats */}
-      <div className="flex items-center gap-2 text-[9px]">
-        <div className="flex items-center gap-1.5">
-          <span className={`w-1.5 h-1.5 rounded-full ${confirming ? (bullCount > bearCount ? 'bg-green-400' : 'bg-red-400') : diverging ? 'bg-yellow-400' : 'bg-neutral-500'}`} />
-          <span className="text-neutral-400">
-            {confirming
-              ? `${Math.max(bullCount, bearCount)}/${factors.length} factors aligned ${bullCount > bearCount ? 'bullish' : 'bearish'}`
-              : diverging
-              ? `Signals diverging — ${bullCount} bull vs ${bearCount} bear`
-              : `Mixed — ${bullCount} bull, ${bearCount} bear, ${factors.length - bullCount - bearCount} neutral`}
-          </span>
-        </div>
-        <span className="text-neutral-700">|</span>
-        <span className={`font-mono ${recProb > 50 ? 'text-red-400' : recProb > 30 ? 'text-yellow-400' : 'text-green-400'}`}>
-          Recession: {recProb.toFixed(0)}%
+      {/* Stance badge + factor dots */}
+      <div className="flex items-center gap-2">
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${stanceColor}`}>
+          {d.stance}
         </span>
-        {gapSummary && (
-          <>
-            <span className="text-neutral-700">|</span>
-            <span className="font-mono text-neutral-400">Overnight: {gapSummary}</span>
-          </>
+        {d.factors.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {d.factors.map(f => (
+              <div key={f.label} className="flex items-center gap-0.5">
+                <InsightFactorDot bias={f.bias} />
+                <span className="text-[8px] text-neutral-500">{f.label}</span>
+                <span className={`text-[8px] font-mono ${
+                  f.bias === 'bull' ? 'text-green-400' : f.bias === 'bear' ? 'text-red-400' : 'text-neutral-400'
+                }`}>
+                  {f.assessment}
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Row 3: Primary actionable insight */}
-      {primaryInsight && (
-        <div className={`${convictionBg} border rounded px-2.5 py-1.5`}>
-          <div className="flex items-center gap-1.5 mb-0.5">
-            <span className={`text-[9px] font-bold uppercase ${convictionColor}`}>{primaryInsight.conviction}</span>
-            <span className="text-[9px] text-neutral-600">·</span>
-            <span className="text-[9px] text-neutral-500">{primaryInsight.category}</span>
-          </div>
-          {primaryInsight.signal && (
-            <div className="text-[9px] text-neutral-500 leading-snug mb-0.5 italic">{primaryInsight.signal}</div>
-          )}
-          <div className="text-[10px] text-neutral-300 leading-snug">{primaryInsight.action}</div>
-        </div>
-      )}
-
-      {/* Row 4: Secondary insights if multiple */}
-      {secondaryInsights.length > 0 && (
-        <div className="grid grid-cols-2 gap-1">
-          {secondaryInsights.map((ins, i) => {
-            const cc = ins.conviction === 'high' ? 'text-yellow-400' : ins.conviction === 'medium' ? 'text-blue-400' : 'text-neutral-500';
-            const cb = ins.conviction === 'high' ? 'bg-yellow-900/15 border-yellow-800/20' : ins.conviction === 'medium' ? 'bg-blue-900/15 border-blue-800/20' : 'bg-neutral-800/30 border-neutral-700/20';
-            return (
-              <div key={i} className={`${cb} border rounded px-2 py-1`}>
-                <div className="flex items-center gap-1 mb-0.5">
-                  <span className={`text-[8px] font-bold uppercase ${cc}`}>{ins.conviction}</span>
-                  <span className="text-[8px] text-neutral-600">·</span>
-                  <span className="text-[8px] text-neutral-500">{ins.category}</span>
-                </div>
-                <div className="text-[9px] text-neutral-300 leading-snug">{ins.action}</div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Narrative */}
+      <div className="text-[10px] text-neutral-300 leading-relaxed">
+        {d.narrative}
+      </div>
     </div>
   );
 }
@@ -711,9 +603,9 @@ export function MarketRegimeCard() {
         </div>
       </div>
 
-      {/* ═══ Market Assessment Footer ═══ */}
+      {/* ═══ AI Market Insight Footer ═══ */}
       <div className="border-t border-neutral-800/50 px-3 py-2">
-        <MarketAssessment r={r} v={v} b={b} g={g} />
+        <AIMarketInsight />
       </div>
     </div>
   );

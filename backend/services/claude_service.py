@@ -78,6 +78,117 @@ def _call_llm(system_prompt: str, user_prompt: str, max_tokens: int = 2000) -> s
     raise RuntimeError("No LLM client available")
 
 
+def generate_regime_insight(regime_data: dict, vix_data: dict, breadth_data: dict, overnight_data: dict) -> dict:
+    """Use Claude to generate a rich narrative market insight from regime + supporting data.
+
+    Returns: { "narrative": str, "factors": [...], "stance": str, "conviction": str }
+    """
+    if USE_MOCK:
+        return {
+            "narrative": "Markets are in a mixed regime with diverging signals across asset classes. "
+                         "Trend remains positive but systemic fragility indicators warrant caution. "
+                         "Consider maintaining core positions while hedging tail risk.",
+            "factors": [
+                {"label": "Trend", "assessment": "Positive", "bias": "bull"},
+                {"label": "Volatility", "assessment": "Elevated", "bias": "neutral"},
+                {"label": "Credit", "assessment": "Mixed", "bias": "neutral"},
+            ],
+            "stance": "Cautiously Bullish",
+            "conviction": "medium",
+        }
+
+    # Build a rich context payload for Claude
+    layers = regime_data.get("layers", {})
+    windham = regime_data.get("windham", {})
+    insights = regime_data.get("alpha_insights", [])
+
+    layer_summary = []
+    for name in ["trend", "volatility", "yield_credit", "sentiment", "macro", "systemic"]:
+        layer = layers.get(name, {})
+        if layer:
+            signals_text = "; ".join(
+                f"{s['name']}={s['value']} ({s['bias']})" for s in layer.get("signals", [])
+            )
+            layer_summary.append(f"  {name}: score={layer.get('score', 0):.2f}, weight={layer.get('weight', 0):.0%}, signals=[{signals_text}]")
+
+    overnight_text = ""
+    if overnight_data:
+        indices = overnight_data.get("indices", [])
+        gaps = [f"{i['ticker']} {i.get('overnight_return_pct', 0):+.2f}%" for i in indices[:6]]
+        overnight_text = f"Overnight gaps: {', '.join(gaps)}"
+
+    breadth_text = ""
+    if breadth_data:
+        breadth_text = (
+            f"Market Breadth: A/D ratio={breadth_data.get('ad_ratio', 0):.2f}, "
+            f"advances={breadth_data.get('advances', 0)}, declines={breadth_data.get('declines', 0)}, "
+            f"McClellan={breadth_data.get('mcclellan', 0):.1f}, "
+            f"breadth_thrust={'YES' if breadth_data.get('breadth_thrust') else 'No'}"
+        )
+
+    vix_text = ""
+    if vix_data:
+        vix_text = (
+            f"VIX: spot={vix_data.get('vix_spot', 0):.1f}, 3m={vix_data.get('vix_3m', 0):.1f}, "
+            f"state={vix_data.get('state', 'unknown')}, magnitude={vix_data.get('magnitude', 0):.1f}%, "
+            f"percentile={vix_data.get('percentile', 50)}"
+        )
+
+    prompt = f"""Analyze the current market regime and generate a concise, actionable morning assessment.
+
+REGIME DATA:
+- Overall: {regime_data.get('regime', 'neutral')} (confidence {regime_data.get('confidence', 50)}%, composite score {regime_data.get('composite_score', 0):.2f})
+- Windham State: {windham.get('state', 'unknown')} — {windham.get('label', '')} ({windham.get('description', '')})
+- Recession Probability: {regime_data.get('recession_probability', 50):.0f}%
+
+LAYER SCORES:
+{chr(10).join(layer_summary)}
+
+{vix_text}
+{breadth_text}
+{overnight_text}
+
+Return ONLY valid JSON with this exact structure:
+{{
+  "narrative": "<2-3 sentence assessment written like a senior macro strategist's morning note. Be specific about what the data shows, reference actual numbers, and give a clear directional view. No hedging or vague language. End with one concrete action.>",
+  "factors": [
+    {{"label": "<factor name>", "assessment": "<1-3 word summary>", "bias": "bull|bear|neutral"}},
+    ... (include 4-6 factors covering trend, vol, credit, sentiment, breadth, systemic)
+  ],
+  "stance": "<2-3 word market stance, e.g. 'Defensively Long', 'Risk Off', 'Cautiously Bullish'>",
+  "conviction": "high|medium|low"
+}}"""
+
+    system = (
+        "You are a senior macro strategist at a systematic hedge fund. "
+        "You synthesize quantitative regime signals into clear, actionable assessments. "
+        "Be direct and opinionated — PMs pay you for conviction, not caveats. "
+        "Always reference specific data points to support your view."
+    )
+
+    try:
+        text = _call_llm(system, prompt, max_tokens=600)
+        result = json.loads(text) if text.strip().startswith("{") else None
+        if not result:
+            result = _parse_json_from_text(text)
+        if result and "narrative" in result:
+            return result
+    except Exception as e:
+        logger.warning(f"Claude regime insight failed: {e}")
+
+    # Fallback: build from existing alpha_insights
+    fallback_narrative = "; ".join(
+        f"{ins.get('category', '')}: {ins.get('action', '')}" for ins in insights[:2]
+    ) or "Mixed regime — monitor key signals for directional clarity."
+
+    return {
+        "narrative": fallback_narrative,
+        "factors": [],
+        "stance": regime_data.get("regime", "neutral").title(),
+        "conviction": "low",
+    }
+
+
 def _parse_json_from_text(text: str) -> dict | None:
     """Try to extract a JSON object from text."""
     try:

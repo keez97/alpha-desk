@@ -528,6 +528,35 @@ export async function fetchUpgradedRegime(): Promise<UpgradedRegimeData> {
   };
 }
 
+// ── Regime Insight (Claude-powered) ──────────────────────
+export interface RegimeInsightFactor {
+  label: string;
+  assessment: string;
+  bias: 'bull' | 'bear' | 'neutral';
+}
+
+export interface RegimeInsight {
+  narrative: string;
+  factors: RegimeInsightFactor[];
+  stance: string;
+  conviction: 'high' | 'medium' | 'low';
+}
+
+export async function fetchRegimeInsight(): Promise<RegimeInsight> {
+  const { data: raw } = await api.get('/morning-brief/regime-insight');
+  const d = raw.data || raw;
+  return {
+    narrative: d.narrative || '',
+    factors: (d.factors || []).map((f: any) => ({
+      label: f.label || '',
+      assessment: f.assessment || '',
+      bias: f.bias || 'neutral',
+    })),
+    stance: d.stance || 'Unknown',
+    conviction: d.conviction || 'low',
+  };
+}
+
 // ── Custom Report ─────────────────────────────────────────
 export async function fetchCustomReport(topics: string[]): Promise<Record<string, MorningReportSection>> {
   const { data: raw } = await api.post('/morning-brief/report/custom', { topics });

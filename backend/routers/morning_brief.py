@@ -587,6 +587,64 @@ async def scenario_drilldown(scenario_name: str, session: Session = Depends(get_
     }
 
 
+@router.get("/regime-insight")
+async def get_regime_insight():
+    """Generate a Claude-powered narrative market assessment from regime data.
+
+    Synthesizes all 6 regime layers, VIX term structure, market breadth,
+    and overnight gaps into a rich, actionable insight. Cached 15 min.
+    """
+    from backend.services.vix_term_structure import get_vix_term_structure
+    from backend.services.overnight_returns import get_overnight_returns, ALL_TICKERS as OVERNIGHT_TICKERS
+    from backend.services import synthetic_estimator
+    from backend.services.claude_service import generate_regime_insight, USE_MOCK
+    from backend.services.cache import cache as global_cache
+
+    cache_key = "regime_insight"
+    cached = global_cache.get(cache_key)
+    if cached:
+        return {"timestamp": datetime.utcnow().isoformat(), "cached": True, "data": cached}
+
+    # Gather inputs in parallel
+    try:
+        macro_raw, breadth_raw, vix_raw, overnight_raw = await asyncio.gather(
+            asyncio.wait_for(asyncio.to_thread(get_macro_data), timeout=10.0),
+            asyncio.wait_for(asyncio.to_thread(calculate_breadth), timeout=8.0),
+            asyncio.wait_for(asyncio.to_thread(get_vix_term_structure), timeout=8.0),
+            asyncio.wait_for(asyncio.to_thread(synthetic_estimator.estimate_overnight_returns, OVERNIGHT_TICKERS), timeout=4.0),
+        )
+    except Exception as e:
+        logger.warning(f"Data gathering for regime insight failed: {e}")
+        macro_raw, breadth_raw, vix_raw, overnight_raw = {}, {}, {}, {}
+
+    # Detect regime
+    try:
+        regime_raw = await asyncio.wait_for(
+            asyncio.to_thread(detect_regime, macro_raw or {}), timeout=8.0
+        )
+    except Exception as e:
+        logger.warning(f"Regime detection failed for insight: {e}")
+        regime_raw = {"regime": "neutral", "confidence": 50, "composite_score": 0, "layers": {}, "windham": {}}
+
+    # Generate insight via Claude
+    try:
+        insight = await asyncio.wait_for(
+            asyncio.to_thread(generate_regime_insight, regime_raw, vix_raw or {}, breadth_raw or {}, overnight_raw or {}),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Claude regime insight timed out")
+        insight = {"narrative": "Insight generation timed out. See factor signals above for current market read.", "factors": [], "stance": "Unknown", "conviction": "low"}
+    except Exception as e:
+        logger.warning(f"Claude regime insight error: {e}")
+        insight = {"narrative": f"Insight unavailable: {e}", "factors": [], "stance": "Unknown", "conviction": "low"}
+
+    # Cache for 15 minutes
+    global_cache.set(cache_key, insight, ttl=900)
+
+    return {"timestamp": datetime.utcnow().isoformat(), "cached": False, "data": insight}
+
+
 @router.get("/all")
 async def get_all_morning_brief(session: Session = Depends(get_session)):
     """Aggregate endpoint \u2013 returns ALL morning brief panel data in one response.
