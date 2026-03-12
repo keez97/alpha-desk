@@ -431,78 +431,133 @@ export function MarketRegimeCard() {
           )}
         </div>
 
-        {/* ─── Col 2: VIX Term Structure (2 cols) ─── */}
+        {/* ─── Col 2: VIX Structure — Gauge + Term Curve + Signal (2 cols) ─── */}
         <div className="col-span-2 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[9px] text-neutral-500 font-medium">VIX Structure</span>
-            {v && (
-              <span className={`text-[8px] px-1 py-0.5 rounded-full font-medium bg-neutral-900/50 ${
-                v.signal === 'bullish' ? 'text-green-400' : v.signal === 'bearish' ? 'text-red-400' : 'text-neutral-400'
-              }`}>
-                {v.signal === 'bullish' ? '↗' : v.signal === 'bearish' ? '↘' : '→'}
-              </span>
-            )}
           </div>
 
-          {v && (
-            <>
-              <div className="grid grid-cols-2 gap-1">
-                <div>
-                  <div className="text-[7px] text-neutral-500">Spot</div>
-                  <div className="text-sm font-mono font-bold text-neutral-200">{v.vixSpot.toFixed(1)}</div>
-                </div>
-                <div>
-                  <div className="text-[7px] text-neutral-500">3M</div>
-                  <div className="text-sm font-mono font-bold text-neutral-300">{v.vix3m.toFixed(1)}</div>
-                </div>
-              </div>
+          {v && (() => {
+            // VIX zone classification
+            const spot = v.vixSpot;
+            const zone = spot < 15 ? 'calm' : spot < 20 ? 'normal' : spot < 25 ? 'elevated' : spot < 35 ? 'high' : 'panic';
+            const zoneConfig: Record<string, { color: string; label: string; textColor: string }> = {
+              calm:     { color: 'bg-green-500', label: 'Calm', textColor: 'text-green-400' },
+              normal:   { color: 'bg-blue-500', label: 'Normal', textColor: 'text-blue-400' },
+              elevated: { color: 'bg-yellow-500', label: 'Elevated', textColor: 'text-yellow-400' },
+              high:     { color: 'bg-orange-500', label: 'High', textColor: 'text-orange-400' },
+              panic:    { color: 'bg-red-500', label: 'Panic', textColor: 'text-red-400' },
+            };
+            const z = zoneConfig[zone];
 
-              <div className={`rounded p-1 text-center ${v.state === 'contango' ? 'bg-green-900/20' : 'bg-red-900/20'}`}>
-                <span className={`text-[9px] font-bold ${v.state === 'contango' ? 'text-green-400' : 'text-red-400'}`}>
-                  {v.state === 'contango' ? 'Contango' : 'Backwrdtn'} {v.magnitude.toFixed(1)}%
-                </span>
-              </div>
+            // Gauge position: VIX 10–50 mapped to 0–100%
+            const gaugePos = Math.min(100, Math.max(0, ((spot - 10) / 40) * 100));
 
-              <div>
-                <div className="flex justify-between text-[7px] mb-0.5">
-                  <span className="text-neutral-500">1Y %ile</span>
-                  <span className={`font-mono ${v.percentile > 75 ? 'text-red-400' : v.percentile < 25 ? 'text-green-400' : 'text-yellow-400'}`}>
+            // Signal interpretation
+            const isBackwardation = v.state !== 'contango';
+            let signalText = '';
+            if (spot >= 35) {
+              signalText = 'Panic-level vol — historically marks capitulation zones';
+            } else if (spot >= 25 && isBackwardation) {
+              signalText = 'Elevated VIX in backwardation — active hedging demand, near-term stress';
+            } else if (spot >= 25) {
+              signalText = 'Elevated fear but contango intact — stress is priced, not acute';
+            } else if (spot >= 20 && isBackwardation) {
+              signalText = 'Moderate vol + backwardation — unusual, watch for escalation';
+            } else if (spot >= 20) {
+              signalText = 'Slightly elevated vol — mild caution, no structural stress';
+            } else if (spot < 15 && v.percentile < 10) {
+              signalText = 'Extreme complacency — low vol environments precede sharp moves';
+            } else if (spot < 15) {
+              signalText = 'Low vol regime — risk-on environment, carry trades favored';
+            } else {
+              signalText = 'Normal vol range — no directional signal from volatility';
+            }
+
+            return (
+              <>
+                {/* VIX Gauge */}
+                <div className="space-y-0.5">
+                  <div className="flex items-baseline justify-between">
+                    <span className={`text-lg font-mono font-bold ${z.textColor}`}>{spot.toFixed(1)}</span>
+                    <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${z.color}/20 ${z.textColor}`}>{z.label}</span>
+                  </div>
+                  {/* Zone bar gauge */}
+                  <div className="relative h-2 rounded-full overflow-hidden bg-neutral-800">
+                    {/* Zone gradient: green → blue → yellow → orange → red */}
+                    <div className="absolute inset-0 flex">
+                      <div className="bg-green-500/40 h-full" style={{ width: '12.5%' }} />
+                      <div className="bg-blue-500/40 h-full" style={{ width: '12.5%' }} />
+                      <div className="bg-yellow-500/40 h-full" style={{ width: '12.5%' }} />
+                      <div className="bg-orange-500/40 h-full" style={{ width: '25%' }} />
+                      <div className="bg-red-500/40 h-full" style={{ width: '37.5%' }} />
+                    </div>
+                    {/* Needle */}
+                    <div
+                      className="absolute top-0 w-1 h-full bg-white rounded-full shadow-lg shadow-white/30 transition-all"
+                      style={{ left: `calc(${gaugePos}% - 2px)` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[6px] text-neutral-600">
+                    <span>10</span><span>20</span><span>30</span><span>50</span>
+                  </div>
+                </div>
+
+                {/* Term Structure Mini Curve */}
+                <div className="bg-neutral-900/40 rounded p-1.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[7px] text-neutral-500">Term Structure</span>
+                    <span className={`text-[8px] font-bold ${v.state === 'contango' ? 'text-green-400' : 'text-red-400'}`}>
+                      {v.state === 'contango' ? 'Contango' : 'Backwrdtn'} {v.magnitude.toFixed(1)}%
+                    </span>
+                  </div>
+                  {/* Visual: Spot vs 3M comparison */}
+                  <div className="flex items-end gap-2 h-8">
+                    <div className="flex-1 flex flex-col items-center">
+                      <div className="text-[7px] text-neutral-500 mb-0.5">Spot</div>
+                      <div
+                        className={`w-full rounded-t-sm ${v.state === 'contango' ? 'bg-blue-500/50' : 'bg-red-500/50'}`}
+                        style={{ height: `${Math.max(20, (spot / Math.max(spot, v.vix3m)) * 100)}%` }}
+                      />
+                      <div className="text-[8px] font-mono font-bold text-neutral-200 mt-0.5">{spot.toFixed(1)}</div>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center">
+                      <div className="text-[7px] text-neutral-500 mb-0.5">3M</div>
+                      <div
+                        className={`w-full rounded-t-sm ${v.state === 'contango' ? 'bg-blue-500/30' : 'bg-red-500/30'}`}
+                        style={{ height: `${Math.max(20, (v.vix3m / Math.max(spot, v.vix3m)) * 100)}%` }}
+                      />
+                      <div className="text-[8px] font-mono font-bold text-neutral-300 mt-0.5">{v.vix3m.toFixed(1)}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Percentile */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[7px] text-neutral-500 shrink-0">1Y %ile</span>
+                  <div className="flex-1 h-1 rounded-full bg-neutral-800 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${v.percentile > 75 ? 'bg-red-500' : v.percentile < 25 ? 'bg-green-500' : 'bg-yellow-500'}`}
+                      style={{ width: `${v.percentile}%` }}
+                    />
+                  </div>
+                  <span className={`text-[7px] font-mono ${v.percentile > 75 ? 'text-red-400' : v.percentile < 25 ? 'text-green-400' : 'text-yellow-400'}`}>
                     {v.percentile}th
                   </span>
                 </div>
-                <div className="h-1 rounded-full bg-neutral-800 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${v.percentile > 75 ? 'bg-red-500' : v.percentile < 25 ? 'bg-green-500' : 'bg-yellow-500'}`}
-                    style={{ width: `${v.percentile}%` }}
-                  />
-                </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-1 text-[8px]">
-                <div className="flex justify-between">
-                  <span className="text-neutral-500">Ratio</span>
-                  <span className="font-mono text-neutral-300">{v.ratio.toFixed(2)}</span>
+                {/* One-line Signal Interpretation */}
+                <div className="bg-neutral-900/60 rounded px-1.5 py-1 border-l-2 border-blue-500/50">
+                  <div className="text-[8px] text-neutral-300 leading-snug italic">{signalText}</div>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-neutral-500">Roll</span>
-                  <span className={`font-mono ${v.rollYield > 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {v.rollYield.toFixed(5)}
-                  </span>
-                </div>
-              </div>
-
-              {v.history.length > 0 && (
-                <div className="bg-neutral-900/40 rounded p-0.5">
-                  <MiniSparkline data={v.history.map(h => h.ratio)} />
-                </div>
-              )}
-            </>
-          )}
+              </>
+            );
+          })()}
 
           {!v && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
         </div>
 
-        {/* ─── Col 3: Overnight Gaps — Treemap (3 cols) ─── */}
+        {/* ─── Col 3: Overnight Gaps — Vertical Bar Chart (3 cols) ─── */}
         <div className="col-span-3 p-2.5 space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-[9px] text-neutral-500 font-medium">Overnight Gaps</span>
@@ -516,60 +571,63 @@ export function MarketRegimeCard() {
           </div>
 
           {g && (() => {
-            // Sort ALL items by absolute overnight return (biggest movers first)
+            // Sort by absolute overnight return (biggest movers first)
             const sorted = [...g.indices].sort(
               (a, b) => Math.abs(b.overnight_return_pct) - Math.abs(a.overnight_return_pct)
             );
             const maxAbs = Math.max(...sorted.map(s => Math.abs(s.overnight_return_pct)), 0.01);
-
-            // Build treemap rows: items flow left-to-right, bigger items get more flex weight
-            // Row 1: top 4 (biggest movers), Row 2: next 5, Row 3: remaining
-            const rows = [sorted.slice(0, 4), sorted.slice(4, 9), sorted.slice(9)];
-
             const notableSet = new Set(g.summary.notable_gaps.map(n => n.ticker));
 
-            return (
-              <div className="space-y-0.5">
-                {rows.map((row, ri) =>
-                  row.length > 0 && (
-                    <div key={ri} className="flex gap-0.5">
-                      {row.map(item => {
-                        const pct = item.overnight_return_pct;
-                        const absPct = Math.abs(pct);
-                        // Flex weight: bigger movers get proportionally more space (min 1)
-                        const weight = Math.max(1, Math.round((absPct / maxAbs) * 4));
-                        // Color intensity: scale 0.08 (tiny move) to 0.55 (max move)
-                        const intensity = 0.08 + (absPct / maxAbs) * 0.47;
-                        const bgColor = pct >= 0
-                          ? `rgba(16, 185, 129, ${intensity})`
-                          : `rgba(239, 68, 68, ${intensity})`;
-                        const isNotable = notableSet.has(item.ticker);
+            // Show top ~14 items to fit in the column
+            const items = sorted.slice(0, 14);
 
-                        return (
-                          <div
-                            key={item.ticker}
-                            className={`rounded-sm text-center py-1 px-0.5 min-w-0 ${
-                              isNotable ? 'ring-1 ring-amber-500/40' : ''
-                            }`}
-                            style={{ backgroundColor: bgColor, flex: weight }}
-                            title={`${item.ticker} (${item.name}): ${pct > 0 ? '+' : ''}${pct.toFixed(2)}% overnight${
-                              item.z_score ? ` | z=${item.z_score.toFixed(1)}` : ''
-                            }${item.last_price > 0 ? ` | $${item.last_price.toFixed(0)}` : ''}`}
-                          >
-                            <div className="text-[8px] font-mono font-bold text-neutral-100 leading-none">
-                              {item.ticker}
-                            </div>
-                            <div className={`text-[8px] font-mono font-bold leading-tight ${
-                              pct >= 0 ? 'text-emerald-200' : 'text-red-200'
-                            }`}>
-                              {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
-                            </div>
-                          </div>
-                        );
-                      })}
+            return (
+              <div className="flex items-end gap-px" style={{ height: 130 }}>
+                {items.map(item => {
+                  const pct = item.overnight_return_pct;
+                  const absPct = Math.abs(pct);
+                  // Bar height: proportional to move magnitude (min 12% for label visibility)
+                  const heightPct = Math.max(12, (absPct / maxAbs) * 100);
+                  // Color intensity: 0.15 (tiny) to 0.7 (max)
+                  const intensity = 0.15 + (absPct / maxAbs) * 0.55;
+                  const bgColor = pct >= 0
+                    ? `rgba(16, 185, 129, ${intensity})`
+                    : `rgba(239, 68, 68, ${intensity})`;
+                  const isNotable = notableSet.has(item.ticker);
+
+                  return (
+                    <div
+                      key={item.ticker}
+                      className="flex-1 flex flex-col items-center justify-end min-w-0"
+                      style={{ height: '100%' }}
+                    >
+                      {/* Percentage label above bar */}
+                      <div className={`text-[7px] font-mono font-bold mb-0.5 leading-none ${
+                        pct >= 0 ? 'text-emerald-400' : 'text-red-400'
+                      }`}>
+                        {pct > 0 ? '+' : ''}{pct.toFixed(1)}
+                      </div>
+                      {/* Vertical bar */}
+                      <div
+                        className={`w-full rounded-t-sm transition-all ${
+                          isNotable ? 'ring-1 ring-amber-500/50' : ''
+                        }`}
+                        style={{
+                          backgroundColor: bgColor,
+                          height: `${heightPct}%`,
+                          minHeight: 16,
+                        }}
+                        title={`${item.ticker} (${item.name}): ${pct > 0 ? '+' : ''}${pct.toFixed(2)}% overnight${
+                          item.z_score ? ` | z=${item.z_score.toFixed(1)}` : ''
+                        }${item.last_price > 0 ? ` | $${item.last_price.toFixed(0)}` : ''}`}
+                      />
+                      {/* Ticker label below bar */}
+                      <div className="text-[6px] font-mono text-neutral-400 mt-0.5 leading-none truncate w-full text-center">
+                        {item.ticker}
+                      </div>
                     </div>
-                  )
-                )}
+                  );
+                })}
               </div>
             );
           })()}

@@ -53,12 +53,12 @@ const ALL_COLUMNS: ColumnDef[] = [
   { key: 'quadrant', label: 'Quadrant', shortLabel: 'Quad', sortable: true, defaultVisible: true },
   { key: 'rsRatio', label: 'RS-Ratio', shortLabel: 'RS-R', sortable: true, defaultVisible: true },
   { key: 'rsMomentum', label: 'RS-Mom', shortLabel: 'RS-M', sortable: true, defaultVisible: true },
-  { key: 'trend', label: 'Trend', shortLabel: 'Trend', sortable: false, defaultVisible: true },
+  { key: 'trend', label: 'Trend', shortLabel: 'Trend', sortable: true, defaultVisible: true },
   { key: 'tailLength', label: 'Tail', shortLabel: 'Tail', sortable: true, defaultVisible: false },
   { key: 'quadrantAge', label: 'Age', shortLabel: 'Age', sortable: true, defaultVisible: false },
 ];
 
-type SortKey = 'ticker' | 'price' | 'changePercent' | 'quadrant' | 'rsMomentum' | 'tailLength' | 'quadrantAge' | 'rsRatio';
+type SortKey = 'ticker' | 'price' | 'changePercent' | 'quadrant' | 'rsMomentum' | 'tailLength' | 'quadrantAge' | 'rsRatio' | 'trend';
 
 /* ── Column Config Dropdown ── */
 
@@ -163,8 +163,16 @@ export function CompactRRGTable() {
     if (!data) return [];
     const arr = [...data];
     arr.sort((a, b) => {
-      let aVal: any = (a as any)[sortKey];
-      let bVal: any = (b as any)[sortKey];
+      let aVal: any;
+      let bVal: any;
+      if (sortKey === 'trend') {
+        // Sort by rsTrend (up/down) as primary, rotationDirection as secondary
+        aVal = a.rsTrend === 'up' ? 1 : 0;
+        bVal = b.rsTrend === 'up' ? 1 : 0;
+      } else {
+        aVal = (a as any)[sortKey];
+        bVal = (b as any)[sortKey];
+      }
       if (typeof aVal === 'string') aVal = aVal.toLowerCase();
       if (typeof bVal === 'string') bVal = bVal.toLowerCase();
       if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;

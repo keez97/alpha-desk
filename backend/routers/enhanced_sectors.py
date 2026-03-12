@@ -26,10 +26,13 @@ async def get_enhanced_sectors(period: str = "1D"):
             sector_data = []
 
         tickers = list(SECTOR_ETFS.keys())
+        # Map period to RRG lookback weeks
+        period_to_weeks = {"1D": 10, "5D": 14, "1M": 26, "3M": 52}
+        rrg_weeks = period_to_weeks.get(period, 10)
         try:
             rrg_data = await asyncio.wait_for(
-                asyncio.to_thread(calculate_rrg, tickers, "SPY", 10),
-                timeout=10.0
+                asyncio.to_thread(calculate_rrg, tickers, "SPY", rrg_weeks),
+                timeout=15.0
             )
         except asyncio.TimeoutError:
             logger.warning("RRG calculation timed out")
