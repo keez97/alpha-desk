@@ -46,37 +46,46 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
 }
 
 function ColumnHeaders() {
+  // Uses identical flex layout as PositioningBar: gap:8, same widths on direct flex children
   return (
-    <div className="flex items-center h-4 mb-1 border-b border-neutral-800/50 pb-1">
-      {/* Label spacer — matches PositioningBar label */}
+    <div className="flex items-center h-4 mb-1 border-b border-neutral-800/50 pb-1" style={{ gap: 8 }}>
+      {/* Label spacer — same as PositioningBar label (48px) */}
       <span style={{ width: 48, flexShrink: 0 }} />
 
-      {/* Bar header — matches flex-1 bar container */}
-      <div className="flex-1 text-center" style={{ marginLeft: 8, marginRight: 8 }}>
+      {/* Bar header — same as PositioningBar flex-1 bar container */}
+      <div className="flex-1 text-center">
         <Tooltip text="Bar length shows the relative size of the net position. The larger group (hedger or spec) fills the full bar; the smaller scales proportionally. Green = net long, Red = net short.">
           <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">Positioning</span>
         </Tooltip>
       </div>
 
-      {/* Net position header — matches w-[60px] */}
-      <Tooltip text="Net contracts = long minus short contracts held by that trader group.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-right" style={{ width: 60, flexShrink: 0, marginLeft: 8 }}>Net</span>
-      </Tooltip>
+      {/* Net — wrapper div is the flex child with width, Tooltip inside */}
+      <div style={{ width: 60, flexShrink: 0 }} className="text-right">
+        <Tooltip text="Net contracts = long minus short contracts held by that trader group.">
+          <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">Net</span>
+        </Tooltip>
+      </div>
 
-      {/* Direction header — matches w-[40px] */}
-      <Tooltip text="Whether the group is net long (buying) or net short (selling) overall.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-center" style={{ width: 40, flexShrink: 0, marginLeft: 8 }}>Side</span>
-      </Tooltip>
+      {/* Side */}
+      <div style={{ width: 40, flexShrink: 0 }} className="text-center">
+        <Tooltip text="Whether the group is net long (buying) or net short (selling) overall.">
+          <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">Side</span>
+        </Tooltip>
+      </div>
 
-      {/* Percentile header — matches w-[28px] */}
-      <Tooltip text="Percentile rank vs 52-week range. P90+ or P10- = extreme positioning (amber). P50 = middle of the range.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-right" style={{ width: 28, flexShrink: 0, marginLeft: 8 }}>%ile</span>
-      </Tooltip>
+      {/* %ile */}
+      <div style={{ width: 28, flexShrink: 0 }} className="text-right">
+        <Tooltip text="Percentile rank vs 52-week range. P90+ or P10- = extreme positioning (amber). P50 = middle of the range.">
+          <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">%ile</span>
+        </Tooltip>
+      </div>
 
-      {/* Weekly change header — matches w-[16px] */}
-      <Tooltip text="Week-over-week change in net positioning. ↑ = added to position, ↓ = reduced position.">
-        <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider text-center" style={{ width: 16, flexShrink: 0, marginLeft: 8 }}>Wk</span>
-      </Tooltip>
+      {/* Wk */}
+      <div style={{ width: 16, flexShrink: 0 }} className="text-center">
+        <Tooltip text="Week-over-week change in net positioning. ↑ = added to position, ↓ = reduced position.">
+          <span className="text-[8px] font-medium text-neutral-500 uppercase tracking-wider">Wk</span>
+        </Tooltip>
+      </div>
     </div>
   );
 }
