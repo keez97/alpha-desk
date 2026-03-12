@@ -640,7 +640,7 @@ async def get_regime_insight():
         insight = {"narrative": f"Insight unavailable: {e}", "factors": [], "stance": "Unknown", "conviction": "low"}
 
     # Cache for 15 minutes
-    global_cache.set(cache_key, insight, ttl=900)
+    global_cache.set(cache_key, insight, 900)
 
     return {"timestamp": datetime.utcnow().isoformat(), "cached": False, "data": insight}
 
