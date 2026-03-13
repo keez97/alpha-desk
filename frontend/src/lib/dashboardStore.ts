@@ -24,9 +24,11 @@ export interface LayoutItem {
 const STORAGE_KEY = 'alphadesk_dashboard_layout';
 const VISIBLE_KEY = 'alphadesk_dashboard_visible';
 const LOCK_KEY = 'alphadesk_dashboard_locked';
+const VERSION_KEY = 'alphadesk_dashboard_version';
+const LAYOUT_VERSION = 2; // Bump when default layout changes to reset stale caches
 
 // ── Default layout matching current MorningBrief.tsx ──────────
-// 12-column grid. Y values stack vertically. Each "row unit" ≈ 40px.
+// 12-column grid. Y values stack vertically. Each "row unit" ≈ 30px.
 export const DEFAULT_VISIBLE = [
   'regime-card',
   'market-report',
@@ -42,22 +44,23 @@ export const DEFAULT_VISIBLE = [
 ];
 
 export const DEFAULT_LAYOUT: LayoutItem[] = [
-  // Layer 1: Signal — full width regime card
-  { i: 'regime-card', x: 0, y: 0, w: 12, h: 8, minW: 6, minH: 5 },
-  // Layer 2: Market Report — full width
-  { i: 'market-report', x: 0, y: 8, w: 12, h: 6, minW: 6, minH: 4 },
-  // Layer 3: Context grid — sectors + transitions (col-span-8) | drivers + momentum (col-span-4)
-  { i: 'sector-chart', x: 0, y: 14, w: 8, h: 7, minW: 4, minH: 5 },
-  { i: 'drivers', x: 8, y: 14, w: 4, h: 7, minW: 3, minH: 5 },
-  { i: 'sector-transitions', x: 0, y: 21, w: 8, h: 5, minW: 4, minH: 4 },
-  { i: 'momentum-spillover', x: 8, y: 21, w: 4, h: 5, minW: 3, minH: 4 },
-  // Layer 4: Positioning + Scenarios — 2 col
-  { i: 'positioning', x: 0, y: 26, w: 6, h: 8, minW: 4, minH: 5 },
-  { i: 'scenario-risk', x: 6, y: 26, w: 6, h: 8, minW: 4, minH: 5 },
-  // Layer 5: Sentiment row — 3 col
-  { i: 'sentiment', x: 0, y: 34, w: 4, h: 6, minW: 3, minH: 4 },
-  { i: 'options-flow', x: 4, y: 34, w: 4, h: 6, minW: 3, minH: 4 },
-  { i: 'earnings', x: 8, y: 34, w: 4, h: 6, minW: 3, minH: 4 },
+  // Layer 1: Signal — full width regime card (compact)
+  { i: 'regime-card', x: 0, y: 0, w: 12, h: 6, minW: 3, minH: 3 },
+  // Layer 2: Market Report — full width (compact)
+  { i: 'market-report', x: 0, y: 6, w: 12, h: 4, minW: 3, minH: 2 },
+  // Layer 3: Context grid — sectors (8) | drivers (4)
+  { i: 'sector-chart', x: 0, y: 10, w: 8, h: 5, minW: 3, minH: 3 },
+  { i: 'drivers', x: 8, y: 10, w: 4, h: 5, minW: 3, minH: 3 },
+  // Layer 4: Transitions (8) | momentum (4)
+  { i: 'sector-transitions', x: 0, y: 15, w: 8, h: 4, minW: 3, minH: 3 },
+  { i: 'momentum-spillover', x: 8, y: 15, w: 4, h: 4, minW: 3, minH: 3 },
+  // Layer 5: Positioning + Scenarios — side by side
+  { i: 'positioning', x: 0, y: 19, w: 6, h: 6, minW: 3, minH: 3 },
+  { i: 'scenario-risk', x: 6, y: 19, w: 6, h: 6, minW: 3, minH: 3 },
+  // Layer 6: Sentiment row — 3 across
+  { i: 'sentiment', x: 0, y: 25, w: 4, h: 5, minW: 2, minH: 3 },
+  { i: 'options-flow', x: 4, y: 25, w: 4, h: 5, minW: 2, minH: 3 },
+  { i: 'earnings', x: 8, y: 25, w: 4, h: 5, minW: 2, minH: 3 },
 ];
 
 // ── Store ─────────────────────────────────────────────────────
@@ -90,14 +93,34 @@ function saveToStorage(key: string, value: unknown) {
   }
 }
 
+// Check if stored layout is stale (older version) and reset if so
+function getInitialLayout(): LayoutItem[] {
+  const storedVersion = loadFromStorage<number>(VERSION_KEY, 0);
+  if (storedVersion < LAYOUT_VERSION) {
+    // Clear stale layout and save new version
+    saveToStorage(STORAGE_KEY, DEFAULT_LAYOUT);
+    saveToStorage(VISIBLE_KEY, DEFAULT_VISIBLE);
+    saveToStorage(VERSION_KEY, LAYOUT_VERSION);
+    return DEFAULT_LAYOUT;
+  }
+  return loadFromStorage<LayoutItem[]>(STORAGE_KEY, DEFAULT_LAYOUT);
+}
+
+function getInitialVisible(): string[] {
+  const storedVersion = loadFromStorage<number>(VERSION_KEY, 0);
+  if (storedVersion < LAYOUT_VERSION) return DEFAULT_VISIBLE;
+  return loadFromStorage<string[]>(VISIBLE_KEY, DEFAULT_VISIBLE);
+}
+
 export const useDashboardStore = create<DashboardState>((set, get) => ({
-  layout: loadFromStorage<LayoutItem[]>(STORAGE_KEY, DEFAULT_LAYOUT),
-  visibleWidgets: loadFromStorage<string[]>(VISIBLE_KEY, DEFAULT_VISIBLE),
+  layout: getInitialLayout(),
+  visibleWidgets: getInitialVisible(),
   isLocked: loadFromStorage<boolean>(LOCK_KEY, true), // Locked by default for new users
 
   setLayout: (layout) => {
     set({ layout });
     saveToStorage(STORAGE_KEY, layout);
+    saveToStorage(VERSION_KEY, LAYOUT_VERSION);
   },
 
   addWidget: (widgetId) => {
@@ -154,5 +177,6 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
     saveToStorage(STORAGE_KEY, DEFAULT_LAYOUT);
     saveToStorage(VISIBLE_KEY, DEFAULT_VISIBLE);
     saveToStorage(LOCK_KEY, true);
+    saveToStorage(VERSION_KEY, LAYOUT_VERSION);
   },
 }));

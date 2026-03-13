@@ -12,8 +12,8 @@ import { useDashboardStore, type LayoutItem } from '../../lib/dashboardStore';
 import { WIDGET_REGISTRY } from '../../lib/widgetRegistry';
 import { WidgetWrapper } from './WidgetWrapper';
 
-// Row height in pixels — each grid unit ≈ 40px
-const ROW_HEIGHT = 40;
+// Row height in pixels — each grid unit ≈ 30px (compact for dense dashboards)
+const ROW_HEIGHT = 30;
 const COLS = 12;
 
 function useContainerWidth() {
@@ -97,8 +97,8 @@ export function DashboardGrid() {
           isDraggable={!isLocked}
           isResizable={!isLocked}
           compactType="vertical"
-          margin={[16, 16]}
-          containerPadding={[16, 16]}
+          margin={[12, 12]}
+          containerPadding={[12, 8]}
           onLayoutChange={handleLayoutChange as any}
           draggableHandle=".widget-drag-handle"
           useCSSTransforms
