@@ -5,18 +5,16 @@
 import { Suspense, useCallback, useMemo, useRef } from 'react';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // react-grid-layout v2 uses named exports; types from @types/react-grid-layout are for v1
-import RGL from 'react-grid-layout';
+import * as RGL from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { useDashboardStore, type LayoutItem } from '../../lib/dashboardStore';
 import { WIDGET_REGISTRY } from '../../lib/widgetRegistry';
 import { WidgetWrapper } from './WidgetWrapper';
 
-// v2 API: named exports on the module
-const {
-  ResponsiveGridLayout,
-  useContainerWidth,
-} = RGL as any;
+// v2 API: named exports — use namespace import for correct CJS/ESM interop
+const ResponsiveGridLayout = (RGL as any).ResponsiveGridLayout;
+const useContainerWidth = (RGL as any).useContainerWidth;
 
 // Row height in pixels — each grid unit ≈ 40px
 const ROW_HEIGHT = 40;
