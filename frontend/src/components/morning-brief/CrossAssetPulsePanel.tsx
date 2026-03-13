@@ -18,7 +18,8 @@ interface AssetPulse {
 
 async function fetchCrossAssetPulse(): Promise<AssetPulse[]> {
   const { data } = await api.get('/cross-asset-pulse');
-  const raw = data.data || data.assets || data;
+  const nested = data.data || data;
+  const raw = nested?.assets || nested;
   if (!Array.isArray(raw)) return [];
   return raw.map((a: any) => ({
     ticker: a.ticker || '',

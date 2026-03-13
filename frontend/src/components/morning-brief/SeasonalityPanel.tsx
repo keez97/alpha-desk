@@ -17,7 +17,8 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 async function fetchSeasonality(): Promise<SectorSeasonality[]> {
   const { data } = await api.get('/sector-seasonality');
-  const raw = data.data || data.sectors || data;
+  const nested = data.data || data;
+  const raw = nested?.sectors || nested;
   if (!Array.isArray(raw)) return [];
   return raw.map((s: any) => ({
     ticker: s.ticker || '',
