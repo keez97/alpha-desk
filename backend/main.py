@@ -37,6 +37,8 @@ from backend.routers import (
     sector_transitions,
     scenario_risk,
     vix_term_structure,
+    cross_asset_pulse,
+    sector_seasonality,
 )
 
 app = FastAPI(
@@ -107,6 +109,8 @@ app.include_router(cross_asset_momentum.router)
 app.include_router(sector_transitions.router)
 app.include_router(scenario_risk.router)
 app.include_router(vix_term_structure.router)
+app.include_router(cross_asset_pulse.router)
+app.include_router(sector_seasonality.router)
 
 
 @app.on_event("startup")
