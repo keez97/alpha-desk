@@ -48,9 +48,8 @@ export function seedApiCache(allData: any) {
       return layers && typeof layers === 'object' && Object.keys(layers).length >= 4;
     },
     '/morning-brief/breadth': (d) => {
-      // Must have actual breadth data with total > 0
       const bd = d?.data;
-      return bd && typeof bd === 'object' && (bd.total ?? 0) > 0;
+      return bd && typeof bd === 'object' && typeof bd.signal === 'string';
     },
   };
   for (const [path, data] of Object.entries(mapping)) {

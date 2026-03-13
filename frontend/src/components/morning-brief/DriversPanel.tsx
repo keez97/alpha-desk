@@ -21,7 +21,7 @@ function ImpactBadge({ score }: { score?: number }) {
     : score >= 40 ? 'text-amber-400 border-amber-400/30 bg-amber-400/10'
     : 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10';
   return (
-    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${color}`}>
+    <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full border ${color}`}>
       {score}
     </span>
   );
@@ -38,7 +38,7 @@ function SentimentBadge({ sentiment }: { sentiment?: string }) {
   };
   const cls = colors[sentiment] || colors.neutral;
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${cls}`}>
+    <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${cls}`}>
       {sentiment}
     </span>
   );
@@ -48,8 +48,8 @@ function ContrarianBadge({ signal }: { signal?: string | null }) {
   if (!signal) return null;
   return (
     <div className="flex items-center gap-1 px-2 py-1 rounded bg-amber-400/10 border border-amber-400/20 mt-1.5">
-      <span className="text-amber-400 text-[10px]">⚠</span>
-      <span className="text-[10px] text-amber-300 font-medium">{signal}</span>
+      <span className="text-amber-400 text-xs">⚠</span>
+      <span className="text-xs text-amber-300 font-medium">{signal}</span>
     </div>
   );
 }
@@ -58,7 +58,7 @@ function MetricChip({ metric }: { metric: DriverMetric }) {
   const arrow = metric.direction === 'up' ? '\u2191' : metric.direction === 'down' ? '\u2193' : '\u2192';
   const color = metric.direction === 'up' ? 'text-emerald-400' : metric.direction === 'down' ? 'text-red-400' : 'text-neutral-400';
   return (
-    <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800/50 text-neutral-300 font-mono">
+    <span className="text-xs px-1.5 py-0.5 rounded bg-neutral-800/50 text-neutral-300 font-mono">
       {metric.label}: <span className="font-medium">{metric.value}</span>{' '}
       <span className={color}>{arrow}</span>
     </span>
@@ -73,14 +73,14 @@ function NewsItem({ article }: { article: NewsArticleForDriver }) {
       rel="noopener noreferrer"
       className="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-neutral-800/40 transition-colors group"
     >
-      <span className="text-[10px] text-neutral-600 mt-0.5 flex-shrink-0 w-10 text-right">
+      <span className="text-xs text-neutral-500 mt-0.5 flex-shrink-0 w-10 text-right">
         {timeAgo(article.publishedAt)}
       </span>
       <div className="min-w-0">
-        <span className="text-[11px] text-neutral-300 group-hover:text-white transition-colors line-clamp-2 leading-snug">
+        <span className="text-xs text-neutral-300 group-hover:text-white transition-colors line-clamp-2 leading-snug">
           {article.title}
         </span>
-        <span className="text-[9px] text-neutral-600 block mt-0.5">
+        <span className="text-xs text-neutral-500 block mt-0.5">
           {article.publisher} {article.ticker && `\u00b7 ${article.ticker}`}
         </span>
       </div>
@@ -124,7 +124,7 @@ function DriverCard({ driver }: { driver: Driver }) {
             <SentimentBadge sentiment={driver.sentiment} />
             {hasDetails && (
               <svg
-                className={`w-3 h-3 text-neutral-600 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                className={`w-3 h-3 text-neutral-500 transition-transform ${expanded ? 'rotate-180' : ''}`}
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -142,7 +142,7 @@ function DriverCard({ driver }: { driver: Driver }) {
         <div className="border-t border-neutral-800/50 px-3 pb-3 space-y-2.5">
           {driver.keyData && (
             <>
-              <p className="text-[11px] text-neutral-400 leading-relaxed mt-2">
+              <p className="text-xs text-neutral-400 leading-relaxed mt-2">
                 {driver.keyData}
               </p>
               <ContrarianBadge signal={driver.contrarianSignal} />
@@ -151,8 +151,8 @@ function DriverCard({ driver }: { driver: Driver }) {
 
           {driver.marketImplications && (
             <div className="bg-neutral-900/50 rounded p-2">
-              <span className="text-[10px] text-neutral-500 font-medium block mb-1">Market Implications</span>
-              <p className="text-[11px] text-neutral-300 leading-relaxed">
+              <span className="text-xs text-neutral-500 font-medium block mb-1">Market Implications</span>
+              <p className="text-xs text-neutral-300 leading-relaxed">
                 {driver.marketImplications}
               </p>
             </div>
@@ -161,7 +161,7 @@ function DriverCard({ driver }: { driver: Driver }) {
           {driver.affectedAssets.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {driver.affectedAssets.map((t, i) => (
-                <span key={i} className="text-[9px] px-1 py-0.5 rounded bg-neutral-800 text-neutral-500 font-mono">
+                <span key={i} className="text-xs px-1 py-0.5 rounded bg-neutral-800 text-neutral-500 font-mono">
                   {t}
                 </span>
               ))}
@@ -170,7 +170,7 @@ function DriverCard({ driver }: { driver: Driver }) {
 
           {driver.newsArticles.length > 0 && (
             <div>
-              <span className="text-[10px] text-neutral-500 font-medium block mb-1">Related News</span>
+              <span className="text-xs text-neutral-500 font-medium block mb-1">Related News</span>
               <div className="space-y-0.5">
                 {visibleArticles.map((article, i) => (
                   <NewsItem key={i} article={article} />
@@ -179,12 +179,12 @@ function DriverCard({ driver }: { driver: Driver }) {
               {(hasMore || showLess) && (
                 <div className="flex gap-2 mt-1">
                   {hasMore && (
-                    <button onClick={() => setNewsPage(p => p + 1)} className="text-[10px] text-blue-400 hover:text-blue-300">
+                    <button onClick={() => setNewsPage(p => p + 1)} className="text-xs text-blue-400 hover:text-blue-300">
                       Show more →
                     </button>
                   )}
                   {showLess && (
-                    <button onClick={() => setNewsPage(1)} className="text-[10px] text-neutral-500 hover:text-neutral-300">
+                    <button onClick={() => setNewsPage(1)} className="text-xs text-neutral-500 hover:text-neutral-300">
                       ← Show less
                     </button>
                   )}
@@ -209,11 +209,11 @@ export function DriversPanel() {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-neutral-300">Market Drivers</span>
+        <span className="text-xs font-semibold text-neutral-200">Market Drivers</span>
         <button
           onClick={() => refresh()}
           disabled={isPending}
-          className="px-2 py-1 rounded text-[11px] text-neutral-500 hover:text-neutral-300 border border-neutral-800 hover:border-neutral-700 disabled:opacity-50 transition-colors"
+          className="px-2 py-1 rounded text-xs text-neutral-500 hover:text-neutral-300 border border-neutral-800 hover:border-neutral-700 disabled:opacity-50 transition-colors"
         >
           {isPending ? 'Refreshing...' : 'Refresh'}
         </button>

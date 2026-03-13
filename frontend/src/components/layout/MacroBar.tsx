@@ -24,21 +24,21 @@ function RegimeBadge({ regime }: { regime: any }) {
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
       >
-        <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Regime</span>
+        <span className="text-xs text-neutral-500 uppercase tracking-wider">Regime</span>
         <span className={`text-xs font-bold mt-0.5 px-2 py-0.5 rounded border ${style.bg} ${style.text}`}>
           {style.label}
         </span>
-        <span className="text-[9px] text-neutral-600 mt-0.5">{regime.confidence}%</span>
+        <span className="text-xs text-neutral-500 mt-0.5">{regime.confidence}%</span>
       </button>
 
       {showTooltip && signals.length > 0 && (
         <div className="absolute top-full left-0 mt-1 z-50 bg-neutral-900 border border-neutral-700 rounded p-2 shadow-lg min-w-48">
-          <span className="text-[10px] text-neutral-400 font-medium block mb-1">Contributing Signals</span>
+          <span className="text-xs text-neutral-400 font-medium block mb-1">Contributing Signals</span>
           {signals.map((s: any, i: number) => (
             <div key={i} className="flex items-center justify-between gap-3 py-0.5">
-              <span className="text-[10px] text-neutral-400">{s.name}</span>
-              <span className="text-[10px] font-mono text-neutral-300">{s.value}</span>
-              <span className={`text-[9px] ${
+              <span className="text-xs text-neutral-400">{s.name}</span>
+              <span className="text-xs font-mono text-neutral-300">{s.value}</span>
+              <span className={`text-xs ${
                 s.bias === 'bull' ? 'text-green-400' : s.bias === 'bear' ? 'text-red-400' : 'text-neutral-500'
               }`}>
                 {s.reading}
@@ -59,15 +59,15 @@ export function MacroBar() {
   if (!data) return null;
 
   return (
-    <div className="flex gap-px overflow-x-auto bg-neutral-900 border-b border-neutral-800">
+    <div className="flex gap-px overflow-x-auto bg-neutral-900 border-b border-neutral-800" aria-label="Market data ticker bar">
       {data.regime && <RegimeBadge regime={data.regime} />}
       {data.indicators.map((indicator: any) => (
         <div key={indicator.name} className="flex-shrink-0 px-4 py-2 bg-black">
-          <div className="text-[10px] text-neutral-500 uppercase tracking-wider">{indicator.name}</div>
+          <div className="text-xs text-neutral-500 uppercase tracking-wider">{indicator.name}</div>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="font-mono text-sm font-medium text-neutral-200">{indicator.value.toFixed(2)}</span>
             {indicator.change == null ? (
-              <span className="inline-block text-[11px] font-mono text-neutral-500">N/A</span>
+              <span className="inline-block text-xs font-mono text-neutral-500">N/A</span>
             ) : (
               <DeltaBadge value={indicator.change} format="pct" />
             )}

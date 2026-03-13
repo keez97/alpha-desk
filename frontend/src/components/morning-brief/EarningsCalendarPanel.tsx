@@ -75,7 +75,7 @@ export function EarningsCalendarPanel() {
                     >
                       <div className="flex items-center gap-2 flex-1 min-w-0">
                         <span className="font-mono font-semibold w-12">{item.ticker}</span>
-                        <span className="text-neutral-500 text-[10px] truncate">{item.sector}</span>
+                        <span className="text-neutral-500 text-xs truncate">{item.sector}</span>
                         {hasDriftSignal && (
                           <div className="flex items-center gap-1">
                             {isDriftUp ? (

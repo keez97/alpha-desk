@@ -100,22 +100,22 @@ export function ScenarioRiskPanel() {
     <div className="space-y-4">
       {/* VaR Comparison */}
       <div className="border border-neutral-800 rounded p-3 bg-neutral-900/50">
-        <h3 className="text-xs font-semibold text-neutral-300 mb-3 uppercase tracking-wider">
+        <h3 className="text-xs font-semibold text-neutral-300 mb-3 tracking-wider">
           Value-at-Risk (95% Confidence)
         </h3>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <div className="text-[10px] text-neutral-500 uppercase mb-1">Historical VaR</div>
+            <div className="text-xs text-neutral-500 uppercase mb-1">Historical VaR</div>
             <div className={`text-lg font-mono font-bold ${getVaRColor(var_95_historical)}`}>
-              {var_95_historical.toFixed(2)}%
+              {var_95_historical > 0 ? '▼ ' : ''}−{var_95_historical.toFixed(2)}%
             </div>
           </div>
           <div>
-            <div className="text-[10px] text-neutral-500 uppercase mb-1">
+            <div className="text-xs text-neutral-500 uppercase mb-1">
               Regime-Adjusted ({current_regime})
             </div>
             <div className={`text-lg font-mono font-bold ${getVaRColor(var_95_regime_adjusted)}`}>
-              {var_95_regime_adjusted.toFixed(2)}%
+              {var_95_regime_adjusted > 0 ? '▼ ' : ''}−{var_95_regime_adjusted.toFixed(2)}%
             </div>
           </div>
         </div>
@@ -124,7 +124,7 @@ export function ScenarioRiskPanel() {
       {/* Scenario Cards */}
       <div className="border border-neutral-800 rounded overflow-hidden">
         <div className="bg-neutral-900/50 px-3 py-2 border-b border-neutral-800">
-          <h3 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
+          <h3 className="text-xs font-semibold text-neutral-300 tracking-wider">
             Stress Scenarios
           </h3>
         </div>
@@ -143,14 +143,14 @@ export function ScenarioRiskPanel() {
                   <div className="flex items-center justify-between mb-1">
                     <div className="font-semibold text-sm text-neutral-200">{scenario.name}</div>
                     <div className={`text-sm font-mono font-bold ${getRiskColor(scenario.severity)}`}>
-                      {scenario.estimated_impact_pct > 0 ? '+' : ''}{scenario.estimated_impact_pct.toFixed(1)}%
+                      {scenario.estimated_impact_pct < 0 ? '▼ ' : '▲ '}{scenario.estimated_impact_pct > 0 ? '+' : ''}{scenario.estimated_impact_pct.toFixed(1)}%
                     </div>
                   </div>
                   <div className="text-xs text-neutral-400 mb-2">{scenario.description}</div>
 
                   {/* Probability reasoning */}
                   {scenario.probability_reasoning && (
-                    <div className="text-[10px] text-neutral-400 mb-2">
+                    <div className="text-xs text-neutral-400 mb-2">
                       <span className="text-neutral-500">Why: </span>{scenario.probability_reasoning}
                     </div>
                   )}
@@ -159,7 +159,7 @@ export function ScenarioRiskPanel() {
                   {scenario.affected_sectors && scenario.affected_sectors.length > 0 && (
                     <div className="flex flex-wrap gap-1 mb-2">
                       {scenario.affected_sectors.slice(0, 4).map(sector => (
-                        <span key={sector} className="bg-neutral-800 text-neutral-300 px-2 py-0.5 rounded text-[9px]">
+                        <span key={sector} className="bg-neutral-800 text-neutral-300 px-2 py-0.5 rounded text-xs">
                           {sector}
                         </span>
                       ))}
@@ -168,21 +168,21 @@ export function ScenarioRiskPanel() {
 
                   {/* Historical analog */}
                   {scenario.historical_analog && (
-                    <div className="text-[10px] text-neutral-400 mb-2">
+                    <div className="text-xs text-neutral-400 mb-2">
                       <span className="text-neutral-500">Analog: </span>{scenario.historical_analog}
                     </div>
                   )}
 
                   {/* Key indicators */}
                   {scenario.key_indicators && scenario.key_indicators.length > 0 && (
-                    <div className="text-[10px] text-neutral-400 mb-1">
+                    <div className="text-xs text-neutral-400 mb-1">
                       <span className="text-neutral-500">Watch: </span>
                       {scenario.key_indicators.slice(0, 2).join(', ')}
                     </div>
                   )}
 
                   {/* Probability and severity */}
-                  <div className="flex items-center justify-between text-[10px]">
+                  <div className="flex items-center justify-between text-xs">
                     <div className="text-neutral-500">
                       Probability: <span className="text-neutral-300">{(scenario.probability * 100).toFixed(0)}%</span>
                     </div>
@@ -205,7 +205,7 @@ export function ScenarioRiskPanel() {
                         {drilldown.transmission_mechanism && (
                           <div>
                             <div className="font-semibold text-neutral-300 mb-1">Transmission Mechanism</div>
-                            <div className="text-neutral-400 text-[11px]">{drilldown.transmission_mechanism}</div>
+                            <div className="text-neutral-400 text-xs">{drilldown.transmission_mechanism}</div>
                           </div>
                         )}
 
@@ -213,7 +213,7 @@ export function ScenarioRiskPanel() {
                         {drilldown.historical_precedent && (
                           <div>
                             <div className="font-semibold text-neutral-300 mb-1">Historical Precedent</div>
-                            <div className="text-neutral-400 text-[11px]">{drilldown.historical_precedent}</div>
+                            <div className="text-neutral-400 text-xs">{drilldown.historical_precedent}</div>
                           </div>
                         )}
 
@@ -221,7 +221,7 @@ export function ScenarioRiskPanel() {
                         {drilldown.portfolio_positioning && (
                           <div>
                             <div className="font-semibold text-neutral-300 mb-1">Positioning Ideas</div>
-                            <ul className="text-neutral-400 text-[11px] list-disc list-inside space-y-0.5">
+                            <ul className="text-neutral-400 text-xs list-disc list-inside space-y-0.5">
                               {(Array.isArray(drilldown.portfolio_positioning)
                                 ? drilldown.portfolio_positioning
                                 : [drilldown.portfolio_positioning]
@@ -236,7 +236,7 @@ export function ScenarioRiskPanel() {
                         {drilldown.leading_indicators && (
                           <div>
                             <div className="font-semibold text-neutral-300 mb-1">Leading Indicators to Watch</div>
-                            <ul className="text-neutral-400 text-[11px] list-disc list-inside space-y-0.5">
+                            <ul className="text-neutral-400 text-xs list-disc list-inside space-y-0.5">
                               {(Array.isArray(drilldown.leading_indicators)
                                 ? drilldown.leading_indicators
                                 : [drilldown.leading_indicators]
@@ -251,7 +251,7 @@ export function ScenarioRiskPanel() {
                         {drilldown.counter_argument && (
                           <div>
                             <div className="font-semibold text-neutral-300 mb-1">Counter Argument</div>
-                            <div className="text-neutral-400 text-[11px] italic">{drilldown.counter_argument}</div>
+                            <div className="text-neutral-400 text-xs italic">{drilldown.counter_argument}</div>
                           </div>
                         )}
                       </div>
@@ -268,10 +268,10 @@ export function ScenarioRiskPanel() {
       {historical_analogs.length > 0 && (
         <div className="border border-neutral-800 rounded overflow-hidden">
           <div className="bg-neutral-900/50 px-3 py-2 border-b border-neutral-800">
-            <h3 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
+            <h3 className="text-xs font-semibold text-neutral-300 tracking-wider">
               Historical Analogs
             </h3>
-            <div className="text-[10px] text-neutral-500 mt-1">
+            <div className="text-xs text-neutral-500 mt-1">
               Similar past periods and subsequent returns
             </div>
           </div>
@@ -279,11 +279,11 @@ export function ScenarioRiskPanel() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-neutral-800 bg-neutral-900/50">
-                  <th className="px-3 py-2 text-left text-[10px] text-neutral-500 font-medium uppercase">Period</th>
-                  <th className="px-3 py-2 text-center text-[10px] text-neutral-500 font-medium uppercase">Similarity</th>
-                  <th className="px-3 py-2 text-right text-[10px] text-neutral-500 font-medium uppercase">5D</th>
-                  <th className="px-3 py-2 text-right text-[10px] text-neutral-500 font-medium uppercase">10D</th>
-                  <th className="px-3 py-2 text-right text-[10px] text-neutral-500 font-medium uppercase">20D</th>
+                  <th className="px-3 py-2 text-left text-xs text-neutral-500 font-medium uppercase">Period</th>
+                  <th className="px-3 py-2 text-center text-xs text-neutral-500 font-medium uppercase">Similarity</th>
+                  <th className="px-3 py-2 text-right text-xs text-neutral-500 font-medium uppercase">5D</th>
+                  <th className="px-3 py-2 text-right text-xs text-neutral-500 font-medium uppercase">10D</th>
+                  <th className="px-3 py-2 text-right text-xs text-neutral-500 font-medium uppercase">20D</th>
                 </tr>
               </thead>
               <tbody>

@@ -27,7 +27,7 @@ function SentimentGauge({ score }: { score: number }) {
     <div className="flex flex-col items-center space-y-2">
       <div className="relative h-20 w-40">
         {/* Gauge background arc */}
-        <svg className="absolute inset-0" viewBox="0 0 200 120">
+        <svg className="absolute inset-0" viewBox="0 0 200 120" role="img" aria-label="Sentiment gauge showing current market sentiment">
           {/* Bearish side (red) */}
           <path
             d="M 30 110 A 80 80 0 0 1 70 20"
@@ -163,7 +163,7 @@ function HeadlinesList({ headlines }: { headlines: any[] }) {
                 {h.sentiment > 0 ? '+' : ''}{h.sentiment.toFixed(2)}
               </span>
             </div>
-            <div className="text-[10px] text-neutral-600">
+            <div className="text-xs text-neutral-500">
               {h.source || h.ticker} • {new Date(h.published_at).toLocaleTimeString()}
             </div>
           </div>
@@ -183,7 +183,7 @@ function SentimentChart({ history }: { history: any[] }) {
   return (
     <div className="space-y-1">
       <span className="text-xs font-medium text-neutral-500">5-Day Trend</span>
-      <svg className="h-12 w-full" viewBox="0 0 200 40">
+      <svg className="h-12 w-full" viewBox="0 0 200 40" role="img" aria-label="Sentiment trend chart showing 5-day history">
         {/* Y-axis reference lines */}
         <line x1="0" y1="20" x2="200" y2="20" stroke="rgb(82 82 91 / 0.3)" strokeWidth="0.5" />
 
@@ -231,7 +231,7 @@ export function SentimentVelocityPanel() {
         <div className="flex flex-col items-center justify-center py-6">
           <div className="text-2xl mb-2 opacity-50">📡</div>
           <div className="text-xs text-neutral-500 text-center">No news articles available</div>
-          <div className="text-[10px] text-neutral-600 mt-1">RSS feeds not returning data</div>
+          <div className="text-xs text-neutral-500 mt-1">RSS feeds not returning data</div>
         </div>
       </div>
     );
@@ -244,10 +244,10 @@ export function SentimentVelocityPanel() {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium uppercase text-neutral-400">News Sentiment Velocity</span>
           {data.scoring_model && data.scoring_model.includes('finbert') && (
-            <span className="rounded bg-indigo-900/40 px-1.5 py-0.5 text-[10px] font-medium text-indigo-400">FinBERT</span>
+            <span className="rounded bg-indigo-900/40 px-1.5 py-0.5 text-xs font-medium text-indigo-400">FinBERT</span>
           )}
         </div>
-        <span className="text-[10px] text-neutral-600">
+        <span className="text-xs text-neutral-500">
           {new Date(data.timestamp).toLocaleTimeString()}
         </span>
       </div>
@@ -269,7 +269,7 @@ export function SentimentVelocityPanel() {
               );
             })()}
           </div>
-          <div className="flex justify-between text-[10px] text-neutral-500">
+          <div className="flex justify-between text-xs text-neutral-500">
             <span className="text-green-400">{data.sentiment_distribution.positive} positive</span>
             <span>{data.sentiment_distribution.neutral} neutral</span>
             <span className="text-red-400">{data.sentiment_distribution.negative} negative</span>

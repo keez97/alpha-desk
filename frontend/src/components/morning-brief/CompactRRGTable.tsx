@@ -75,11 +75,11 @@ function ColumnConfig({
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
       <div className="absolute right-0 top-6 z-50 bg-neutral-900 border border-neutral-700 rounded shadow-xl py-1 min-w-[140px]">
-        <div className="text-[8px] text-neutral-500 px-2 py-1 uppercase tracking-wider">Columns</div>
+        <div className="text-xs text-neutral-500 px-2 py-1 uppercase tracking-wider">Columns</div>
         {ALL_COLUMNS.map(col => (
           <label
             key={col.key}
-            className="flex items-center gap-2 px-2 py-1 hover:bg-neutral-800/50 cursor-pointer text-[9px] text-neutral-300"
+            className="flex items-center gap-2 px-2 py-1 hover:bg-neutral-800/50 cursor-pointer text-xs text-neutral-300"
           >
             <input
               type="checkbox"
@@ -114,13 +114,13 @@ function CompactSortHeader({
   const isActive = currentKey === sortKey;
   return (
     <th
-      className="px-1.5 py-1 text-[8px] text-neutral-500 font-medium uppercase tracking-wider cursor-pointer hover:text-neutral-300 select-none transition-colors whitespace-nowrap"
+      className="px-1.5 py-1 text-xs text-neutral-500 font-medium uppercase tracking-wider cursor-pointer hover:text-neutral-300 select-none transition-colors whitespace-nowrap"
       onClick={() => onClick(sortKey)}
     >
       <span className="inline-flex items-center gap-0.5">
         {label}
         {isActive && (
-          <span className="text-neutral-400 text-[7px]">{direction === 'asc' ? '▲' : '▼'}</span>
+          <span className="text-neutral-400 text-xs">{direction === 'asc' ? '▲' : '▼'}</span>
         )}
       </span>
     </th>
@@ -190,17 +190,17 @@ export function CompactRRGTable() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[9px] text-neutral-500 font-medium">Sector RRG</span>
+          <span className="text-xs text-neutral-500 font-medium">Sector RRG</span>
           <div className="flex gap-px">
             {(['1D', '5D', '1M', '3M'] as const).map(p => (
               <button
                 key={p}
                 onClick={() => setPeriod(p)}
                 className={classNames(
-                  'px-1.5 py-0.5 rounded text-[8px] font-medium transition-colors',
+                  'px-1.5 py-0.5 rounded text-xs font-medium transition-colors',
                   period === p
                     ? 'bg-neutral-700 text-neutral-200'
-                    : 'text-neutral-600 hover:text-neutral-400'
+                    : 'text-neutral-500 hover:text-neutral-400'
                 )}
               >
                 {p}
@@ -212,7 +212,7 @@ export function CompactRRGTable() {
           {/* Column config toggle */}
           <button
             onClick={() => setShowConfig(!showConfig)}
-            className="text-neutral-600 hover:text-neutral-400 transition-colors p-0.5"
+            className="text-neutral-500 hover:text-neutral-400 transition-colors p-0.5"
             title="Configure columns"
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -222,7 +222,7 @@ export function CompactRRGTable() {
           </button>
           {/* Pop-out placeholder */}
           <button
-            className="text-neutral-600 hover:text-neutral-400 transition-colors p-0.5"
+            className="text-neutral-500 hover:text-neutral-400 transition-colors p-0.5"
             title="Expand (coming soon)"
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -243,12 +243,12 @@ export function CompactRRGTable() {
       {isLoading && (
         <div className="flex items-center gap-2 py-2">
           <div className="w-2.5 h-2.5 border border-blue-400/50 border-t-blue-400 rounded-full animate-spin" />
-          <span className="text-[8px] text-neutral-500 italic">Loading sectors...</span>
+          <span className="text-xs text-neutral-500 italic">Loading sectors...</span>
         </div>
       )}
 
       {error && !isLoading && (
-        <div className="text-[8px] text-red-400/70 py-1">Failed to load sector data</div>
+        <div className="text-xs text-red-400/70 py-1">Failed to load sector data</div>
       )}
 
       {/* Table */}
@@ -270,7 +270,7 @@ export function CompactRRGTable() {
                   ) : (
                     <th
                       key={col.key}
-                      className="px-1.5 py-1 text-[8px] text-neutral-500 font-medium uppercase tracking-wider text-center whitespace-nowrap"
+                      className="px-1.5 py-1 text-xs text-neutral-500 font-medium uppercase tracking-wider text-center whitespace-nowrap"
                     >
                       {col.shortLabel}
                     </th>
@@ -309,13 +309,13 @@ function CellRenderer({ column, sector }: { column: ColumnKey; sector: EnhancedS
   switch (column) {
     case 'ticker':
       return (
-        <td className="px-1.5 py-1 font-mono text-[9px] font-bold text-neutral-200">
+        <td className="px-1.5 py-1 font-mono text-xs font-bold text-neutral-200">
           {sector.ticker}
         </td>
       );
     case 'price':
       return (
-        <td className="px-1.5 py-1 text-right font-mono text-[8px] text-neutral-300">
+        <td className="px-1.5 py-1 text-right font-mono text-xs text-neutral-300">
           {formatCurrency(sector.price)}
         </td>
       );
@@ -323,7 +323,7 @@ function CellRenderer({ column, sector }: { column: ColumnKey; sector: EnhancedS
       return (
         <td className="px-1.5 py-1 text-right">
           <span className={classNames(
-            'font-mono text-[8px] font-medium',
+            'font-mono text-xs font-medium',
             sector.changePercent > 0 ? 'text-emerald-400' : sector.changePercent < 0 ? 'text-red-400' : 'text-neutral-400'
           )}>
             {sector.changePercent > 0 ? '+' : ''}{sector.changePercent.toFixed(2)}%
@@ -335,7 +335,7 @@ function CellRenderer({ column, sector }: { column: ColumnKey; sector: EnhancedS
       const abbr = QUADRANT_ABBR[sector.quadrant] || sector.quadrant;
       return (
         <td className="px-1.5 py-1 text-center">
-          <span className={classNames('inline-block px-1.5 py-px rounded-full text-[7px] font-medium whitespace-nowrap', colors)}>
+          <span className={classNames('inline-block px-1.5 py-px rounded-full text-xs font-medium whitespace-nowrap', colors)}>
             {abbr}
           </span>
         </td>
@@ -344,7 +344,7 @@ function CellRenderer({ column, sector }: { column: ColumnKey; sector: EnhancedS
     case 'rsRatio':
       return (
         <td className={classNames(
-          'px-1.5 py-1 text-right font-mono text-[8px]',
+          'px-1.5 py-1 text-right font-mono text-xs',
           sector.rsRatio > 100 ? 'text-green-400' : 'text-red-400'
         )}>
           {sector.rsRatio.toFixed(1)}
@@ -353,7 +353,7 @@ function CellRenderer({ column, sector }: { column: ColumnKey; sector: EnhancedS
     case 'rsMomentum':
       return (
         <td className={classNames(
-          'px-1.5 py-1 text-right font-mono text-[8px]',
+          'px-1.5 py-1 text-right font-mono text-xs',
           getMomentumColor(sector.rsMomentum)
         )}>
           {sector.rsMomentum > 0 ? '+' : ''}{sector.rsMomentum.toFixed(2)}
@@ -363,26 +363,26 @@ function CellRenderer({ column, sector }: { column: ColumnKey; sector: EnhancedS
       return (
         <td className="px-1.5 py-1 text-center">
           <span className={classNames(
-            'text-[9px] font-medium',
+            'text-xs font-medium',
             sector.rsTrend === 'up' ? 'text-green-400' : 'text-red-400'
           )}>
             {sector.rsTrend === 'up' ? '↑' : '↓'}
           </span>
-          <span className="text-neutral-600 text-[7px] ml-0.5">
+          <span className="text-neutral-500 text-xs ml-0.5">
             {sector.rotationDirection === 'clockwise' ? '↻' : '↺'}
           </span>
         </td>
       );
     case 'tailLength':
       return (
-        <td className="px-1.5 py-1 text-right font-mono text-[8px] text-neutral-400">
+        <td className="px-1.5 py-1 text-right font-mono text-xs text-neutral-400">
           {sector.tailLength.toFixed(1)}
         </td>
       );
     case 'quadrantAge':
       return (
         <td className="px-1.5 py-1 text-center">
-          <span className="text-[7px] px-1 py-px rounded bg-neutral-800/60 text-neutral-400 font-mono">
+          <span className="text-xs px-1 py-px rounded bg-neutral-800/60 text-neutral-400 font-mono">
             {sector.quadrantAge}w
           </span>
         </td>

@@ -17,7 +17,7 @@ function ADBar({ advances, declines, total }: { advances: number; declines: numb
   const decPct = (declines / total) * 100;
   return (
     <div className="space-y-1">
-      <div className="flex justify-between text-[10px]">
+      <div className="flex justify-between text-xs">
         <span className="text-green-400">{advances} Advancing</span>
         <span className="text-red-400">{declines} Declining</span>
       </div>
@@ -33,9 +33,9 @@ function ADBar({ advances, declines, total }: { advances: number; declines: numb
 function MetricBox({ label, value, subtext, color }: { label: string; value: string; subtext?: string; color?: string }) {
   return (
     <div className="text-center">
-      <span className="text-[10px] text-neutral-500 block">{label}</span>
+      <span className="text-xs text-neutral-500 block">{label}</span>
       <span className={`text-sm font-mono font-medium ${color || 'text-neutral-200'}`}>{value}</span>
-      {subtext && <span className="text-[9px] text-neutral-600 block">{subtext}</span>}
+      {subtext && <span className="text-xs text-neutral-500 block">{subtext}</span>}
     </div>
   );
 }
@@ -55,7 +55,7 @@ export function BreadthPanel() {
     <div className={`border border-neutral-800 rounded p-3 ${signal.bg}`}>
       <div className="flex items-center justify-between mb-2.5">
         <span className="text-xs font-medium text-neutral-300">Market Breadth</span>
-        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${signal.text} bg-neutral-900/50`}>
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${signal.text} bg-neutral-900/50`}>
           {signal.label}
         </span>
       </div>
@@ -88,7 +88,7 @@ export function BreadthPanel() {
         />
       </div>
 
-      <div className="mt-2 text-[9px] text-neutral-600 text-right">
+      <div className="mt-2 text-xs text-neutral-500 text-right">
         Based on {data.sampleSize} S&P 500 components
       </div>
     </div>

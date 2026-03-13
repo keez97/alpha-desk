@@ -81,7 +81,7 @@ function SignalTooltip({ text, x, y }: { text: string; x: number; y: number }) {
       className="fixed z-[9999] w-56 px-2.5 py-2 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl pointer-events-none"
       style={{ left: x + 12, top: y - 8 }}
     >
-      <div className="text-[9px] text-neutral-300 leading-snug">{text}</div>
+      <div className="text-xs text-neutral-300 leading-snug">{text}</div>
     </div>
   );
 }
@@ -102,7 +102,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
     <div className="group">
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-1.5 text-[10px] hover:bg-neutral-800/50 rounded px-1 py-0.5 transition-colors cursor-pointer"
+        className="w-full flex items-center gap-1.5 text-xs hover:bg-neutral-800/50 rounded px-1 py-0.5 transition-colors cursor-pointer"
       >
         <span className="text-neutral-500 w-[62px] text-left truncate">{LAYER_LABELS[name] || name}</span>
         <div className="flex-1 h-1.5 rounded-full bg-neutral-800 overflow-hidden relative">
@@ -118,8 +118,8 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
         <span className={`font-mono w-8 text-right ${score > 0 ? 'text-green-400' : score < 0 ? 'text-red-400' : 'text-neutral-500'}`}>
           {score > 0 ? '+' : ''}{score.toFixed(1)}
         </span>
-        <span className="text-neutral-600 w-4 text-right">{weight}%</span>
-        <span className={`text-neutral-600 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>›</span>
+        <span className="text-neutral-500 w-4 text-right">{weight}%</span>
+        <span className={`text-neutral-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}>›</span>
       </button>
       {isExpanded && (
         <div className="ml-2 mt-0.5 mb-1 pl-2 border-l border-neutral-800 space-y-0.5">
@@ -129,7 +129,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
               return (
                 <div
                   key={i}
-                  className="flex items-center gap-1.5 text-[9px]"
+                  className="flex items-center gap-1.5 text-xs"
                 >
                   <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${BIAS_DOT[sig.bias] || BIAS_DOT.neutral}`} />
                   <span
@@ -151,7 +151,7 @@ function LayerBar({ name, layer, isExpanded, onToggle }: {
               );
             })
           ) : (
-            <div className="text-[8px] text-neutral-600 italic py-0.5">No individual signals</div>
+            <div className="text-xs text-neutral-500 italic py-0.5">No individual signals</div>
           )}
         </div>
       )}
@@ -173,7 +173,7 @@ function CompositeGauge({ score, regime }: { score: number; regime: string }) {
             style={{ left: `calc(${pct}% - 3px)` }}
           />
         </div>
-        <div className="flex justify-between text-[8px] text-neutral-600 mt-0.5">
+        <div className="flex justify-between text-xs text-neutral-500 mt-0.5">
           <span>Bear</span>
           <span>Neutral</span>
           <span>Bull</span>
@@ -192,8 +192,8 @@ function WindhamBadge({ windham }: { windham: UpgradedRegimeData['windham'] }) {
     <div className={`${ws.bg} border border-neutral-800/50 rounded px-2 py-1 flex items-center gap-1.5`}>
       <span className="text-xs">{ws.icon}</span>
       <div className="min-w-0">
-        <div className={`text-[10px] font-bold ${ws.text} leading-tight`}>{windham.label}</div>
-        <div className="text-[8px] text-neutral-500 leading-tight truncate">{windham.state}</div>
+        <div className={`text-xs font-bold ${ws.text} leading-tight`}>{windham.label}</div>
+        <div className="text-xs text-neutral-500 leading-tight truncate">{windham.state}</div>
       </div>
     </div>
   );
@@ -238,14 +238,14 @@ function AIMarketInsight() {
     return (
       <div className="flex items-center gap-2 py-1">
         <div className="w-3 h-3 border border-blue-400/50 border-t-blue-400 rounded-full animate-spin" />
-        <span className="text-[9px] text-neutral-500 italic">Generating AI market assessment...</span>
+        <span className="text-xs text-neutral-500 italic">Generating AI market assessment...</span>
       </div>
     );
   }
 
   if (insight.error || !insight.data) {
     return (
-      <div className="text-[9px] text-neutral-600 italic py-1">
+      <div className="text-xs text-neutral-500 italic py-1">
         AI insight unavailable — see factor signals above
       </div>
     );
@@ -262,7 +262,7 @@ function AIMarketInsight() {
     <div className="space-y-2">
       {/* Row 1: Stance badge + factor dots */}
       <div className="flex items-center gap-2">
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 ${stanceColor}`}>
+        <span className={`text-xs font-bold px-2 py-0.5 rounded border shrink-0 ${stanceColor}`}>
           {d.stance}
         </span>
         {d.factors.length > 0 && (
@@ -270,8 +270,8 @@ function AIMarketInsight() {
             {d.factors.map(f => (
               <div key={f.label} className="flex items-center gap-0.5">
                 <InsightFactorDot bias={f.bias} />
-                <span className="text-[8px] text-neutral-500">{f.label}</span>
-                <span className={`text-[8px] font-mono ${
+                <span className="text-xs text-neutral-500">{f.label}</span>
+                <span className={`text-xs font-mono ${
                   f.bias === 'bull' ? 'text-green-400' : f.bias === 'bear' ? 'text-red-400' : 'text-neutral-400'
                 }`}>
                   {f.assessment}
@@ -283,7 +283,7 @@ function AIMarketInsight() {
       </div>
 
       {/* Row 2: Narrative */}
-      <div className="text-[10px] text-neutral-300 leading-relaxed">
+      <div className="text-xs text-neutral-300 leading-relaxed">
         {d.narrative}
       </div>
 
@@ -293,11 +293,11 @@ function AIMarketInsight() {
           {d.divergences.map((div, i) => (
             <div key={i} className="rounded border border-amber-800/30 bg-amber-900/10 px-2 py-1.5">
               <div className="flex items-center gap-1.5 mb-0.5">
-                <span className="text-amber-400 text-[9px]">⚡</span>
-                <span className="text-[9px] font-bold text-amber-300">{div.title}</span>
+                <span className="text-amber-400 text-xs">⚡</span>
+                <span className="text-xs font-bold text-amber-300">{div.title}</span>
               </div>
-              <div className="text-[9px] text-neutral-400 leading-relaxed">{div.explanation}</div>
-              <div className="text-[9px] text-neutral-500 mt-0.5 italic">
+              <div className="text-xs text-neutral-400 leading-relaxed">{div.explanation}</div>
+              <div className="text-xs text-neutral-500 mt-0.5 italic">
                 Resolution: {div.resolution}
               </div>
             </div>
@@ -308,11 +308,11 @@ function AIMarketInsight() {
       {/* Row 4: Watch Signal */}
       {d.watch_signal && d.watch_signal.metric && (
         <div className="flex items-start gap-2 rounded border border-blue-800/30 bg-blue-900/10 px-2 py-1.5">
-          <span className="text-blue-400 text-[9px] mt-0.5 shrink-0">👁</span>
+          <span className="text-blue-400 text-xs mt-0.5 shrink-0">👁</span>
           <div className="min-w-0">
-            <div className="text-[9px] text-blue-300 font-mono font-bold">{d.watch_signal.metric}</div>
-            <div className="text-[9px] text-neutral-400">{d.watch_signal.trigger}</div>
-            <div className="text-[8px] text-neutral-500 mt-0.5">{d.watch_signal.timeframe}</div>
+            <div className="text-xs text-blue-300 font-mono font-bold">{d.watch_signal.metric}</div>
+            <div className="text-xs text-neutral-400">{d.watch_signal.trigger}</div>
+            <div className="text-xs text-neutral-500 mt-0.5">{d.watch_signal.timeframe}</div>
           </div>
         </div>
       )}
@@ -326,7 +326,7 @@ function ADBar({ advances, declines, total }: { advances: number; declines: numb
   const decPct = (declines / total) * 100;
   return (
     <div className="space-y-0.5">
-      <div className="flex justify-between text-[9px]">
+      <div className="flex justify-between text-xs">
         <span className="text-green-400">{advances} Advancing</span>
         <span className="text-red-400">{declines} Declining</span>
       </div>
@@ -388,7 +388,7 @@ export function MarketRegimeCard() {
         <div className="flex items-center gap-3">
           <span className="text-xs font-semibold text-neutral-300">Market Regime</span>
           {r && (
-            <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold ${style.text} bg-neutral-900/60`}>
+            <span className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${style.text} bg-neutral-900/60`}>
               {style.label} {r.confidence}%
             </span>
           )}
@@ -407,10 +407,10 @@ export function MarketRegimeCard() {
 
           {/* Expand all / Collapse all toggle */}
           <div className="flex items-center justify-between">
-            <span className="text-[9px] text-neutral-500 font-medium">6 Layers</span>
+            <span className="text-xs text-neutral-500 font-medium">6 Layers</span>
             <button
               onClick={toggleAll}
-              className="text-[8px] text-blue-400 hover:text-blue-300 cursor-pointer"
+              className="text-xs text-blue-400 hover:text-blue-300 cursor-pointer"
             >
               {allExpanded ? 'Collapse all' : 'Expand all'}
             </button>
@@ -438,7 +438,7 @@ export function MarketRegimeCard() {
         {/* ─── Col 2: VIX Structure — Gauge + Term Curve + Signal (2 cols) ─── */}
         <div className="col-span-2 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[9px] text-neutral-500 font-medium">VIX Structure</span>
+            <span className="text-xs text-neutral-500 font-medium">VIX Structure</span>
           </div>
 
           {v && (() => {
@@ -484,7 +484,7 @@ export function MarketRegimeCard() {
                 <div className="space-y-0.5">
                   <div className="flex items-baseline justify-between">
                     <span className={`text-lg font-mono font-bold ${z.textColor}`}>{spot.toFixed(1)}</span>
-                    <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${z.color}/20 ${z.textColor}`}>{z.label}</span>
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${z.color}/20 ${z.textColor}`}>{z.label}</span>
                   </div>
                   {/* Zone bar gauge */}
                   <div className="relative h-2 rounded-full overflow-hidden bg-neutral-800">
@@ -502,7 +502,7 @@ export function MarketRegimeCard() {
                       style={{ left: `calc(${gaugePos}% - 2px)` }}
                     />
                   </div>
-                  <div className="flex justify-between text-[6px] text-neutral-600">
+                  <div className="flex justify-between text-xs text-neutral-500">
                     <span>10</span><span>20</span><span>30</span><span>50</span>
                   </div>
                 </div>
@@ -510,63 +510,63 @@ export function MarketRegimeCard() {
                 {/* Term Structure Mini Curve */}
                 <div className="bg-neutral-900/40 rounded p-1.5">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[7px] text-neutral-500">Term Structure</span>
-                    <span className={`text-[8px] font-bold ${v.state === 'contango' ? 'text-green-400' : 'text-red-400'}`}>
+                    <span className="text-xs text-neutral-500">Term Structure</span>
+                    <span className={`text-xs font-bold ${v.state === 'contango' ? 'text-green-400' : 'text-red-400'}`}>
                       {v.state === 'contango' ? 'Contango' : 'Backwrdtn'} {v.magnitude.toFixed(1)}%
                     </span>
                   </div>
                   {/* Visual: Spot vs 3M comparison */}
                   <div className="flex items-end gap-2 h-8">
                     <div className="flex-1 flex flex-col items-center">
-                      <div className="text-[7px] text-neutral-500 mb-0.5">Spot</div>
+                      <div className="text-xs text-neutral-500 mb-0.5">Spot</div>
                       <div
                         className={`w-full rounded-t-sm ${v.state === 'contango' ? 'bg-blue-500/50' : 'bg-red-500/50'}`}
                         style={{ height: `${Math.max(20, (spot / Math.max(spot, v.vix3m)) * 100)}%` }}
                       />
-                      <div className="text-[8px] font-mono font-bold text-neutral-200 mt-0.5">{spot.toFixed(1)}</div>
+                      <div className="text-xs font-mono font-bold text-neutral-200 mt-0.5">{spot.toFixed(1)}</div>
                     </div>
                     <div className="flex-1 flex flex-col items-center">
-                      <div className="text-[7px] text-neutral-500 mb-0.5">3M</div>
+                      <div className="text-xs text-neutral-500 mb-0.5">3M</div>
                       <div
                         className={`w-full rounded-t-sm ${v.state === 'contango' ? 'bg-blue-500/30' : 'bg-red-500/30'}`}
                         style={{ height: `${Math.max(20, (v.vix3m / Math.max(spot, v.vix3m)) * 100)}%` }}
                       />
-                      <div className="text-[8px] font-mono font-bold text-neutral-300 mt-0.5">{v.vix3m.toFixed(1)}</div>
+                      <div className="text-xs font-mono font-bold text-neutral-300 mt-0.5">{v.vix3m.toFixed(1)}</div>
                     </div>
                   </div>
                 </div>
 
                 {/* Percentile */}
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[7px] text-neutral-500 shrink-0">1Y %ile</span>
+                  <span className="text-xs text-neutral-500 shrink-0">1Y %ile</span>
                   <div className="flex-1 h-1 rounded-full bg-neutral-800 overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all ${v.percentile > 75 ? 'bg-red-500' : v.percentile < 25 ? 'bg-green-500' : 'bg-yellow-500'}`}
                       style={{ width: `${v.percentile}%` }}
                     />
                   </div>
-                  <span className={`text-[7px] font-mono ${v.percentile > 75 ? 'text-red-400' : v.percentile < 25 ? 'text-green-400' : 'text-yellow-400'}`}>
+                  <span className={`text-xs font-mono ${v.percentile > 75 ? 'text-red-400' : v.percentile < 25 ? 'text-green-400' : 'text-yellow-400'}`}>
                     {v.percentile}th
                   </span>
                 </div>
 
                 {/* One-line Signal Interpretation */}
                 <div className="bg-neutral-900/60 rounded px-1.5 py-1 border-l-2 border-blue-500/50">
-                  <div className="text-[8px] text-neutral-300 leading-snug italic">{signalText}</div>
+                  <div className="text-xs text-neutral-300 leading-snug italic">{signalText}</div>
                 </div>
               </>
             );
           })()}
 
-          {!v && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
+          {!v && <div className="text-xs text-neutral-500 py-4 text-center">Loading...</div>}
         </div>
 
         {/* ─── Col 3: Overnight Gaps — Vertical Bar Chart (3 cols) ─── */}
         <div className="col-span-3 p-2.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[9px] text-neutral-500 font-medium">Overnight Gaps</span>
+            <span className="text-xs text-neutral-500 font-medium">Overnight Gaps</span>
             {g && (
-              <span className={`text-[8px] font-mono px-1 py-0.5 rounded-full bg-neutral-900/50 ${
+              <span className={`text-xs font-mono px-1 py-0.5 rounded-full bg-neutral-900/50 ${
                 g.summary.net_direction === 'up' ? 'text-emerald-400' : g.summary.net_direction === 'down' ? 'text-red-400' : 'text-neutral-400'
               }`}>
                 {g.summary.gaps_up}↑ {g.summary.gaps_down}↓
@@ -606,7 +606,7 @@ export function MarketRegimeCard() {
                       style={{ height: '100%' }}
                     >
                       {/* Percentage label above bar */}
-                      <div className={`text-[7px] font-mono font-bold mb-0.5 leading-none ${
+                      <div className={`text-xs font-mono font-bold mb-0.5 leading-none ${
                         pct >= 0 ? 'text-emerald-400' : 'text-red-400'
                       }`}>
                         {pct > 0 ? '+' : ''}{pct.toFixed(1)}
@@ -626,7 +626,7 @@ export function MarketRegimeCard() {
                         }${item.last_price > 0 ? ` | $${item.last_price.toFixed(0)}` : ''}`}
                       />
                       {/* Ticker label below bar */}
-                      <div className="text-[6px] font-mono text-neutral-400 mt-0.5 leading-none truncate w-full text-center">
+                      <div className="text-xs font-mono text-neutral-400 mt-0.5 leading-none truncate w-full text-center">
                         {item.ticker}
                       </div>
                     </div>
@@ -636,15 +636,15 @@ export function MarketRegimeCard() {
             );
           })()}
 
-          {!g && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
+          {!g && <div className="text-xs text-neutral-500 py-4 text-center">Loading...</div>}
         </div>
 
         {/* ─── Col 4: Market Breadth (2 cols) ─── */}
         <div className="col-span-2 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[9px] text-neutral-500 font-medium">Market Breadth</span>
+            <span className="text-xs text-neutral-500 font-medium">Market Breadth</span>
             {b && (
-              <span className={`text-[8px] px-1 py-0.5 rounded-full font-medium bg-neutral-900/50 ${
+              <span className={`text-xs px-1 py-0.5 rounded-full font-medium bg-neutral-900/50 ${
                 b.signal.includes('bull') ? 'text-green-400' : b.signal.includes('bear') ? 'text-red-400' : 'text-neutral-400'
               }`}>
                 {b.signal.includes('strongly') ? (b.signal.includes('bull') ? 'Strong Bull' : 'Strong Bear')
@@ -654,22 +654,24 @@ export function MarketRegimeCard() {
             )}
           </div>
 
-          {b && b.total > 0 && (
+          {b && (
             <>
-              <ADBar advances={b.advances} declines={b.declines} total={b.total} />
+              {b.total > 0 && (
+                <>
+                  <ADBar advances={b.advances} declines={b.declines} total={b.total} />
 
-              <div className="grid grid-cols-2 gap-1.5">
+                  <div className="grid grid-cols-2 gap-1.5">
                 <div className="bg-neutral-900/50 rounded p-1 text-center">
-                  <div className="text-[7px] text-neutral-500">A/D Ratio</div>
+                  <div className="text-xs text-neutral-500">A/D Ratio</div>
                   <div className={`text-xs font-mono font-bold ${
                     b.adRatio > 1.5 ? 'text-green-400' : b.adRatio < 0.67 ? 'text-red-400' : 'text-neutral-300'
                   }`}>
                     {b.adRatio.toFixed(2)}
                   </div>
-                  <div className="text-[7px] text-neutral-600">{b.adRatio > 1 ? 'net adv.' : 'net dec.'}</div>
+                  <div className="text-xs text-neutral-500">{b.adRatio > 1 ? 'net adv.' : 'net dec.'}</div>
                 </div>
                 <div className="bg-neutral-900/50 rounded p-1 text-center">
-                  <div className="text-[7px] text-neutral-500">Net Adv</div>
+                  <div className="text-xs text-neutral-500">Net Adv</div>
                   <div className={`text-xs font-mono font-bold ${b.netAdvances > 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {b.netAdvances > 0 ? '+' : ''}{b.netAdvances}
                   </div>
@@ -678,28 +680,37 @@ export function MarketRegimeCard() {
 
               <div className="grid grid-cols-2 gap-1.5">
                 <div className="bg-neutral-900/50 rounded p-1 text-center">
-                  <div className="text-[7px] text-neutral-500">McClellan</div>
+                  <div className="text-xs text-neutral-500">McClellan</div>
                   <div className={`text-xs font-mono font-bold ${b.mcclellan > 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {b.mcclellan.toFixed(1)}
                   </div>
-                  <div className="text-[7px] text-neutral-600">{b.mcclellan > 0 ? 'positive' : 'negative'}</div>
+                  <div className="text-xs text-neutral-500">{b.mcclellan > 0 ? 'positive' : 'negative'}</div>
                 </div>
                 <div className="bg-neutral-900/50 rounded p-1 text-center">
-                  <div className="text-[7px] text-neutral-500">Thrust</div>
+                  <div className="text-xs text-neutral-500">Thrust</div>
                   <div className={`text-xs font-mono font-bold ${b.breadthThrust ? 'text-green-400' : 'text-neutral-500'}`}>
                     {b.breadthThrust ? 'YES' : 'No'}
                   </div>
-                  <div className="text-[7px] text-neutral-600">{b.pctAdvancing.toFixed(0)}% adv.</div>
+                  <div className="text-xs text-neutral-500">{b.pctAdvancing.toFixed(0)}% adv.</div>
                 </div>
               </div>
+                </>
+              )}
 
-              <div className="text-[7px] text-neutral-600 text-right">
+              {b.total === 0 && (
+                <div className="flex flex-col items-center justify-center py-4 text-center">
+                  <span className="text-xs text-neutral-500">Markets Closed</span>
+                  <span className="text-xs text-neutral-500 mt-1">Breadth updates during trading hours</span>
+                </div>
+              )}
+
+              {b.total > 0 && <div className="text-xs text-neutral-500 text-right">
                 Based on {b.sampleSize} S&P 500 components
-              </div>
+              </div>}
             </>
           )}
 
-          {!b && <div className="text-[9px] text-neutral-600 py-4 text-center">Loading...</div>}
+          {!b && <div className="text-xs text-neutral-500 py-4 text-center">Loading...</div>}
         </div>
       </div>
 

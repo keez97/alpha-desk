@@ -27,11 +27,11 @@ function MetricBox({
 }) {
   return (
     <div className="text-center">
-      <span className="text-[10px] text-neutral-500 block mb-0.5">{label}</span>
+      <span className="text-xs text-neutral-500 block mb-0.5">{label}</span>
       <span className={`text-sm font-mono font-medium ${color || 'text-neutral-200'}`}>
         {value}
       </span>
-      {unit && <span className="text-[9px] text-neutral-600 block">{unit}</span>}
+      {unit && <span className="text-xs text-neutral-500 block">{unit}</span>}
     </div>
   );
 }
@@ -45,7 +45,7 @@ function PutCallRatioBar({ ratio }: { ratio: number }) {
 
   return (
     <div className="space-y-1">
-      <div className="flex justify-between text-[10px]">
+      <div className="flex justify-between text-xs">
         <span className="text-green-400">Calls</span>
         <span className="text-red-400">Puts</span>
       </div>
@@ -56,7 +56,7 @@ function PutCallRatioBar({ ratio }: { ratio: number }) {
         />
         <div className="bg-neutral-700 h-full flex-1" />
       </div>
-      <div className="text-center text-[9px] text-neutral-400">{label}</div>
+      <div className="text-center text-xs text-neutral-400">{label}</div>
     </div>
   );
 }
@@ -70,9 +70,9 @@ function IVSkewIndicator({ skew }: { skew: number }) {
 
   return (
     <div className="space-y-1">
-      <span className="text-[10px] text-neutral-500 block">IV Skew</span>
+      <span className="text-xs text-neutral-500 block">IV Skew</span>
       <div className={`text-sm font-mono font-medium ${color}`}>{label}</div>
-      <div className="text-[9px] text-neutral-600">{skew > 0 ? '+' : ''}{skew.toFixed(2)}</div>
+      <div className="text-xs text-neutral-500">{skew > 0 ? '+' : ''}{skew.toFixed(2)}</div>
     </div>
   );
 }
@@ -91,10 +91,10 @@ export function OptionsFlowPanel() {
     <div className={`border border-neutral-800 rounded p-3 ${signal.bg}`}>
       <div className="flex items-center justify-between mb-2.5">
         <div>
-          <span className="text-xs font-medium text-neutral-300 block">Options Flow</span>
-          <span className="text-[9px] text-neutral-500">{data.ticker}</span>
+          <span className="text-xs font-semibold text-neutral-200 block">Options Flow</span>
+          <span className="text-xs text-neutral-500">{data.ticker}</span>
         </div>
-        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${signal.text} bg-neutral-900/50`}>
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${signal.text} bg-neutral-900/50`}>
           {signal.label}
         </span>
       </div>
@@ -119,16 +119,16 @@ export function OptionsFlowPanel() {
           color={data.volume_imbalance > 1 ? 'text-green-300' : 'text-red-300'}
         />
         <div className={`rounded p-1.5 text-center ${gexColor.bg}`}>
-          <span className="text-[10px] text-neutral-500 block">GEX</span>
+          <span className="text-xs text-neutral-500 block">GEX</span>
           <span className={`text-sm font-mono font-medium ${gexColor.text}`}>
             {data.gex_signal === 'positive' ? '+' : data.gex_signal === 'negative' ? '−' : '•'}
           </span>
-          <span className="text-[8px] text-neutral-600 block">{Math.abs(data.gex_value) >= 1e6 ? `${(data.gex_value / 1e6).toFixed(1)}M` : data.gex_value.toFixed(0)}</span>
+          <span className="text-xs text-neutral-500 block">{Math.abs(data.gex_value) >= 1e6 ? `${(data.gex_value / 1e6).toFixed(1)}M` : data.gex_value.toFixed(0)}</span>
         </div>
       </div>
 
       {/* Volume Stats */}
-      <div className="grid grid-cols-2 gap-2 mb-2 text-[9px]">
+      <div className="grid grid-cols-2 gap-2 mb-2 text-xs">
         <div className="text-center">
           <span className="text-neutral-500 block">Call Volume</span>
           <span className="text-green-300 font-mono">{(data.total_call_volume / 1e6).toFixed(1)}M</span>
@@ -143,7 +143,7 @@ export function OptionsFlowPanel() {
       {data.details && data.details.length > 0 && (
         <div className="mt-2 pt-2 border-t border-neutral-800 space-y-1">
           {data.details.map((detail, idx) => (
-            <div key={idx} className="text-[8px] text-neutral-500">
+            <div key={idx} className="text-xs text-neutral-500">
               • {detail}
             </div>
           ))}
@@ -151,7 +151,7 @@ export function OptionsFlowPanel() {
       )}
 
       {/* Expiry */}
-      <div className="mt-2 text-[8px] text-neutral-600 text-right">
+      <div className="mt-2 text-xs text-neutral-500 text-right">
         {data.expiry && `Expiry: ${data.expiry}`}
       </div>
     </div>

@@ -106,7 +106,7 @@ export function SectorChart() {
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
                 period === p
                   ? 'bg-neutral-700 text-white'
                   : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800'
@@ -127,9 +127,9 @@ export function SectorChart() {
             <button
               key={s.ticker}
               onClick={() => toggleSector(s.ticker)}
-              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition-all border ${
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-all border ${
                 isHidden
-                  ? 'border-neutral-800 text-neutral-600 opacity-50'
+                  ? 'border-neutral-800 text-neutral-500 opacity-50'
                   : 'border-neutral-700 text-neutral-300'
               }`}
               title={`Click to ${isHidden ? 'show' : 'hide'} ${s.name}`}
@@ -144,7 +144,7 @@ export function SectorChart() {
         })}
       </div>
 
-      <div className="h-80 w-full">
+      <div className="h-80 w-full" role="img" aria-label="Sector performance chart showing multiple sector price movements">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1f1f1f" />

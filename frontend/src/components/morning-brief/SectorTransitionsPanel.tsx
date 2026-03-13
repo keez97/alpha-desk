@@ -49,12 +49,12 @@ export function SectorTransitionsPanel() {
         </h3>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <div className="text-[10px] text-neutral-500 uppercase mb-1">Favorable</div>
+            <div className="text-xs text-neutral-500 uppercase mb-1">Favorable</div>
             <div className="flex flex-wrap gap-1">
               {cycle_overlay.favorable_sectors.map((sector) => (
                 <span
                   key={sector}
-                  className="px-2 py-1 text-[10px] font-medium bg-green-950 text-green-400 rounded"
+                  className="px-2 py-1 text-xs font-medium bg-green-950 text-green-400 rounded"
                 >
                   {sector}
                 </span>
@@ -62,12 +62,12 @@ export function SectorTransitionsPanel() {
             </div>
           </div>
           <div>
-            <div className="text-[10px] text-neutral-500 uppercase mb-1">Unfavorable</div>
+            <div className="text-xs text-neutral-500 uppercase mb-1">Unfavorable</div>
             <div className="flex flex-wrap gap-1">
               {cycle_overlay.unfavorable_sectors.map((sector) => (
                 <span
                   key={sector}
-                  className="px-2 py-1 text-[10px] font-medium bg-red-950 text-red-400 rounded"
+                  className="px-2 py-1 text-xs font-medium bg-red-950 text-red-400 rounded"
                 >
                   {sector}
                 </span>
@@ -75,7 +75,7 @@ export function SectorTransitionsPanel() {
             </div>
           </div>
         </div>
-        <div className="text-[10px] text-neutral-500 mt-2">
+        <div className="text-xs text-neutral-500 mt-2">
           Recession Probability:{' '}
           <span className="text-neutral-300">
             {cycle_overlay.recession_probability !== null && cycle_overlay.recession_probability !== undefined
@@ -133,12 +133,12 @@ export function SectorTransitionsPanel() {
                 <div className="grid grid-cols-4 gap-2">
                   {factors.map((fac) => (
                     <div key={fac.name} className="text-center">
-                      <div className="text-[10px] text-neutral-500 mb-0.5">{fac.name}</div>
+                      <div className="text-xs text-neutral-500 mb-0.5">{fac.name}</div>
                       <div className={`text-xs font-mono font-semibold ${getFactorColor(fac.value)}`}>
                         {fac.value > 0 ? '+' : ''}{fac.value.toFixed(2)}
                       </div>
                       {fac.label && (
-                        <span className={`inline-block mt-0.5 text-[9px] px-1 py-px rounded border font-medium ${getLabelBadgeColor(fac.label)}`}>
+                        <span className={`inline-block mt-0.5 text-xs px-1 py-px rounded border font-medium ${getLabelBadgeColor(fac.label)}`}>
                           {fac.label}
                         </span>
                       )}
