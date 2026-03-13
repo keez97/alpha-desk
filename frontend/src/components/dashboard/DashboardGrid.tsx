@@ -1,25 +1,38 @@
 /**
- * DashboardGrid — react-grid-layout v2 powered widget grid.
- * Wraps all visible widgets in a draggable/resizable grid.
+ * DashboardGrid — react-grid-layout powered widget grid.
+ * Uses plain GridLayout (not Responsive) with our own width measurement
+ * to avoid CJS/ESM interop issues with react-grid-layout v2.
  */
-import { Suspense, useCallback, useMemo, useRef } from 'react';
-/* eslint-disable @typescript-eslint/no-explicit-any */
-// react-grid-layout v2 uses named exports; types from @types/react-grid-layout are for v1
-import * as RGL from 'react-grid-layout';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import ReactGridLayout from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { useDashboardStore, type LayoutItem } from '../../lib/dashboardStore';
 import { WIDGET_REGISTRY } from '../../lib/widgetRegistry';
 import { WidgetWrapper } from './WidgetWrapper';
 
-// v2 API: named exports — use namespace import for correct CJS/ESM interop
-const ResponsiveGridLayout = (RGL as any).ResponsiveGridLayout;
-const useContainerWidth = (RGL as any).useContainerWidth;
-
 // Row height in pixels — each grid unit ≈ 40px
 const ROW_HEIGHT = 40;
-const COLS = { lg: 12, md: 12, sm: 6, xs: 4, xxs: 2 };
-const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
+const COLS = 12;
+
+function useContainerWidth() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setWidth(entry.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    setWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, width };
+}
 
 function WidgetFallback() {
   return (
@@ -31,76 +44,66 @@ function WidgetFallback() {
 
 export function DashboardGrid() {
   const { layout, visibleWidgets, isLocked, setLayout, removeWidget } = useDashboardStore();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerWidth] = useContainerWidth(containerRef);
+  const { ref: containerRef, width: containerWidth } = useContainerWidth();
 
   // Filter layout to only include visible widgets
   const activeLayout = useMemo(
-    () => layout.filter((item: LayoutItem) => visibleWidgets.includes(item.i)),
+    () => layout.filter(item => visibleWidgets.includes(item.i)),
     [layout, visibleWidgets]
   );
 
-  // Generate responsive layouts — sm/xs/xxs get single-column stacking
-  const responsiveLayouts = useMemo(() => {
-    const sm = activeLayout.map((item: LayoutItem, idx: number) => ({
-      ...item,
-      x: 0,
-      w: 6,
-      y: idx * item.h,
-    }));
-    const xs = activeLayout.map((item: LayoutItem, idx: number) => ({
-      ...item,
-      x: 0,
-      w: 4,
-      y: idx * item.h,
-    }));
-    const xxs = activeLayout.map((item: LayoutItem, idx: number) => ({
-      ...item,
-      x: 0,
-      w: 2,
-      y: idx * item.h,
-    }));
-    return { lg: activeLayout, md: activeLayout, sm, xs, xxs };
-  }, [activeLayout]);
+  // Responsive: collapse to single column on narrow screens
+  const cols = containerWidth < 768 ? 1 : containerWidth < 996 ? 6 : COLS;
+  const adjustedLayout = useMemo(() => {
+    if (cols === COLS) return activeLayout;
+    // Stack widgets vertically for narrow screens
+    let yOffset = 0;
+    return activeLayout.map(item => {
+      const adjusted = { ...item, x: 0, w: cols, y: yOffset };
+      yOffset += item.h;
+      return adjusted;
+    });
+  }, [activeLayout, cols]);
 
   const handleLayoutChange = useCallback(
-    (currentLayout: LayoutItem[]) => {
-      if (!isLocked) {
-        const updatedMap = new Map(currentLayout.map((item: LayoutItem) => [item.i, item]));
-        const merged = layout.map((item: LayoutItem) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (newLayout: any[]) => {
+      if (!isLocked && cols === COLS) {
+        // Only persist desktop layout changes
+        const updatedMap = new Map(newLayout.map((item: LayoutItem) => [item.i, item]));
+        const merged = layout.map(item =>
           updatedMap.has(item.i) ? { ...item, ...updatedMap.get(item.i)! } : item
         );
-        for (const item of currentLayout) {
-          if (!layout.find((l: LayoutItem) => l.i === item.i)) {
+        for (const item of newLayout) {
+          if (!layout.find(l => l.i === item.i)) {
             merged.push(item);
           }
         }
         setLayout(merged);
       }
     },
-    [isLocked, layout, setLayout]
+    [isLocked, layout, setLayout, cols]
   );
 
   return (
     <div ref={containerRef}>
       {containerWidth > 0 && (
-        <ResponsiveGridLayout
+        <ReactGridLayout
           className="dashboard-grid"
-          width={containerWidth}
-          layouts={responsiveLayouts}
-          breakpoints={BREAKPOINTS}
-          cols={COLS}
+          layout={adjustedLayout as any}
+          cols={cols}
           rowHeight={ROW_HEIGHT}
+          width={containerWidth}
           isDraggable={!isLocked}
           isResizable={!isLocked}
           compactType="vertical"
           margin={[16, 16]}
           containerPadding={[16, 16]}
-          onLayoutChange={handleLayoutChange}
+          onLayoutChange={handleLayoutChange as any}
           draggableHandle=".widget-drag-handle"
           useCSSTransforms
         >
-          {visibleWidgets.map((widgetId: string) => {
+          {visibleWidgets.map(widgetId => {
             const meta = WIDGET_REGISTRY[widgetId];
             if (!meta) return null;
             const Component = meta.component;
@@ -119,7 +122,7 @@ export function DashboardGrid() {
               </div>
             );
           })}
-        </ResponsiveGridLayout>
+        </ReactGridLayout>
       )}
     </div>
   );
